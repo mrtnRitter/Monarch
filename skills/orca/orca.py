@@ -222,9 +222,9 @@ def refresh(client: AworkClient, state: dict) -> None:
     for minizilla in alive(state).values():
         if minizilla["state"] == "working" and minizilla.get("message_id"):
             status = client.message_status(minizilla["thread_id"], minizilla["message_id"])
-            state = (status.get("status") or "").casefold()
-            if state in terminal_states and (status.get("hasAgentResponse") or state != "completed"):
-                minizilla["state"] = "answered" if state == "completed" else state
+            run_status = (status.get("status") or "").casefold()
+            if run_status in terminal_states and (status.get("hasAgentResponse") or run_status != "completed"):
+                minizilla["state"] = "answered" if run_status == "completed" else run_status
                 minizilla["response_id"] = status.get("responseId")
 
     save_state(state)
