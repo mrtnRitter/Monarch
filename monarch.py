@@ -75,22 +75,27 @@ class Session:
         self.wait(accepted.get("acceptedMessageId"))
 
     def wait(self, message_id: str | None) -> None:
+        response_id = None
         while message_id:
-            status = (self.client.message_status(self.thread_id, message_id).get("status") or "").casefold()
-            if status in terminal_states:
+            status = self.client.message_status(self.thread_id, message_id)
+            state = (status.get("status") or "").casefold()
+            # "completed" can be reported before the answer is stored
+            if state in terminal_states and (status.get("hasAgentResponse") or state != "completed"):
+                response_id = status.get("responseId")
                 break
             self.check_budget()
             time.sleep(self.config["poll_interval"])
-        self.show_answer(message_id)
+        self.show_answer(message_id, response_id)
 
-    def show_answer(self, message_id: str | None) -> None:
-        answer = answer_after(self.client.messages(self.thread_id), message_id)
+    def show_answer(self, message_id: str | None, response_id: str | None = None) -> None:
+        answer = answer_after(self.client.messages(self.thread_id), message_id, response_id)
         text = "\n\n".join(part for message in answer if (part := clean_text(message.get("content")))) or "(no answer)"
         print(f"\nmastazilla> {text}\n")
         self.log(f"mastazilla: {text}")
         for path in download_answer_files(self.client, self.thread_id, answer, self.output_dir):
             print(f"file: {path}")
             self.log(f"file: {path}")
+
 
     def stopzilla(self, reason: str = "manual") -> None:
         """Cancel mastazilla and all minizillas started in this session."""

@@ -113,15 +113,20 @@ def attachments_for(client: AworkClient, files: list[str] | None) -> list[dict]:
     return [{"temporaryFileId": client.upload_temporary_file(path)} for path in paths]
 
 
-def answer_after(messages: list[dict], message_id: str | None) -> list[dict]:
-    """Return the assistant messages that follow the given user message (or the last user message)."""
+skip_roles = {"user", "tool", "system"}
+
+
+def answer_after(messages: list[dict], message_id: str | None, response_id: str | None = None) -> list[dict]:
+    """Return the agent answer: the message matching response_id, else all non-user messages after message_id."""
+    if response_id and (match := [message for message in messages if response_id in (message.get("runtimeMessageId"), message.get("id"))]):
+        return match
     ids = [message.get("id") for message in messages]
     if message_id in ids:
         start = ids.index(message_id) + 1
     else:
         user_indexes = [index for index, message in enumerate(messages) if message.get("role") == "user"]
         start = user_indexes[-1] + 1 if user_indexes else 0
-    return [message for message in messages[start:] if message.get("role") == "assistant"]
+    return [message for message in messages[start:] if (message.get("role") or "").casefold() not in skip_roles and message.get("content")]
 
 
 def clean_text(text: str | None) -> str:
@@ -216,9 +221,12 @@ def cmd_send(client: AworkClient, config: dict, state: dict, args) -> None:
 def refresh(client: AworkClient, state: dict) -> None:
     for minizilla in alive(state).values():
         if minizilla["state"] == "working" and minizilla.get("message_id"):
-            status = client.message_status(minizilla["thread_id"], minizilla["message_id"]).get("status") or ""
-            if status.casefold() in terminal_states:
-                minizilla["state"] = "answered" if status.casefold() == "completed" else status.casefold()
+            status = client.message_status(minizilla["thread_id"], minizilla["message_id"])
+            state = (status.get("status") or "").casefold()
+            if state in terminal_states and (status.get("hasAgentResponse") or state != "completed"):
+                minizilla["state"] = "answered" if state == "completed" else state
+                minizilla["response_id"] = status.get("responseId")
+
     save_state(state)
 
 
@@ -255,7 +263,7 @@ def cmd_status(client: AworkClient, config: dict, state: dict, args, refreshed: 
 
 def cmd_collect(client: AworkClient, config: dict, state: dict, args) -> None:
     minizilla = get_minizilla(state, args.minizilla_id)
-    answer = answer_after(client.messages(minizilla["thread_id"]), minizilla.get("message_id"))
+    answer = answer_after(client.messages(minizilla["thread_id"]), minizilla.get("message_id"), minizilla.get("response_id"))
     if not answer:
         print(f"{args.minizilla_id}: no answer yet")
         return
