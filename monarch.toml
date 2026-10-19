@@ -1,0 +1,7 @@
+mastazilla_agent_id = "<agent-id>"
+minizilla_agent_id = "<agent-id>"
+api_base_url = "https://api.awork.com/api/v1"
+max_credits = 1000        # credit cap per session (mastazilla + minizillas); 0 = no cap
+poll_interval = 3          # seconds between status and credit checks
+output_dir = "./output"    # where result files are saved
+log_dir = "./logs"         # one log file per job
