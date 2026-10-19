@@ -95,7 +95,7 @@ class AworkClient:
 def get_api_key() -> str:
     """Read the API key from the awork skill secret or the environment."""
     try:
-        import awork_secrets  # only available inside the awork sandbox
+        import awork_secrets  # type: ignore  # only available inside the awork sandbox
         api_key = awork_secrets.get(api_key_name)
     except Exception:
         api_key = None
