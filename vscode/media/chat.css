@@ -58,7 +58,23 @@ span.avatar {
 .turn-head { display: flex; align-items: center; gap: 8px; font-size: 0.85em; }
 .turn-head .name { font-weight: 600; }
 .turn-head .meta { opacity: 0.6; }
-.turn-body { padding-left: calc(var(--avatar) + 8px); line-height: 1.5; word-break: break-word; }
+.turn-body {
+  align-self: flex-start; max-width: min(85%, calc(100% - var(--avatar) - 8px)); min-width: 0; margin-left: calc(var(--avatar) + 8px); padding: 8px 12px; border-radius: 12px;
+  line-height: 1.5; word-break: break-word; background: var(--vscode-input-background); border: 1px solid var(--vscode-panel-border);
+}
+.turn-body:empty { display: none; }
+.question {
+  align-self: flex-start; max-width: min(85%, calc(100% - var(--avatar) - 8px)); margin-left: calc(var(--avatar) + 8px); padding: 8px 12px; border-radius: 12px;
+  display: flex; flex-direction: column; gap: 6px; border: 1px solid var(--vscode-focusBorder);
+}
+.question-text { font-weight: 600; line-height: 1.4; }
+.question .option {
+  text-align: left; padding: 6px 10px; border-radius: 6px; line-height: 1.4; color: var(--vscode-foreground);
+  background: var(--vscode-input-background); border: 1px solid var(--vscode-panel-border);
+}
+.question .option:not(:disabled):hover { border-color: var(--vscode-focusBorder); }
+.question .option.chosen { border-color: var(--vscode-focusBorder); opacity: 1; }
+.question-hint { font-size: 0.8em; opacity: 0.6; }
 .file { display: block; cursor: pointer; color: var(--vscode-textLink-foreground); font-size: 0.9em; }
 .file:hover { text-decoration: underline; }
 .warning { color: var(--vscode-editorWarning-foreground); font-size: 0.85em; }
@@ -114,7 +130,10 @@ span.avatar {
 .primary-btn:hover { background: var(--vscode-button-hoverBackground); }
 
 /* input area */
-.input-area { border-top: 1px solid var(--vscode-panel-border); display: flex; flex-direction: column; background: var(--vscode-sideBar-background); }
+.input-area { flex-shrink: 0; display: flex; flex-direction: column; background: var(--vscode-sideBar-background); }
+.splitter { height: 7px; margin-top: -3px; display: flex; align-items: center; cursor: ns-resize; touch-action: none; position: relative; z-index: 1; }
+.splitter::before { content: ''; flex: 1; height: 1px; background: var(--vscode-panel-border); }
+.splitter:hover::before, .splitter.dragging::before { height: 3px; background: var(--vscode-sash-hoverBorder, var(--vscode-focusBorder)); }
 .input-toolbar { display: flex; align-items: center; gap: 4px; padding: 4px var(--pad) 0; flex-wrap: wrap; }
 .picker-btn {
   display: inline-flex; align-items: center; gap: 4px; padding: 2px 8px; border-radius: 3px; background: transparent;
@@ -126,12 +145,12 @@ span.avatar {
 .chip { background: var(--vscode-badge-background); color: var(--vscode-badge-foreground); padding: 1px 8px; border-radius: 10px; cursor: pointer; font-size: 0.85em; }
 .input-editor-wrap { padding: 4px var(--pad) 0; display: flex; }
 .input-editor-wrap textarea {
-  flex: 1; resize: vertical; background: var(--vscode-input-background); color: var(--vscode-input-foreground);
-  border: 1px solid var(--vscode-input-border, var(--vscode-panel-border)); border-radius: 6px; padding: 8px 10px;
-  font-family: var(--vscode-font-family); font-size: var(--vscode-font-size); line-height: 1.4; min-height: 38px; outline: none;
+  flex: 1; resize: none; background: var(--vscode-input-background); color: var(--vscode-input-foreground);
+  border: 1px solid var(--vscode-input-border, var(--vscode-panel-border)); border-radius: 6px; padding: 8px 10px 1.4em;
+  font-family: var(--vscode-font-family); font-size: var(--vscode-font-size); line-height: 1.4; min-height: calc(5.6em + 10px); outline: none;
 }
 .input-editor-wrap textarea:focus { border-color: var(--vscode-focusBorder); }
-.input-send-row { display: flex; align-items: center; justify-content: flex-end; padding: 4px var(--pad) 8px; gap: 6px; }
+.input-send-row { display: flex; align-items: center; justify-content: flex-end; padding: 4px var(--pad) 14px; gap: 6px; }
 .send-btn {
   display: inline-flex; align-items: center; justify-content: center; padding: 4px 14px; border-radius: 12px; font-weight: 500;
   min-width: 60px; height: 26px; background: var(--vscode-button-background); color: var(--vscode-button-foreground); transition: background 0.15s;

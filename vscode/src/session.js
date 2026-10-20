@@ -2,6 +2,7 @@
 /** One chat with an awork agent: messages, co-agent relay via ORCA commands, limits, credits and stop. */
 const files = require('./files');
 const { parse_commands } = require('./orca');
+const { strip_context } = require('./repo');
 
 const terminal_states = new Set(['completed', 'failed', 'cancelled', 'canceled', 'error']);
 const urgent_states = new Set(['question', 'blocked']);
@@ -43,6 +44,36 @@ function answer_of(messages, message_id, response_id) {
 /** Visible text of the answer messages. */
 function answer_text(answer) {
     return answer.map(message => files.clean_text(message.content)).filter(Boolean).join('\n\n');
+}
+
+function _arguments(call) {
+    if (typeof call.arguments !== 'string') return call.arguments || {};
+    try {
+        return JSON.parse(call.arguments);
+    } catch {
+        return {};
+    }
+}
+
+/** Questions with answer options that the agent asked via tool calls: [{role: 'question', text, options, custom}], each tool call once. */
+function questions_of(messages, seen = new Set()) {
+    return messages.flatMap(message => message.toolCalls || []).flatMap(call => {
+        const args = _arguments(call);
+        const key = call.id || args.question;
+        if (typeof args.question !== 'string' || !Array.isArray(args.options) || !args.options.length || seen.has(key)) return [];
+        seen.add(key);
+        return [{ role: 'question', text: args.question, options: args.options.map(String), custom: Boolean(args.allowCustomText) }];
+    });
+}
+
+/** Text without a trailing copy of the question texts (shown as cards instead). */
+function _without_questions(text, questions) {
+    return questions.reduce((rest, { text: question }) => (rest.trimEnd().endsWith(question.trim()) ? rest.trimEnd().slice(0, -question.trim().length).trimEnd() : rest), text);
+}
+
+/** Fingerprint of a message list to detect changes made elsewhere (e.g. in the awork web app). */
+function _signature(messages) {
+    return messages.map(message => `${message.id}:${(message.content || '').length}:${(message.toolCalls || []).length}:${message.isStreaming ? 1 : 0}`).join('|');
 }
 
 /** Chat state with defaults: thread, title, model override, job (rounds, co-agents). */
@@ -151,7 +182,9 @@ class ChatSession {
     async _wait_for_run(thread_id, message_id) {
         let run;
         while (!(run = await this._run_state(thread_id, message_id)).state) await this._tick();
-        return { ...answer_of(await this.client.messages(thread_id), message_id, run.response_id), state: run.state };
+        const messages = await this.client.messages(thread_id);
+        if (thread_id === this.state.thread_id) this.synced = _signature(messages);
+        return { ...answer_of(messages, message_id, run.response_id), state: run.state };
     }
 
     async _post(content, attachments) {
@@ -174,7 +207,7 @@ class ChatSession {
      * Send a user message (with uploads [{name, data, mime_type}]) and run the relay until the agent stops issuing commands.
      * Resolves when the agent is done or stopped.
      */
-    async send(text, uploads = []) {
+    async send(text, uploads = [], context = '') {
         if (this.busy) throw new Error('The agent is still working.');
         if (!this.agent.agentId) throw new Error(`Set agentId for ${this.agent.name} in monarch.agents.`);
         if (uploads.length > max_attachments) throw new Error(`Max. ${max_attachments} attachments per message.`);
@@ -183,7 +216,7 @@ class ChatSession {
         try {
             await this._check_budget(true);
             if (!this.state.thread_id && !this.state.title) this.state.title = _first_line(text);
-            let next = { content: text, attachments: await this._upload(uploads) };
+            let next = { content: context ? `${text}\n\n${context}` : text, attachments: await this._upload(uploads) };
             this.ui.message({ role: 'user', text });
             while (next) next = await this._handle_answer(await this._post(next.content, next.attachments));
         } catch (error) {
@@ -204,7 +237,10 @@ class ChatSession {
     async _handle_answer({ answer, run, state, duration_ms }) {
         const { text, commands } = parse_commands(answer_text(answer));
         const written = await this._write_repo_files(text, run);
-        this.ui.message({ role: 'agent', text: files.strip_file_blocks(text) || (state === 'completed' ? '(no answer)' : `(run ${state})`), files: written.files, warnings: written.warnings, duration_ms });
+        const questions = questions_of(run);
+        const shown = _without_questions(files.strip_file_blocks(text), questions);
+        this.ui.message({ role: 'agent', text: shown || (questions.length ? '' : state === 'completed' ? '(no answer)' : `(run ${state})`), files: written.files, warnings: written.warnings, duration_ms });
+        questions.forEach(question => this.ui.message(question));
         if (!commands.length) return null;
         const results = [];
         for (const command of commands) results.push(await this._execute(command));
@@ -476,21 +512,35 @@ class ChatSession {
         this._emit();
     }
 
-    /** Messages of the current chat for display: [{role, text, duration_ms?}]. */
+    /** True if the current chat has messages that are not shown yet (written elsewhere); false while busy or without chat. */
+    async has_updates() {
+        if (this.busy || !this.state.thread_id) return false;
+        const thread_id = this.state.thread_id;
+        const signature = _signature(await this.client.messages(thread_id));
+        return !this.busy && thread_id === this.state.thread_id && signature !== this.synced;
+    }
+
+    /** Messages of the current chat for display: [{role, text, duration_ms?}] plus question cards. */
     async history() {
         if (!this.state.thread_id) return [];
         const messages = await this.client.messages(this.state.thread_id);
+        this.synced = _signature(messages);
+        const seen = new Set();
         let asked_at = null;
-        return messages.filter(message => message.content && !['tool', 'system'].includes((message.role || '').toLowerCase())).map(message => {
+        return messages.flatMap(message => {
+            const role = (message.role || '').toLowerCase();
+            const questions = questions_of([message], seen);
+            if (!message.content || ['tool', 'system'].includes(role)) return questions;
             const text = files.clean_text(message.content);
             const created = Date.parse(message.createdOn || '') || null;
             if (_is_user(message)) {
                 asked_at = created;
-                return text.startsWith(relay_prefix) ? { role: 'info', text: 'relay: co-agent update' } : { role: 'user', text };
+                return [text.startsWith(relay_prefix) ? { role: 'info', text: 'relay: co-agent update' } : { role: 'user', text: strip_context(text) }];
             }
-            return { role: 'agent', text: files.strip_file_blocks(parse_commands(text).text), duration_ms: asked_at && created ? created - asked_at : null };
+            const shown = _without_questions(files.strip_file_blocks(parse_commands(text).text), questions);
+            return [{ role: 'agent', text: shown, duration_ms: asked_at && created ? created - asked_at : null }, ...questions];
         });
     }
 }
 
-module.exports = { ChatSession, StopRequested, answer_of, answer_text, relay_prefix };
+module.exports = { ChatSession, StopRequested, answer_of, answer_text, questions_of, relay_prefix };

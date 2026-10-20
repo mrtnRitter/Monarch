@@ -4,12 +4,15 @@ const vscode = require('vscode');
 const crypto = require('crypto');
 const { ChatSession } = require('./session');
 const { create_zip } = require('./zip');
+const { context_line, git_info } = require('./repo');
 
 const fixed_excludes = ['**/.git/**', '**/node_modules/**', '**/__pycache__/**', '**/.venv/**', '**/*.pyc'];
 const default_labels = { credits: 'Credits', coAgents: 'Co-agents', stop: 'Stop' };
 const image_types = [[[0x89, 0x50, 0x4e, 0x47], 'image/png'], [[0xff, 0xd8, 0xff], 'image/jpeg'], [[0x47, 0x49, 0x46], 'image/gif'], [[0x52, 0x49, 0x46, 0x46], 'image/webp']];
 const mime_types = { '.py': 'text/x-python', '.md': 'text/markdown', '.json': 'application/json', '.txt': 'text/plain', '.zip': 'application/zip' };
 const max_chats = 100;
+const max_attachments = 20;
+const notice_types = new Set(['attach']);
 
 function _config() {
     return vscode.workspace.getConfiguration('monarch');
@@ -33,6 +36,24 @@ function _data_uri(data) {
     const head = bytes.subarray(0, 200).toString('utf8').trimStart();
     const type = image_types.find(([magic]) => magic.every((byte, index) => bytes[index] === byte))?.[1] || (/^(<\?xml|<svg)/i.test(head) ? 'image/svg+xml' : null);
     return type ? `data:${type};base64,${bytes.toString('base64')}` : null;
+}
+
+/** File behind an editor tab: text, diff (modified side), custom editor, notebook; null for webviews, terminals etc. */
+function _tab_uri(tab) {
+    const input = tab?.input;
+    return input?.uri || input?.modified || null;
+}
+
+/** Repository of the VS Code git API for uri; null = no repository, undefined = git not available. */
+async function _git_repository(uri) {
+    const extension = vscode.extensions?.getExtension('vscode.git');
+    if (!extension) return undefined;
+    try {
+        const git = (extension.isActive ? extension.exports : await extension.activate()).getAPI(1);
+        return git.getRepository(uri) || null;
+    } catch {
+        return undefined;
+    }
 }
 
 const _chats_key = agent => `monarch.chats.${agent.agentId}`;
@@ -113,7 +134,15 @@ const workspace_adapter = {
 
 class ChatView {
     constructor(context, client, oauth) {
-        Object.assign(this, { context, client, oauth, view: null, sessions: new Map(), attachments: [], avatars: new Map(), user_avatar: null, me: null, agent_list: null, models: new Map() });
+        Object.assign(this, { context, client, oauth, view: null, sessions: new Map(), attachments: [], avatars: new Map(), user_avatar: null, me: null, agent_list: null, models: new Map(), last_file: null, sync_timer: null });
+        // remember the last file so that "Current file" also works while a preview or other non-file tab is active
+        const remember = uri => { if (uri && uri.scheme !== 'untitled') this.last_file = uri; };
+        remember(_tab_uri(vscode.window.tabGroups?.activeTabGroup?.activeTab) || vscode.window.activeTextEditor?.document.uri);
+        context.subscriptions.push(
+            vscode.window.onDidChangeActiveTextEditor?.(editor => remember(editor?.document.uri)) || { dispose() {} },
+            vscode.window.tabGroups?.onDidChangeTabs?.(() => remember(_tab_uri(vscode.window.tabGroups.activeTabGroup?.activeTab))) || { dispose() {} },
+            { dispose: () => clearTimeout(this.sync_timer) },
+        );
     }
 
     /** Drop everything that belongs to the signed-in user (after sign-in or sign-out). */
@@ -255,6 +284,7 @@ class ChatView {
 <div class="messages" id="messages"></div>
 <div id="working" class="working hidden"><span class="spinner"></span><span id="working_text"></span></div>
 <div class="input-area">
+<div id="splitter" class="splitter" title="Drag to resize the input"></div>
 <div class="input-toolbar"><button id="attach_current" class="picker-btn" title="Attach the open file">📄 Current file</button><button id="attach_files" class="picker-btn" title="Attach files">📎 Files</button><button id="attach_folder" class="picker-btn" title="Attach a folder as ZIP">📁 Folder</button></div>
 <div id="attachments" class="attachments"></div>
 <div class="input-editor-wrap"><textarea id="input" rows="3" placeholder="Message …"></textarea></div>
@@ -262,7 +292,8 @@ class ChatView {
 </div>
 <script nonce="${nonce}" src="${asset('markdown.js')}"></script>
 <script nonce="${nonce}" src="${asset('chat.js')}"></script></body></html>`;
-        view.webview.onDidReceiveMessage(message => this._on_message(message).catch(error => this._post({ type: 'error', text: error.message })));
+        view.webview.onDidReceiveMessage(message => this._on_message(message).catch(error => this._post({ type: 'error', text: error.message, transient: notice_types.has(message.type) })));
+        this._schedule_sync();
     }
 
     _post(message) {
@@ -290,6 +321,7 @@ class ChatView {
                 this._post_attachments();
             },
             open_file: () => this._open_file(message.path),
+            input_height: () => this.context.globalState.update('monarch.inputHeight', Math.round(Number(message.height)) || null),
         };
         await (handlers[message.type] || (() => {}))();
     }
@@ -307,13 +339,32 @@ class ChatView {
         }
         const agent = signed_in ? this._agent() : null;
         const agent_items = await Promise.all(agents.map(async item => ({ id: item.agentId, name: item.name, avatar: await this._avatar('agents', item.agentId, item.name, item.has_image) })));
-        this._post({ type: 'init', agents: agent_items, current: agent?.agentId || null, current_name: agent?.name || null, labels: agent?.labels || default_labels, signed_in, user: signed_in ? await this._user() : { image: null, initials: 'Du' } });
+        this._post({ type: 'init', agents: agent_items, current: agent?.agentId || null, current_name: agent?.name || null, labels: agent?.labels || default_labels, signed_in, user: signed_in ? await this._user() : { image: null, initials: 'Du' }, input_height: this.context.globalState.get('monarch.inputHeight') || null });
         this._post_attachments();
         if (!agent) return;
         const session = this._session(agent);
         this._post({ type: 'status', status: session.status(), agent: agent.agentId });
         this._post_chats(agent);
         this._post({ type: 'models', agent: agent.agentId, ...(await this._models(agent)) });
+        await this._show_history(session, agent);
+        session.refresh_credits();
+    }
+
+    // --- sync with chats continued elsewhere (awork web app) ---
+    _schedule_sync() {
+        clearTimeout(this.sync_timer);
+        const seconds = _config().get('syncInterval');
+        // with 0 (off) the setting is checked again after 10 s
+        this.sync_timer = setTimeout(() => this._sync().catch(() => {}).finally(() => this._schedule_sync()), (seconds > 0 ? seconds : 10) * 1000);
+        // do not keep the process alive only for the sync (tests, shutdown)
+        this.sync_timer.unref?.();
+    }
+
+    async _sync() {
+        if (!(_config().get('syncInterval') > 0) || !this.view?.visible) return;
+        const agent = this.agent_list && this._agent();
+        const session = agent && this.sessions.get(agent.agentId);
+        if (!session || !(await session.has_updates())) return;
         await this._show_history(session, agent);
         session.refresh_credits();
     }
@@ -365,7 +416,16 @@ class ChatView {
         const { uploads, note } = await this._uploads();
         this.attachments = [];
         this._post_attachments();
-        await session.send(text + note, uploads);
+        await session.send(text + note, uploads, await this._context());
+    }
+
+    /** Context line for the agent: open repo, online link, branch, open file, local changes. */
+    async _context() {
+        const root = _root();
+        if (!root) return context_line({ folder: null });
+        const uri = vscode.window.activeTextEditor?.document.uri;
+        const file = uri?.scheme === 'file' && uri.path.startsWith(`${root.path.replace(/\/$/, '')}/`) ? vscode.workspace.asRelativePath(uri, false) : null;
+        return context_line({ folder: _repo_name(), file, ...git_info(await _git_repository(root)) });
     }
 
     async stop() {
@@ -387,18 +447,26 @@ class ChatView {
     async _attach(kind) {
         let picked = [];
         if (kind === 'current') {
-            const uri = vscode.window.activeTextEditor?.document.uri;
-            if (!uri || uri.scheme !== 'file') throw new Error('No file open in the editor.');
+            const uri = _tab_uri(vscode.window.tabGroups?.activeTabGroup?.activeTab) || vscode.window.activeTextEditor?.document.uri || this.last_file;
+            if (!uri) throw new Error('No file open in the editor.');
+            if (uri.scheme === 'untitled') throw new Error('Save the file first, then attach it.');
             picked = [{ uri, folder: false }];
         } else {
             const uris = await vscode.window.showOpenDialog({ canSelectMany: true, canSelectFiles: kind === 'files', canSelectFolders: kind === 'folder', defaultUri: _root() || undefined });
             picked = (uris || []).map(uri => ({ uri, folder: kind === 'folder' }));
         }
-        for (const { uri, folder } of picked) {
-            const rel = vscode.workspace.asRelativePath(uri, false);
-            if (!this.attachments.some(item => item.uri.toString() === uri.toString())) this.attachments.push({ id: crypto.randomUUID(), uri, folder, rel, label: folder ? `${rel}/` : rel });
+        const limit_mb = _config().get('maxFolderMB');
+        try {
+            for (const { uri, folder } of picked) {
+                if (this.attachments.some(item => item.uri.toString() === uri.toString())) continue;
+                if (this.attachments.length >= max_attachments) throw new Error(`Max. ${max_attachments} attachments per message.`);
+                const rel = vscode.workspace.asRelativePath(uri, false);
+                if (!folder && (await vscode.workspace.fs.stat(uri)).size > limit_mb * 1024 * 1024) throw new Error(`File ${rel} exceeds monarch.maxFolderMB (${limit_mb} MB).`);
+                this.attachments.push({ id: crypto.randomUUID(), uri, folder, rel, label: folder ? `${rel}/` : rel });
+            }
+        } finally {
+            this._post_attachments();
         }
-        this._post_attachments();
     }
 
     async _uploads() {

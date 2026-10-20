@@ -25,8 +25,8 @@ Requirements: VS Code 1.85+, Python 3.11+ (only for building).
 
 ```bash
 cd monarch/vscode
-python build_vsix.py                         # -> monarch-0.6.0.vsix
-code --install-extension monarch-0.6.0.vsix
+python build_vsix.py                         # -> monarch-0.8.0.vsix
+code --install-extension monarch-0.8.0.vsix
 ```
 
 Or in VS Code: Extensions view → `…` → **Install from VSIX…**. Optional local tests: `node test/test.js` and `node test/extension_smoke.js`.
@@ -67,7 +67,8 @@ All settings are optional. The agent list comes from awork (see `monarch.agentFi
 | `monarch.maxRounds` | `20` | Max. messages to co-agents per job; `0` = no cap |
 | `monarch.relayTimeout` | `900` | Seconds the relay waits before waking the agent with the current state; `0` = no limit |
 | `monarch.pollInterval` | `3` | Seconds between status checks |
-| `monarch.maxFolderMB` | `20` | Max. size of a folder attachment |
+| `monarch.maxFolderMB` | `20` | Max. size of a folder or file attachment |
+| `monarch.syncInterval` | `10` | Seconds between checks for new messages of the current chat written elsewhere (e.g. awork web app) while the chat window is visible and the agent is not working; `0` = off |
 
 ## Usage
 
@@ -83,10 +84,13 @@ All settings are optional. The agent list comes from awork (see `monarch.agentFi
 | Co-agents | Co-agents of the current job against `maxCoAgents`, incl. how many are working |
 | Model | Model and reasoning level for the next messages of this chat; **Agent default** uses the agent's settings. Saved with the chat; co-agents keep their own model. |
 | Stop | Stops the agent and all co-agents and closes the job |
-| **Current file** / **Files** / **Folder** | Attach repo files to the next message; folders are sent as ZIP (without `.git`, `node_modules`, `__pycache__`, `.venv`, `*.pyc` and `files.exclude`); max. 20 attachments |
+| **Current file** / **Files** / **Folder** | Attach repo files to the next message; **Current file** takes the file of the active editor tab (also Markdown preview, images, notebooks, diffs), otherwise the last active file; folders are sent as ZIP (without `.git`, `node_modules`, `__pycache__`, `.venv`, `*.pyc` and `files.exclude`); max. 20 attachments and `maxFolderMB` per file or folder; hints about attachments disappear after 5 s |
+| Line above the input | Drag up/down to resize the input (min. 3 lines, max. 70 % of the panel); the height is kept |
 | Enter / Shift+Enter | Send / new line |
 
 The labels of Credits, Co-agents and Stop come from `labels` of the selected agent. The history is stored locally in VS Code for all repos together and survives restarts; the current chat is remembered per repo. Histories of older versions (per repo) are taken over when the repo is opened the first time. It only contains chats started with monarch; chats started in the awork web app are not listed.
+
+A chat continued in the awork web app is updated in the chat window after `syncInterval` seconds. Files from answers that were not started in monarch are not written into the repo.
 
 If credits cannot be read and `maxCredits` is not `0`, the chat does not accept further messages.
 
@@ -95,12 +99,23 @@ If credits cannot be read and `maxCredits` is not `0`, the chat does not accept 
 | Item | Display |
 |---|---|
 | Your messages | Right, in a bubble, with your awork profile picture |
-| Agent answers | Left, with the agent's awork profile picture, name and answer time (e.g. `Mastazilla · 19 s`); Markdown incl. tables and code |
+| Agent answers | Left, in a bubble (max. 85 % wide), with the agent's awork profile picture, name and answer time (e.g. `Mastazilla · 19 s`); Markdown incl. tables and code (wide code and tables scroll inside the bubble) |
+| Questions | Questions with answer options from the agent as a card; click an option to send it as your answer, or type your own answer |
 | Steps | Relay and command events as collapsible group (`relay · 3 events`) |
 | While running | Spinner with elapsed time: `<agent> is working …` or `waiting for <co-agents> …` |
 | Errors | Red box in the middle |
 
 Profile pictures are loaded once per VS Code session; without a picture, initials are shown.
+
+### "This repo" (repo context)
+
+Every message gets a context line at the end that is not shown in the chat. It tells the agent which repo is open in VS Code (the first workspace folder), the browser link of its git remote (`origin` or the upstream of the branch, without credentials), the branch, the open file and whether there are uncommitted changes or commits not pushed. Without a remote it says that the repo is not online. The agent reads the repo via this link (only the pushed state); local changes have to be attached. Requires the built-in VS Code Git extension.
+
+```
+[monarch context] "this repo" = the repo open in VS Code: Monarch · online: https://github.com/mrtnRitter/Monarch · branch: main · open file: vscode/src/repo.js
+```
+
+The agent prompts in `zillas/` contain the matching rule; copy them into the agents in awork after a change.
 
 ### Files written into the repo
 

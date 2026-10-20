@@ -213,12 +213,36 @@
         state.steps.scrollIntoView({ block: 'end' });
     }
 
+    function question_card(item) {
+        const card = document.createElement('div');
+        card.className = 'question';
+        const title = document.createElement('div');
+        title.className = 'question-text';
+        title.textContent = item.text;
+        card.appendChild(title);
+        for (const option of item.options) {
+            const button = document.createElement('button');
+            button.className = 'option';
+            button.textContent = option;
+            button.addEventListener('click', () => {
+                if (!send_text(option)) return;
+                button.classList.add('chosen');
+                card.querySelectorAll('.option').forEach(node => { node.disabled = true; });
+            });
+            card.appendChild(button);
+        }
+        if (item.custom) card.insertAdjacentHTML('beforeend', '<div class="question-hint">or type your own answer below</div>');
+        return card;
+    }
+
     function add_message(item) {
         if (item.role === 'info') return add_step(item.text);
+        if (item.role === 'question') return append(question_card(item));
         if (item.role === 'error') {
             const box = document.createElement('div');
             box.className = 'message error';
             box.textContent = item.text;
+            if (item.transient) setTimeout(() => box.remove(), 5000);
             return append(box);
         }
         if (item.role === 'user') {
@@ -238,7 +262,7 @@
         head.insertAdjacentHTML('beforeend', `<span class="name">${escape_html(state.agent_name || 'Agent')}</span>${item.duration_ms ? `<span class="meta">· ${format_duration(item.duration_ms)}</span>` : ''}`);
         const body = document.createElement('div');
         body.className = 'turn-body';
-        body.insertAdjacentHTML('beforeend', `<div class="md">${render_markdown(item.text || '')}</div>`);
+        if (item.text) body.insertAdjacentHTML('beforeend', `<div class="md">${render_markdown(item.text)}</div>`);
         for (const file of item.files || []) {
             const link = document.createElement('a');
             link.className = 'file';
@@ -292,6 +316,7 @@
             element('model').textContent = 'Model ▾';
             render_agents();
             set_enabled(Boolean(data.current));
+            if (data.input_height) set_input_height(data.input_height);
             close_menus();
             show_empty_state();
         } else if (data.type === 'history') {
@@ -318,16 +343,42 @@
                 return chip;
             }));
         } else if (data.type === 'error') {
-            add_message({ role: 'error', text: data.text });
+            add_message({ role: 'error', text: data.text, transient: data.transient });
         }
     });
 
-    const send = () => {
-        const text = element('input').value;
-        if (!text.trim() || state.status?.busy) return;
-        element('input').value = '';
+    function send_text(text) {
+        if (!text.trim() || state.status?.busy) return false;
         vscode.postMessage({ type: 'send', text });
+        return true;
+    }
+    const send = () => {
+        if (send_text(element('input').value)) element('input').value = '';
     };
+
+    // --- input height: drag the line between messages and input; min. height comes from CSS ---
+    let input_height = null;
+    function set_input_height(height) {
+        input_height = height;
+        element('input').style.height = `${Math.min(height, Math.round(window.innerHeight * 0.7))}px`;
+    }
+    window.addEventListener('resize', () => { if (input_height) set_input_height(input_height); });
+    element('splitter').addEventListener('pointerdown', event => {
+        const splitter = element('splitter');
+        const [start_y, start_height] = [event.clientY, element('input').offsetHeight];
+        const move = moved => set_input_height(Math.max(0, start_height + start_y - moved.clientY));
+        event.preventDefault();
+        splitter.setPointerCapture(event.pointerId);
+        splitter.classList.add('dragging');
+        splitter.addEventListener('pointermove', move);
+        // fires after pointerup and pointercancel
+        splitter.addEventListener('lostpointercapture', () => {
+            splitter.removeEventListener('pointermove', move);
+            splitter.classList.remove('dragging');
+            set_input_height(element('input').offsetHeight);
+            vscode.postMessage({ type: 'input_height', height: input_height });
+        }, { once: true });
+    });
     element('send').addEventListener('click', send);
     element('input').addEventListener('keydown', event => {
         if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); send(); }

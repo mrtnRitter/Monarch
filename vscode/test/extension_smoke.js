@@ -14,20 +14,26 @@ const memento = map => ({ get: key => map.get(key), update: async (key, value) =
 const settings = {
     apiBaseUrl: 'https://api.awork.com/api/v1', clientId: 'monarch', redirectPort: 18766,
     agents: [{ agentId: 'master', name: 'Mastazilla', coAgentId: 'mini', coAgentName: 'minizilla', labels: { credits: 'Credits', coAgents: 'Minizillas', stop: '/stopzilla' } }],
-    maxCredits: 0, maxCoAgents: 3, maxRounds: 20, relayTimeout: 0, pollInterval: 0, maxFolderMB: 20,
+    maxCredits: 0, maxCoAgents: 3, maxRounds: 20, relayTimeout: 0, pollInterval: 0, maxFolderMB: 20, syncInterval: 10,
 };
 const uri = path => ({ path, scheme: 'file', toString: () => `file://${path}` });
+const git_repository = { state: { HEAD: { name: 'main', upstream: { remote: 'origin', name: 'main' }, ahead: 0 }, remotes: [{ name: 'origin', fetchUrl: 'git@github.com:mrtnRitter/Monarch.git' }], workingTreeChanges: [], indexChanges: [] } };
+let file_size = 1;
+let tab_listener = () => {};
+const open_tab = input => { vscode.window.tabGroups.activeTabGroup.activeTab = { input }; tab_listener(); };
 const vscode = {
     workspace: {
         getConfiguration: section => ({ get: key => (section === 'monarch' ? settings[key] : {}) }),
         workspaceFolders: [{ uri: uri('/repo') }],
-        fs: { createDirectory: async () => {}, stat: async () => { throw new Error('missing'); }, writeFile: async () => {}, readFile: async () => Buffer.from('x') },
+        fs: { createDirectory: async () => {}, stat: async target => { if (['/repo/README.md', '/repo/big.bin'].includes(target.path)) return { size: file_size }; throw new Error('missing'); }, writeFile: async () => {}, readFile: async () => Buffer.from('x') },
         asRelativePath: value => value.path.replace('/repo/', ''),
         applyEdit: async () => true,
         openTextDocument: async () => ({ save: async () => true, getText: () => '', positionAt: () => ({}) }),
         onDidChangeConfiguration: () => ({ dispose() {} }),
     },
     window: {
+        tabGroups: { activeTabGroup: { activeTab: null }, onDidChangeTabs: fn => { tab_listener = fn; return { dispose() {} }; } },
+        onDidChangeActiveTextEditor: () => ({ dispose() {} }),
         registerWebviewViewProvider: (id, value) => { provider = value; return { dispose() {} }; },
         showErrorMessage: message => posted.push({ error: message }),
         showInformationMessage: () => {},
@@ -35,6 +41,7 @@ const vscode = {
     },
     commands: { registerCommand: (id, fn) => { registered[id] = fn; return { dispose() {} }; }, executeCommand: async () => {} },
     env: { openExternal: async () => true },
+    extensions: { getExtension: id => (id === 'vscode.git' ? { isActive: true, exports: { getAPI: () => ({ getRepository: () => git_repository }) } } : undefined) },
     Uri: { parse: value => value, joinPath: (base, ...parts) => uri([base.path, ...parts].join('/')) },
     WorkspaceEdit: class { createFile() {} insert() {} replace() {} },
     Position: class {}, Range: class {}, RelativePattern: class {},
@@ -72,10 +79,11 @@ global.fetch = async (url, options) => {
     if (route === '/agents/threads' && options.method === 'POST') return reply({ id: 'thread1', acceptedMessageId: 'u1' });
     if (route === '/agents/threads/thread1/messages' && options.method === 'POST') return reply({ acceptedMessageId: 'u2' });
     if (route.endsWith('/status')) return reply({ status: 'completed', hasAgentResponse: true });
-    if (route === '/agents/threads/thread1/messages') return reply([{ id: 'u1', role: 'user', content: 'Hallo', messageOrder: 1 }, { id: 'a1', role: 'agent', content: 'Hi Martin', messageOrder: 2 }]);
+    if (route === '/agents/threads/thread1/messages') return reply(thread_messages);
     throw new Error(`unexpected ${options.method} ${route}`);
 };
 
+const thread_messages = [{ id: 'u1', role: 'user', content: 'Hallo\n\n[monarch context] x', messageOrder: 1 }, { id: 'a1', role: 'agent', content: 'Hi Martin', messageOrder: 2 }];
 const last = type => posted.filter(message => message.type === type).pop();
 const settle = () => new Promise(resolve => setTimeout(resolve, 20));
 
@@ -85,7 +93,7 @@ const settle = () => new Promise(resolve => setTimeout(resolve, 20));
     assert.deepEqual(Object.keys(registered).sort(), ['monarch.newChat', 'monarch.signIn', 'monarch.signOut', 'monarch.stop']);
     const view = { webview: { options: null, html: '', cspSource: 'csp', asWebviewUri: value => value.path, postMessage: message => posted.push(message), onDidReceiveMessage: fn => { on_message = fn; } } };
     provider.resolveWebviewView(view);
-    for (const id of ['agents', 'agent', 'history', 'history_menu', 'model', 'model_menu', 'stop', 'new_chat']) assert.match(view.webview.html, new RegExp(`id="${id}"`), id);
+    for (const id of ['agents', 'agent', 'history', 'history_menu', 'model', 'model_menu', 'stop', 'new_chat', 'splitter']) assert.match(view.webview.html, new RegExp(`id="${id}"`), id);
     assert.match(view.webview.html, /id="new_chat" class="icon-btn primary"[^>]*><svg/);
     assert.match(view.webview.html, /id="history" class="icon-btn"[^>]*><svg/);
     await on_message({ type: 'ready' });
@@ -114,7 +122,7 @@ const settle = () => new Promise(resolve => setTimeout(resolve, 20));
     assert.equal(last('status').status.credits, 7);
     await on_message({ type: 'set_model', model: { provider: 'anthropic', name: 'opus', reasoning: 'low' } });
     await on_message({ type: 'send', text: 'Noch was' });
-    assert.deepEqual(bodies.filter(item => item.route === '/agents/threads/thread1/messages').pop().body, { content: 'Noch was', modelProvider: 'anthropic', modelName: 'opus', reasoningLevel: 'low' });
+    assert.deepEqual(bodies.filter(item => item.route === '/agents/threads/thread1/messages').pop().body, { content: 'Noch was\n\n[monarch context] "this repo" = the repo open in VS Code: repo · online: https://github.com/mrtnRitter/Monarch · branch: main', modelProvider: 'anthropic', modelName: 'opus', reasoningLevel: 'low' });
     // history list, new chat, reopen, remove
     let chats = last('chats').items;
     assert.deepEqual(chats.map(chat => [chat.thread_id, chat.title, chat.repo, chat.current]), [['thread1', 'Hallo Welt', 'repo', true]]);
@@ -123,13 +131,53 @@ const settle = () => new Promise(resolve => setTimeout(resolve, 20));
     await on_message({ type: 'new_chat' });
     assert.equal(last('chats').items[0].current, false);
     await on_message({ type: 'open_chat', thread_id: 'thread1' });
+    assert.deepEqual(last('history').items.map(item => [item.role, item.text]), [['user', 'Hallo'], ['agent', 'Hi Martin']]);
+    // chat continued in the awork web app shows up with the next sync, only when visible and changed
+    const histories = () => posted.filter(message => message.type === 'history').length;
+    let count = histories();
+    view.visible = true;
+    await provider._sync();
+    assert.equal(histories(), count);
+    thread_messages.push({ id: 'u3', role: 'user', content: 'Aus awork', messageOrder: 3 }, { id: 'a3', role: 'agent', content: 'Antwort im Web', messageOrder: 4 });
+    view.visible = false;
+    await provider._sync();
+    assert.equal(histories(), count);
+    view.visible = true;
+    await provider._sync();
+    assert.deepEqual(last('history').items.slice(-2).map(item => item.text), ['Aus awork', 'Antwort im Web']);
+    count = histories();
+    await provider._sync();
+    assert.equal(histories(), count);
+    // "Current file": active tab (also preview/custom editor), else the last file; notices are transient
+    open_tab({ uri: uri('/repo/README.md'), viewType: 'vscode.markdown.preview.editor' });
+    await on_message({ type: 'attach', kind: 'current' });
+    assert.deepEqual(last('attachments').items.map(item => item.label), ['README.md']);
+    await on_message({ type: 'remove_attachment', id: last('attachments').items[0].id });
+    open_tab({ viewType: 'markdown.preview' });
+    await on_message({ type: 'attach', kind: 'current' });
+    assert.deepEqual(last('attachments').items.map(item => item.label), ['README.md']);
+    await on_message({ type: 'remove_attachment', id: last('attachments').items[0].id });
+    open_tab({ uri: { path: 'Untitled-1', scheme: 'untitled', toString: () => 'untitled:1' } });
+    await on_message({ type: 'attach', kind: 'current' });
+    assert.deepEqual([last('error').text, last('error').transient], ['Save the file first, then attach it.', true]);
+    file_size = 30 * 1024 * 1024;
+    open_tab({ uri: uri('/repo/big.bin') });
+    await on_message({ type: 'attach', kind: 'current' });
+    assert.match(last('error').text, /big\.bin exceeds monarch\.maxFolderMB \(20 MB\)/);
+    assert.deepEqual(last('attachments').items, []);
+    file_size = 1;
+    // input height is kept and sent with init
+    await on_message({ type: 'input_height', height: 240.4 });
+    assert.equal(global_state.get('monarch.inputHeight'), 240);
+    await on_message({ type: 'ready' });
+    assert.equal(last('init').input_height, 240);
     await settle();
     assert.equal(last('chats').items[0].current, true);
     assert.equal(last('status').status.model.reasoning, 'low');
     await on_message({ type: 'remove_chat', thread_id: 'thread1' });
     assert.deepEqual(last('chats').items, []);
     assert.ok(!posted.some(message => message.error), JSON.stringify(posted.filter(message => message.error)));
-    const errors = posted.filter(message => message.type === "error"); assert.deepEqual(errors, [], JSON.stringify(errors));
+    const errors = posted.filter(message => message.type === "error" && !message.transient); assert.deepEqual(errors, [], JSON.stringify(errors));
     // restart in another repo: same shared list, no current chat there
     vscode.workspace.workspaceFolders = [{ uri: uri('/repo2') }];
     const fresh = new (require('../src/chat_view').ChatView)({ ...context, workspaceState: memento(new Map()) }, null, null);

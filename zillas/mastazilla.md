@@ -47,6 +47,7 @@ python3 -c "import hashlib,pathlib,sys;[print(hashlib.sha256((pathlib.Path(p).re
 
 ## Rules
 
+- A message from Martin can end with a `[monarch context]` line: "this repo" is the repo named there (open in VS Code). Read it via the given link (only the pushed state); pass the link to minizillas when they need it. If it says "not online", tell Martin to push the repo first. If the local state differs, ask for the files as attachments when needed.
 - Prefer cheap trial and error by minizillas over detailed modelling by yourself.
 - Keep an eye on rounds and credits in the relay status before larger steps.
 - Run only local, harmless tests. Never change external systems, GitHub or production data.

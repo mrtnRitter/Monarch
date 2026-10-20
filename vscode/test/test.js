@@ -8,6 +8,7 @@ const { parse_commands } = require('../src/orca');
 const { create_zip } = require('../src/zip');
 const { AworkClient, OAuth } = require('../src/awork');
 const { ChatSession } = require('../src/session');
+const repo = require('../src/repo');
 const { render_markdown } = require('../media/markdown');
 
 const tests = [];
@@ -137,7 +138,7 @@ class FakeAwork {
         if (thread.pending?.id === message_id) {
             if (++thread.pending.polls < (thread.delay || 1)) return { status: 'running' };
             const reply = this.reply(thread_id, thread.messages.at(-1));
-            thread.messages.push({ id: `a${this.next++}`, role: 'agent', content: reply.content, temporaryFiles: reply.files || [], messageOrder: thread.messages.length });
+            thread.messages.push({ id: `a${this.next++}`, role: 'agent', content: reply.content, temporaryFiles: reply.files || [], toolCalls: reply.toolCalls || null, messageOrder: thread.messages.length });
             thread.pending = null;
         }
         return { status: 'completed', hasAgentResponse: true };
@@ -334,6 +335,59 @@ test('session: model override per chat, title, load_state', async () => {
     assert.equal(session.credits, null);
     await session.refresh_credits();
     assert.equal(session.credits, 10);
+});
+
+// --- repo context ---
+test('repo: remote links without credentials, local remotes ignored', () => {
+    for (const url of ['https://github.com/o/r.git', 'git@github.com:o/r.git', 'ssh://git@github.com:22/o/r', 'https://user:token@github.com/o/r/']) assert.equal(repo.remote_web_url(url), 'https://github.com/o/r', url);
+    for (const url of ['/srv/git/r.git', 'file:///srv/r', 'C:\\repos\\r', '', null]) assert.equal(repo.remote_web_url(url), null, String(url));
+});
+
+test('repo: context line for online, not online, no git, no folder; strip for display', () => {
+    const state = { HEAD: { name: 'dev', upstream: { remote: 'up' }, ahead: 2 }, remotes: [{ name: 'origin', fetchUrl: 'git@github.com:o/x.git' }, { name: 'up', fetchUrl: 'https://github.com/o/r.git' }], workingTreeChanges: [1], indexChanges: [1], untrackedChanges: [1] };
+    assert.deepEqual(repo.git_info({ state }), { git: true, remote: 'https://github.com/o/r.git', branch: 'dev', changes: 3, ahead: 2 });
+    assert.deepEqual(repo.git_info(null), { git: false });
+    assert.deepEqual(repo.git_info(undefined), { git: null });
+    const online = repo.context_line({ folder: 'r', file: 'src/a.py', ...repo.git_info({ state }) });
+    assert.equal(online, '[monarch context] "this repo" = the repo open in VS Code: r · online: https://github.com/o/r · branch: dev · open file: src/a.py · local state differs from online (3 uncommitted changes, 2 commits not pushed); ask for attachments if needed');
+    assert.match(repo.context_line({ folder: 'r', git: true, remote: 'https://github.com/o/r', branch: 'new', ahead: null }), /branch not pushed/);
+    assert.match(repo.context_line({ folder: 'r', git: true, remote: null }), /not online \(no remote\); tell the user to push it first/);
+    assert.match(repo.context_line({ folder: 'r', git: false }), /not a git repository, not online/);
+    assert.match(repo.context_line({ folder: null }), /No folder is open/);
+    assert.equal(repo.strip_context(`Hallo\n\n${online}`), 'Hallo');
+    assert.equal(repo.strip_context('no [monarch context] inside a line stays'), 'no [monarch context] inside a line stays');
+});
+
+test('session: context is sent but not shown; question cards live and in history', async () => {
+    const fake = new FakeAwork();
+    const ask = { id: 'call1', toolName: 'ask_user_question', arguments: { question: 'Which way?', options: ['A', 'B'], allowCustomText: true } };
+    const { session, events } = make_session(fake, () => ({ content: 'Plan ready.\n\nWhich way?', toolCalls: [ask] }));
+    await session.send('Hallo', [], '[monarch context] x');
+    const thread = Object.values(fake.threads)[0];
+    assert.equal(thread.messages[0].content, 'Hallo\n\n[monarch context] x');
+    assert.deepEqual(events.filter(item => item.role !== 'info').map(item => [item.role, item.text, item.options]), [['user', 'Hallo', undefined], ['agent', 'Plan ready.', undefined], ['question', 'Which way?', ['A', 'B']]]);
+    assert.equal(events.at(-1).custom, true);
+    thread.messages.push({ id: 'tool1', role: 'tool', content: '{}', toolCalls: [ask] }, { id: 'a9', role: 'agent', content: '', toolCalls: [{ id: 'call2', arguments: JSON.stringify({ question: 'Sure?', options: ['yes'] }) }, { id: 'call3', arguments: { question: 'no options' } }] });
+    const history = await session.history();
+    assert.deepEqual(history.map(item => [item.role, item.text]), [['user', 'Hallo'], ['agent', 'Plan ready.'], ['question', 'Which way?'], ['question', 'Sure?']]);
+});
+
+test('session: has_updates detects messages written elsewhere', async () => {
+    const fake = new FakeAwork();
+    const { session } = make_session(fake, () => ({ content: 'ok' }));
+    assert.equal(await session.has_updates(), false);
+    await session.send('Hallo');
+    assert.equal(await session.has_updates(), false);
+    const thread = fake.threads[session.state.thread_id];
+    thread.messages.push({ id: 'web1', role: 'user', content: 'from the web' });
+    assert.equal(await session.has_updates(), true);
+    await session.history();
+    assert.equal(await session.has_updates(), false);
+    thread.messages.at(-1).content += ' (edited while streaming)';
+    session.busy = true;
+    assert.equal(await session.has_updates(), false);
+    session.busy = false;
+    assert.equal(await session.has_updates(), true);
 });
 
 test('agents and models: merge with overrides, hide co-agents, parse model catalog', () => {
