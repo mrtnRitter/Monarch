@@ -8,6 +8,7 @@ const { parse_commands } = require('../src/orca');
 const { create_zip } = require('../src/zip');
 const { AworkClient, OAuth } = require('../src/awork');
 const { ChatSession } = require('../src/session');
+const { render_markdown } = require('../media/markdown');
 
 const tests = [];
 const test = (name, fn) => tests.push({ name, fn });
@@ -270,6 +271,39 @@ test('unsafe or mismatched brief files refuse the command', async () => {
     });
     await session.send('go');
     assert.equal(Object.keys(session.state.co_agents).length, 0);
+});
+
+// --- markdown ---
+test('markdown: tables, nested lists with code, quotes, rules, inline', () => {
+    const html = render_markdown('## T\n\n**b** *i* `c **x**`\n\n- a\n  - b\n    ```py\n    x = 1\n    ```\n- c\n\n| A | B |\n|---|:-:|\n| 1 | 2 |\n\n> q\n\n---');
+    assert.ok(html.startsWith('<h3>T</h3><p><strong>b</strong> <em>i</em> <code>c **x**</code></p>'));
+    assert.ok(html.includes('<ul><li>a<ul><li>b<pre><code>x = 1</code></pre></li></ul></li><li>c</li></ul>'));
+    assert.ok(html.includes('<table><thead><tr><th>A</th><th>B</th></tr></thead><tbody><tr><td>1</td><td>2</td></tr></tbody></table>'));
+    assert.ok(html.endsWith('<blockquote><p>q</p></blockquote><hr>'));
+});
+
+test('markdown: HTML is escaped, only http(s) links', () => {
+    const html = render_markdown('<img src=x onerror=alert(1)> [a](https://x.de/?a=1&b=2) [b](javascript:alert(1)) <https://y.de>\n```\n<script>\n```');
+    assert.ok(!html.includes('<img') && !html.includes('<script'));
+    assert.ok(html.includes('<a href="https://x.de/?a=1&amp;b=2">a</a>'));
+    assert.ok(!html.includes('href="javascript'));
+    assert.ok(html.includes('<a href="https://y.de">https://y.de</a>'));
+});
+
+test('session: answer duration, phase in status, history durations', async () => {
+    const fake = new FakeAwork();
+    const statuses = [];
+    const { session, events } = make_session(fake, () => ({ content: 'Hallo' }));
+    session.ui.status = status => statuses.push(status);
+    await session.send('Hi');
+    assert.equal(typeof events.find(item => item.role === 'agent').duration_ms, 'number');
+    assert.ok(statuses.some(status => status.phase === 'agent' && status.phase_since));
+    assert.equal(statuses.at(-1).phase, null);
+    const thread = fake.threads[session.state.thread_id];
+    thread.messages[0].createdOn = '2026-10-20T10:00:00Z';
+    thread.messages[1].createdOn = '2026-10-20T10:00:19Z';
+    const history = await session.history();
+    assert.deepEqual(history.map(item => [item.role, item.duration_ms ?? null]), [['user', null], ['agent', 19000]]);
 });
 
 (async () => {

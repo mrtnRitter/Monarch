@@ -1,101 +1,154 @@
 // monarch chat webview: renders messages and status, forwards user actions to the extension.
 (function () {
     const vscode = acquireVsCodeApi();
+    const { render_markdown, escape_html } = window.monarch_markdown;
     const element = id => document.getElementById(id);
-    const state = { agent: null, labels: { credits: 'Credits', coAgents: 'Co-agents', stop: 'Stop' }, busy: false };
+    const state = { agent: null, labels: { credits: 'Credits', coAgents: 'Co-agents', stop: 'Stop' }, avatars: null, signed_in: false, status: null, steps: null };
 
-    const escape_html = text => text.replace(/[&<>"']/g, char => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[char]));
-    const inline = text => escape_html(text)
-        .replace(/`([^`]+)`/g, '<code>$1</code>')
-        .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
-        .replace(/\[([^\]]+)\]\((https?:[^)\s]+)\)/g, '<a href="$2">$1</a>');
+    function avatar(entity, large = false) {
+        const node = document.createElement(entity?.image ? 'img' : 'span');
+        node.className = `avatar${large ? ' large' : ''}`;
+        if (entity?.image) node.src = entity.image;
+        else node.textContent = entity?.initials || '?';
+        return node;
+    }
 
-    function render_markdown(source) {
-        const out = [];
-        let code = null;
-        let list = null;
-        const close_list = () => { if (list) { out.push(`</${list}>`); list = null; } };
-        for (const line of source.split('\n')) {
-            const fence = line.match(/^(`{3,}|~{3,})/);
-            if (code) {
-                if (fence && line.trim()[0] === code.fence[0] && /^(`+|~+)$/.test(line.trim()) && line.trim().length >= code.fence.length) {
-                    out.push(`<pre><code>${escape_html(code.lines.join('\n'))}</code></pre>`);
-                    code = null;
-                } else code.lines.push(line);
-                continue;
-            }
-            if (fence) { close_list(); code = { fence: fence[1], lines: [] }; continue; }
-            const heading = line.match(/^(#{1,4})\s+(.*)/);
-            if (heading) { close_list(); out.push(`<h${heading[1].length + 2}>${inline(heading[2])}</h${heading[1].length + 2}>`); continue; }
-            const item = line.match(/^\s*(?:[-*]|(\d+)\.)\s+(.*)/);
-            if (item) {
-                const type = item[1] ? 'ol' : 'ul';
-                if (list !== type) { close_list(); out.push(`<${type}>`); list = type; }
-                out.push(`<li>${inline(item[2])}</li>`);
-                continue;
-            }
-            close_list();
-            if (line.trim()) out.push(`<p>${inline(line)}</p>`);
+    function format_duration(ms) {
+        const seconds = Math.round(ms / 1000);
+        return seconds < 60 ? `${seconds} s` : `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')} min`;
+    }
+
+    function messages_box() {
+        return element('messages');
+    }
+
+    function show_empty_state() {
+        const agent = state.avatars?.agent || { initials: (state.agent || '?')[0] };
+        const box = document.createElement('div');
+        box.className = 'empty-state';
+        box.appendChild(avatar(agent, true));
+        box.insertAdjacentHTML('beforeend', `<div class="title">${escape_html(state.agent || 'monarch')}</div>`);
+        box.insertAdjacentHTML('beforeend', `<div class="subtitle">${state.signed_in ? 'Start a conversation below.' : 'Sign in to awork to start chatting.'}</div>`);
+        if (!state.signed_in) {
+            const button = document.createElement('button');
+            button.className = 'primary-btn';
+            button.textContent = 'Sign in';
+            button.addEventListener('click', () => vscode.postMessage({ type: 'sign_in' }));
+            box.appendChild(button);
         }
-        if (code) out.push(`<pre><code>${escape_html(code.lines.join('\n'))}</code></pre>`);
-        close_list();
-        return out.join('');
+        messages_box().replaceChildren(box);
+    }
+
+    function append(node) {
+        messages_box().querySelector('.empty-state')?.remove();
+        messages_box().appendChild(node);
+        node.scrollIntoView({ block: 'end' });
+    }
+
+    function add_step(text) {
+        if (!state.steps || messages_box().lastElementChild !== state.steps) {
+            state.steps = document.createElement('details');
+            state.steps.className = 'steps';
+            state.steps.appendChild(document.createElement('summary'));
+            append(state.steps);
+        }
+        const step = document.createElement('div');
+        step.className = 'step';
+        step.textContent = text;
+        state.steps.appendChild(step);
+        const items = [...state.steps.querySelectorAll('.step')];
+        const relay = items.some(item => item.textContent.startsWith('relay'));
+        state.steps.querySelector('summary').textContent = `${relay ? 'relay · ' : ''}${items.length} ${items.length === 1 ? 'event' : 'events'}`;
+        state.steps.scrollIntoView({ block: 'end' });
     }
 
     function add_message(item) {
-        const box = document.createElement('div');
-        box.className = `message ${item.role}`;
-        box.innerHTML = item.role === 'info' ? escape_html(item.text) : render_markdown(item.text || '');
+        if (item.role === 'info') return add_step(item.text);
+        if (item.role === 'error') {
+            const box = document.createElement('div');
+            box.className = 'message error';
+            box.textContent = item.text;
+            return append(box);
+        }
+        if (item.role === 'user') {
+            const row = document.createElement('div');
+            row.className = 'row user';
+            const bubble = document.createElement('div');
+            bubble.className = 'bubble';
+            bubble.textContent = item.text;
+            row.append(bubble, avatar(state.avatars?.user || { initials: 'Du' }));
+            return append(row);
+        }
+        const turn = document.createElement('div');
+        turn.className = 'turn';
+        const head = document.createElement('div');
+        head.className = 'turn-head';
+        head.appendChild(avatar(state.avatars?.agent || { initials: (state.agent || '?')[0] }));
+        head.insertAdjacentHTML('beforeend', `<span class="name">${escape_html(state.agent || 'Agent')}</span>${item.duration_ms ? `<span class="meta">· ${format_duration(item.duration_ms)}</span>` : ''}`);
+        const body = document.createElement('div');
+        body.className = 'turn-body';
+        body.insertAdjacentHTML('beforeend', `<div class="md">${render_markdown(item.text || '')}</div>`);
         for (const file of item.files || []) {
             const link = document.createElement('a');
             link.className = 'file';
-            link.textContent = `${file.path} (${file.check})`;
+            link.textContent = `📄 ${file.path} (${file.check})`;
             link.addEventListener('click', () => vscode.postMessage({ type: 'open_file', path: file.path }));
-            box.appendChild(link);
+            body.appendChild(link);
         }
         for (const warning of item.warnings || []) {
             const line = document.createElement('div');
             line.className = 'warning';
-            line.textContent = `warning: ${warning}`;
-            box.appendChild(line);
+            line.textContent = `⚠ ${warning}`;
+            body.appendChild(line);
         }
-        element('messages').appendChild(box);
-        box.scrollIntoView({ block: 'end' });
+        turn.append(head, body);
+        append(turn);
     }
 
     function show_status(status) {
-        state.busy = status.busy;
-        element('credits').textContent = `${state.labels.credits}: ${status.credits ?? '?'} / ${status.max_credits || '∞'}`;
-        element('co_agents').textContent = `${state.labels.coAgents}: ${status.co_agents} / ${status.max_co_agents || '∞'}${status.working ? ` (${status.working} working)` : ''}`;
-        element('stop').textContent = state.labels.stop;
-        element('busy').classList.toggle('hidden', !status.busy);
+        state.status = status;
+        const credits_full = status.max_credits && status.credits !== null && status.credits >= status.max_credits * 0.9;
+        element('credits').className = `badge${credits_full ? ' warn' : ''}`;
+        element('credits').innerHTML = `<span class="label">${escape_html(state.labels.credits)}</span>${status.credits ?? '?'} / ${status.max_credits || '∞'}`;
+        element('co_agents').innerHTML = `<span class="label">${escape_html(state.labels.coAgents)}</span>${status.co_agents} / ${status.max_co_agents || '∞'}${status.working ? ` · ${status.working} working` : ''}`;
         element('send').disabled = status.busy;
+        update_working();
     }
+
+    function update_working() {
+        const status = state.status;
+        const active = status && status.busy && status.phase;
+        element('working').classList.toggle('hidden', !active);
+        if (!active) return;
+        const elapsed = format_duration(Date.now() - status.phase_since);
+        element('working_text').textContent = status.phase === 'relay' ? `waiting for ${state.labels.coAgents.toLowerCase()} … ${elapsed}` : `${state.agent} is working … ${elapsed}`;
+    }
+    setInterval(update_working, 1000);
 
     window.addEventListener('message', ({ data }) => {
         if (data.agent && data.agent !== state.agent) return;
         if (data.type === 'init') {
-            Object.assign(state, { agent: data.current, labels: data.labels });
+            Object.assign(state, { agent: data.current, labels: data.labels, avatars: data.avatars, signed_in: data.signed_in, steps: null });
             element('agent').innerHTML = data.agents.map(name => `<option${name === data.current ? ' selected' : ''}>${escape_html(name)}</option>`).join('');
-            element('signin').classList.toggle('hidden', data.signed_in);
             element('stop').textContent = data.labels.stop;
+            show_empty_state();
         } else if (data.type === 'history') {
-            element('messages').innerHTML = '';
+            state.steps = null;
+            show_empty_state();
             data.items.forEach(add_message);
         } else if (data.type === 'message') {
             add_message(data.item);
         } else if (data.type === 'status') {
             show_status(data.status);
         } else if (data.type === 'attachments') {
-            element('attachments').innerHTML = '';
-            for (const item of data.items) {
+            element('attachments').replaceChildren(...data.items.map(item => {
                 const chip = document.createElement('span');
                 chip.className = 'chip';
                 chip.textContent = `${item.label} ✕`;
                 chip.title = 'Remove';
                 chip.addEventListener('click', () => vscode.postMessage({ type: 'remove_attachment', id: item.id }));
-                element('attachments').appendChild(chip);
-            }
+                return chip;
+            }));
         } else if (data.type === 'error') {
             add_message({ role: 'error', text: data.text });
         }
@@ -103,7 +156,7 @@
 
     const send = () => {
         const text = element('input').value;
-        if (!text.trim() || state.busy) return;
+        if (!text.trim() || state.status?.busy) return;
         element('input').value = '';
         vscode.postMessage({ type: 'send', text });
     };
@@ -113,7 +166,6 @@
     });
     element('stop').addEventListener('click', () => vscode.postMessage({ type: 'stop' }));
     element('new_chat').addEventListener('click', () => vscode.postMessage({ type: 'new_chat' }));
-    element('signin_button').addEventListener('click', () => vscode.postMessage({ type: 'sign_in' }));
     element('agent').addEventListener('change', event => vscode.postMessage({ type: 'select_agent', name: event.target.value }));
     for (const kind of ['current', 'files', 'folder']) element(`attach_${kind}`).addEventListener('click', () => vscode.postMessage({ type: 'attach', kind }));
     vscode.postMessage({ type: 'ready' });

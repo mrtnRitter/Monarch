@@ -9,7 +9,7 @@ monarch/
 ├── vscode/                 # VS Code extension (all monarch code)
 │   ├── package.json        # extension manifest and settings
 │   ├── src/                # extension code
-│   ├── media/              # chat window (webview)
+│   ├── media/              # chat window (webview), styles adapted from vscode-acp (MIT)
 │   ├── test/               # local tests (node, no network)
 │   └── build_vsix.py       # builds monarch-<version>.vsix
 ├── zillas/
@@ -25,8 +25,8 @@ Requirements: VS Code 1.85+, Python 3.11+ (only for building).
 
 ```bash
 cd monarch/vscode
-python build_vsix.py                         # -> monarch-0.3.0.vsix
-code --install-extension monarch-0.3.0.vsix
+python build_vsix.py                         # -> monarch-0.4.0.vsix
+code --install-extension monarch-0.4.0.vsix
 ```
 
 Or in VS Code: Extensions view → `…` → **Install from VSIX…**. Optional local tests: `node test/test.js` and `node test/extension_smoke.js`.
@@ -88,6 +88,18 @@ In VS Code settings (`settings.json`):
 | Enter / Shift+Enter | Send / new line |
 
 The labels of Credits, Co-agents and Stop come from `labels` of the selected agent.
+
+### Chat view
+
+| Item | Display |
+|---|---|
+| Your messages | Right, in a bubble, with your awork profile picture |
+| Agent answers | Left, with the agent's awork profile picture, name and answer time (e.g. `Mastazilla · 19 s`); Markdown incl. tables and code |
+| Steps | Relay and command events as collapsible group (`relay · 3 events`) |
+| While running | Spinner with elapsed time: `<agent> is working …` or `waiting for <co-agents> …` |
+| Errors | Red box in the middle |
+
+Profile pictures are loaded once per VS Code session; without a picture, initials are shown.
 
 ### Files written into the repo
 

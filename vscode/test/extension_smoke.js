@@ -54,6 +54,9 @@ global.fetch = async (url, options) => {
     const route = new URL(url).pathname.replace('/api/v1', '');
     const reply = body => ({ ok: true, status: 200, text: async () => JSON.stringify(body), json: async () => body, arrayBuffer: async () => new ArrayBuffer(0) });
     if (route === '/agents/management/threads') return reply([{ id: 'thread1', creditsUsed: 7 }]);
+    if (route === '/me') return reply({ id: 'user1', firstName: 'Martin', lastName: 'Ritter' });
+    if (route === '/files/images/users/user1') return { ok: true, status: 200, arrayBuffer: async () => Uint8Array.from([0x89, 0x50, 0x4e, 0x47, 1, 2]).buffer };
+    if (route.startsWith('/files/images/agents/')) return { ok: false, status: 404, text: async () => 'not found' };
     if (route === '/agents/threads' && options.method === 'POST') return reply({ id: 'thread1', acceptedMessageId: 'u1' });
     if (route.endsWith('/status')) return reply({ status: 'completed', hasAgentResponse: true });
     if (route === '/agents/threads/thread1/messages') { message_count += 1; return reply([{ id: 'u1', role: 'user', content: 'Hallo', messageOrder: 1 }, { id: 'a1', role: 'agent', content: 'Hi Martin', messageOrder: 2 }]); }
@@ -72,6 +75,10 @@ global.fetch = async (url, options) => {
     await new Promise(resolve => setTimeout(resolve, 20));
     const init = posted.find(message => message.type === 'init');
     assert.deepEqual([init.current, init.signed_in, init.labels.coAgents], ['Mastazilla', true, 'Minizillas']);
+    assert.ok(init.avatars.user.image.startsWith('data:image/png;base64,'));
+    assert.deepEqual(init.avatars.agent, { image: null, initials: 'M' });
+    assert.match(view.webview.html, /img-src data:/);
+    assert.match(view.webview.html, /markdown\.js/);
     await on_message({ type: 'send', text: 'Hallo' });
     const agent_message = posted.filter(message => message.type === 'message' && message.item.role === 'agent').pop();
     assert.equal(agent_message.item.text, 'Hi Martin');
@@ -79,7 +86,9 @@ global.fetch = async (url, options) => {
     assert.equal(status.credits, 7);
     assert.equal(workspace_state.get('monarch.chat.Mastazilla').thread_id, 'thread1');
     await on_message({ type: 'select_agent', name: 'CodeZilla' });
-    assert.equal(posted.filter(message => message.type === 'init').pop().labels.stop, 'Stop');
+    const code_init = posted.filter(message => message.type === 'init').pop();
+    assert.equal(code_init.labels.stop, 'Stop');
+    assert.equal(code_init.avatars.agent.initials, 'CZ');
     assert.ok(!posted.some(message => message.type === 'error' || message.error), JSON.stringify(posted.filter(message => message.type === 'error' || message.error)));
     console.log('extension smoke test passed');
 })().catch(error => { console.error(error); process.exit(1); });

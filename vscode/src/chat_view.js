@@ -7,6 +7,7 @@ const { create_zip } = require('./zip');
 
 const fixed_excludes = ['**/.git/**', '**/node_modules/**', '**/__pycache__/**', '**/.venv/**', '**/*.pyc'];
 const default_labels = { credits: 'Credits', coAgents: 'Co-agents', stop: 'Stop' };
+const image_types = [[[0x89, 0x50, 0x4e, 0x47], 'image/png'], [[0xff, 0xd8, 0xff], 'image/jpeg'], [[0x47, 0x49, 0x46], 'image/gif'], [[0x52, 0x49, 0x46, 0x46], 'image/webp']];
 const mime_types = { '.py': 'text/x-python', '.md': 'text/markdown', '.json': 'application/json', '.txt': 'text/plain', '.zip': 'application/zip' };
 
 function _config() {
@@ -24,6 +25,18 @@ function _decode_text(data) {
     } catch {
         return null;
     }
+}
+
+function _data_uri(data) {
+    const bytes = Buffer.from(data);
+    const head = bytes.subarray(0, 200).toString('utf8').trimStart();
+    const type = image_types.find(([magic]) => magic.every((byte, index) => bytes[index] === byte))?.[1] || (/^(<\?xml|<svg)/i.test(head) ? 'image/svg+xml' : null);
+    return type ? `data:${type};base64,${bytes.toString('base64')}` : null;
+}
+
+function _initials(name) {
+    const capitals = (name || '').match(/\p{Lu}/gu) || [];
+    return (capitals.length ? capitals : [(name || '?')[0]]).slice(0, 2).join('').toUpperCase();
 }
 
 function _exclude_glob() {
@@ -60,7 +73,7 @@ const workspace_adapter = {
 
 class ChatView {
     constructor(context, client, oauth) {
-        Object.assign(this, { context, client, oauth, view: null, sessions: new Map(), attachments: [] });
+        Object.assign(this, { context, client, oauth, view: null, sessions: new Map(), attachments: [], avatars: new Map(), user_avatar: null });
     }
 
     // --- agents and sessions ---
@@ -96,6 +109,27 @@ class ChatView {
         return session;
     }
 
+    // --- avatars (cached until VS Code restarts) ---
+    _avatar(kind, id, name) {
+        const key = `${kind}:${id}`;
+        if (!this.avatars.has(key)) this.avatars.set(key, this.client.image(kind, id).then(_data_uri, () => null).then(image => ({ image, initials: _initials(name) })));
+        return this.avatars.get(key);
+    }
+
+    _user() {
+        this.user_avatar = this.user_avatar || this.client.me().then(
+            me => this._avatar('users', me.id, `${me.firstName || ''} ${me.lastName || ''}`.trim() || 'Du'),
+            () => { this.user_avatar = null; return { image: null, initials: 'Du' }; },
+        );
+        return this.user_avatar;
+    }
+
+    async _avatars(agent, signed_in) {
+        const agent_fallback = { image: null, initials: _initials(agent?.name) };
+        if (!signed_in) return { user: { image: null, initials: 'Du' }, agent: agent_fallback };
+        return { user: await this._user(), agent: agent?.agentId ? await this._avatar('agents', agent.agentId, agent.name) : agent_fallback };
+    }
+
     // --- webview ---
     resolveWebviewView(view) {
         this.view = view;
@@ -104,15 +138,19 @@ class ChatView {
         const nonce = crypto.randomBytes(16).toString('hex');
         const asset = name => view.webview.asWebviewUri(vscode.Uri.joinPath(media, name));
         view.webview.html = `<!DOCTYPE html><html><head><meta charset="UTF-8">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${view.webview.cspSource}; script-src 'nonce-${nonce}';">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${view.webview.cspSource}; img-src data:; script-src 'nonce-${nonce}';">
 <link rel="stylesheet" href="${asset('chat.css')}"></head><body>
-<div id="signin" class="banner hidden">Not signed in. <button id="signin_button">Sign in</button></div>
-<div class="bar"><select id="agent"></select><button id="new_chat" title="Start a new chat">New chat</button></div>
-<div class="bar status"><span id="credits"></span><span id="co_agents"></span><span class="spacer"></span><button id="stop" class="danger"></button></div>
-<div id="messages"></div><div id="busy" class="hidden">working …</div>
-<div id="attachments"></div>
-<div class="composer"><textarea id="input" rows="3" placeholder="Message (Enter = send, Shift+Enter = new line)"></textarea>
-<div class="bar"><button id="attach_current">Current file</button><button id="attach_files">Files</button><button id="attach_folder">Folder</button><span class="spacer"></span><button id="send">Send</button></div></div>
+<div class="header"><select id="agent" title="Agent"></select><button id="new_chat" class="secondary-btn" title="Start a new chat">New chat</button></div>
+<div class="statusbar"><span id="credits" class="badge"></span><span id="co_agents" class="badge"></span><span class="spacer"></span><button id="stop" class="stop-btn"></button></div>
+<div class="messages" id="messages"></div>
+<div id="working" class="working hidden"><span class="spinner"></span><span id="working_text"></span></div>
+<div class="input-area">
+<div class="input-toolbar"><button id="attach_current" class="picker-btn" title="Attach the open file">📄 Current file</button><button id="attach_files" class="picker-btn" title="Attach files">📎 Files</button><button id="attach_folder" class="picker-btn" title="Attach a folder as ZIP">📁 Folder</button></div>
+<div id="attachments" class="attachments"></div>
+<div class="input-editor-wrap"><textarea id="input" rows="3" placeholder="Message …"></textarea></div>
+<div class="input-send-row"><span class="hint">Enter = send · Shift+Enter = new line</span><button id="send" class="send-btn">Send</button></div>
+</div>
+<script nonce="${nonce}" src="${asset('markdown.js')}"></script>
 <script nonce="${nonce}" src="${asset('chat.js')}"></script></body></html>`;
         view.webview.onDidReceiveMessage(message => this._on_message(message).catch(error => this._post({ type: 'error', text: error.message })));
     }
@@ -146,12 +184,13 @@ class ChatView {
     async refresh() {
         const agents = this._agents();
         const agent = this._agent();
-        this._post({ type: 'init', agents: agents.map(item => item.name), current: agent?.name, labels: { ...default_labels, ...(agent?.labels || {}) }, signed_in: await this.oauth.is_logged_in() });
+        const signed_in = await this.oauth.is_logged_in();
+        this._post({ type: 'init', agents: agents.map(item => item.name), current: agent?.name, labels: { ...default_labels, ...(agent?.labels || {}) }, signed_in, avatars: await this._avatars(agent, signed_in) });
         this._post_attachments();
         if (!agent) return;
         const session = this._session();
         this._post({ type: 'status', status: session.status(), agent: agent.name });
-        if (await this.oauth.is_logged_in()) {
+        if (signed_in) {
             this._post({ type: 'history', items: await session.history().catch(error => [{ role: 'info', text: `history not loaded: ${error.message}` }]), agent: agent.name });
             session.refresh_credits();
         }

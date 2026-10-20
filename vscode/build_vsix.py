@@ -8,7 +8,7 @@ from pathlib import Path
 from xml.sax.saxutils import escape
 
 # --------- STATIC ---------
-content_types = {".json": "application/json", ".js": "application/javascript", ".md": "text/markdown", ".css": "text/css", ".svg": "image/svg+xml", ".vsixmanifest": "text/xml"}
+content_types = {".json": "application/json", ".js": "application/javascript", ".md": "text/markdown", ".css": "text/css", ".svg": "image/svg+xml", ".txt": "text/plain", ".vsixmanifest": "text/xml"}
 package_dirs = ("src", "media")
 
 # --------- CONFIG ---------

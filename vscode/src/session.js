@@ -62,7 +62,7 @@ class ChatSession {
             signal.addEventListener('abort', () => { clearTimeout(timer); reject(new StopRequested()); }, { once: true });
         }));
         this.state = { thread_id: null, rounds: 0, next_index: 1, co_agents: {}, ...(store.load() || {}) };
-        Object.assign(this, { credits: null, credit_error: null, credits_at: 0, busy: false, stopping: false, controller: null, answers: new Map() });
+        Object.assign(this, { credits: null, credit_error: null, credits_at: 0, busy: false, stopping: false, controller: null, answers: new Map(), phase: null, phase_since: null });
     }
 
     // --- state ---
@@ -76,7 +76,13 @@ class ChatSession {
             co_agents: this._co_agents(co_agent => co_agent.state !== 'cancelled').length,
             working: this._co_agents(co_agent => co_agent.state === 'working').length,
             max_co_agents: this.limits.maxCoAgents, busy: this.busy, thread_id: this.state.thread_id,
+            phase: this.phase, phase_since: this.phase_since,
         };
+    }
+
+    _set_phase(phase) {
+        Object.assign(this, { phase, phase_since: phase ? Date.now() : null });
+        this._emit();
     }
 
     _emit() {
@@ -144,6 +150,8 @@ class ChatSession {
     }
 
     async _post(content, attachments) {
+        const started = Date.now();
+        this._set_phase('agent');
         let accepted;
         if (this.state.thread_id) {
             accepted = await this.client.send_message(this.state.thread_id, content, attachments);
@@ -152,8 +160,8 @@ class ChatSession {
             this.state.thread_id = accepted.id;
             this._save();
         }
-        this._emit();
-        return this._wait_for_run(this.state.thread_id, await this._accepted_id(this.state.thread_id, accepted));
+        const run = await this._wait_for_run(this.state.thread_id, await this._accepted_id(this.state.thread_id, accepted));
+        return { ...run, duration_ms: Date.now() - started };
     }
 
     /**
@@ -174,7 +182,7 @@ class ChatSession {
         } catch (error) {
             if (!(error instanceof StopRequested)) throw error;
         } finally {
-            Object.assign(this, { busy: false, controller: null });
+            Object.assign(this, { busy: false, controller: null, phase: null, phase_since: null });
             await this.refresh_credits();
         }
     }
@@ -186,10 +194,10 @@ class ChatSession {
     }
 
     // --- answer handling ---
-    async _handle_answer({ answer, run, state }) {
+    async _handle_answer({ answer, run, state, duration_ms }) {
         const { text, commands } = parse_commands(answer_text(answer));
         const written = await this._write_repo_files(text, run);
-        this.ui.message({ role: 'agent', text: files.strip_file_blocks(text) || (state === 'completed' ? '(no answer)' : `(run ${state})`), files: written.files, warnings: written.warnings });
+        this.ui.message({ role: 'agent', text: files.strip_file_blocks(text) || (state === 'completed' ? '(no answer)' : `(run ${state})`), files: written.files, warnings: written.warnings, duration_ms });
         if (!commands.length) return null;
         const results = [];
         for (const command of commands) results.push(await this._execute(command));
@@ -352,6 +360,7 @@ class ChatSession {
     async _relay_wait(results) {
         const deadline = this.limits.relayTimeout ? Date.now() + this.limits.relayTimeout * 1000 : null;
         this.ui.info('relay: waiting for co-agents');
+        this._set_phase('relay');
         for (;;) {
             await this._refresh_co_agents();
             const fresh = this._co_agents(co_agent => !['working', 'cancelled'].includes(co_agent.state) && co_agent.relayed !== co_agent.message_id);
@@ -436,14 +445,19 @@ class ChatSession {
         this._emit();
     }
 
-    /** Messages of the current chat for display: [{role, text}]. */
+    /** Messages of the current chat for display: [{role, text, duration_ms?}]. */
     async history() {
         if (!this.state.thread_id) return [];
         const messages = await this.client.messages(this.state.thread_id);
+        let asked_at = null;
         return messages.filter(message => message.content && !['tool', 'system'].includes((message.role || '').toLowerCase())).map(message => {
             const text = files.clean_text(message.content);
-            if (!_is_user(message)) return { role: 'agent', text: files.strip_file_blocks(parse_commands(text).text) };
-            return text.startsWith(relay_prefix) ? { role: 'info', text: 'relay: co-agent update' } : { role: 'user', text };
+            const created = Date.parse(message.createdOn || '') || null;
+            if (_is_user(message)) {
+                asked_at = created;
+                return text.startsWith(relay_prefix) ? { role: 'info', text: 'relay: co-agent update' } : { role: 'user', text };
+            }
+            return { role: 'agent', text: files.strip_file_blocks(parse_commands(text).text), duration_ms: asked_at && created ? created - asked_at : null };
         });
     }
 }

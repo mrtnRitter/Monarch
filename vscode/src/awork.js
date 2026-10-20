@@ -208,6 +208,16 @@ class AworkClient {
         throw new AworkError(errors.join('; ') || 'no download route');
     }
 
+    /** Signed-in user incl. id, firstName and lastName. */
+    me() {
+        return this.request('GET', '/me');
+    }
+
+    /** Profile image of a user or agent (kind 'users' or 'agents'), square and size x size pixels, as Buffer. */
+    image(kind, id, size = 64) {
+        return this.request('GET', `/files/images/${kind}/${id}?width=${size}&height=${size}&crop=true`, { raw: true });
+    }
+
     /** Thread metadata incl. creditsUsed. Falls back to the API key if the signed-in user may not read it. */
     async thread_usage() {
         try {
