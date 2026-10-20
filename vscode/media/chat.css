@@ -1,0 +1,28 @@
+body { padding: 0 8px; font-family: var(--vscode-font-family); font-size: var(--vscode-font-size); color: var(--vscode-foreground); display: flex; flex-direction: column; height: 100vh; box-sizing: border-box; margin: 0; }
+.bar { display: flex; gap: 6px; align-items: center; margin: 6px 0; }
+.spacer { flex: 1; }
+.status { font-size: 0.9em; gap: 12px; }
+.hidden { display: none !important; }
+.banner { background: var(--vscode-inputValidation-warningBackground); padding: 6px; margin-top: 6px; }
+button { background: var(--vscode-button-background); color: var(--vscode-button-foreground); border: none; padding: 3px 8px; cursor: pointer; }
+button:hover { background: var(--vscode-button-hoverBackground); }
+button:disabled { opacity: 0.5; cursor: default; }
+button.danger { background: var(--vscode-errorForeground); color: var(--vscode-editor-background); }
+select, textarea { background: var(--vscode-input-background); color: var(--vscode-input-foreground); border: 1px solid var(--vscode-input-border, transparent); }
+select { flex: 1; padding: 2px; }
+#messages { flex: 1; overflow-y: auto; }
+.message { padding: 6px 8px; margin: 6px 0; border-radius: 4px; overflow-wrap: anywhere; }
+.message.user { background: var(--vscode-input-background); }
+.message.agent { background: var(--vscode-editor-inactiveSelectionBackground); }
+.message.info { color: var(--vscode-descriptionForeground); font-size: 0.85em; padding: 0 8px; margin: 2px 0; }
+.message.error { color: var(--vscode-errorForeground); }
+.message p { margin: 4px 0; }
+.message pre { background: var(--vscode-textCodeBlock-background); padding: 6px; overflow-x: auto; }
+.message code { font-family: var(--vscode-editor-font-family); }
+.file { display: block; cursor: pointer; color: var(--vscode-textLink-foreground); }
+.warning { color: var(--vscode-editorWarning-foreground); font-size: 0.9em; }
+#busy { color: var(--vscode-descriptionForeground); font-style: italic; }
+#attachments { display: flex; flex-wrap: wrap; gap: 4px; }
+.chip { background: var(--vscode-badge-background); color: var(--vscode-badge-foreground); padding: 1px 6px; border-radius: 8px; cursor: pointer; font-size: 0.85em; }
+.composer { margin-bottom: 6px; }
+textarea { width: 100%; box-sizing: border-box; resize: vertical; font-family: inherit; }

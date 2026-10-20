@@ -1,7 +1,0 @@
-minizilla_agent_id = "6708accf-622d-46be-9e17-7acf38dd018c"
-api_base_url = "https://api.awork.com/api/v1"
-max_minizillas = 3         # max. minizillas running at the same time
-max_credits_per_job = 300  # credit cap for minizillas per job; 0 = no cap
-max_rounds = 20            # max. messages sent to minizillas per job
-wait_timeout = 170         # max. seconds one `orca wait` blocks
-poll_interval = 5          # seconds between status checks

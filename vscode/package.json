@@ -1,0 +1,186 @@
+{
+  "name": "monarch",
+  "displayName": "monarch",
+  "version": "0.3.0",
+  "publisher": "mrtnritter",
+  "description": "Chat with awork agents in VS Code. Relays work to co-agents (minizillas) without credits while waiting.",
+  "license": "UNLICENSED",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/mrtnRitter/Monarch"
+  },
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "main": "./src/extension.js",
+  "extensionKind": [
+    "ui",
+    "workspace"
+  ],
+  "activationEvents": [],
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "monarch",
+          "title": "monarch",
+          "icon": "media/monarch.svg"
+        }
+      ]
+    },
+    "views": {
+      "monarch": [
+        {
+          "type": "webview",
+          "id": "monarch.chat",
+          "name": "Chat"
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "monarch.signIn",
+        "title": "monarch: Sign in"
+      },
+      {
+        "command": "monarch.signOut",
+        "title": "monarch: Sign out"
+      },
+      {
+        "command": "monarch.setApiKey",
+        "title": "monarch: Store API key"
+      },
+      {
+        "command": "monarch.clearApiKey",
+        "title": "monarch: Remove API key"
+      },
+      {
+        "command": "monarch.newChat",
+        "title": "monarch: New chat"
+      },
+      {
+        "command": "monarch.stop",
+        "title": "monarch: Stop agent and co-agents"
+      }
+    ],
+    "configuration": {
+      "title": "monarch",
+      "properties": {
+        "monarch.apiBaseUrl": {
+          "type": "string",
+          "default": "https://api.awork.com/api/v1",
+          "description": "awork API base URL."
+        },
+        "monarch.clientId": {
+          "type": "string",
+          "default": "",
+          "description": "Client ID of the public awork client app used for sign-in."
+        },
+        "monarch.redirectPort": {
+          "type": "number",
+          "default": 8765,
+          "description": "Local port for the sign-in callback http://localhost:<port>/callback (must match the redirect URI of the client app)."
+        },
+        "monarch.agents": {
+          "type": "array",
+          "description": "Agents shown in the chat window.",
+          "items": {
+            "type": "object",
+            "required": [
+              "name",
+              "agentId"
+            ],
+            "properties": {
+              "name": {
+                "type": "string",
+                "description": "Display name."
+              },
+              "agentId": {
+                "type": "string",
+                "description": "awork agent ID."
+              },
+              "coAgentId": {
+                "type": "string",
+                "description": "awork agent ID started by ORCA spawn. Empty = no co-agents."
+              },
+              "coAgentName": {
+                "type": "string",
+                "description": "Prefix of co-agent IDs, e.g. minizilla -> minizilla_1."
+              },
+              "labels": {
+                "type": "object",
+                "description": "UI names of the three status items.",
+                "properties": {
+                  "credits": {
+                    "type": "string"
+                  },
+                  "coAgents": {
+                    "type": "string"
+                  },
+                  "stop": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          },
+          "default": [
+            {
+              "name": "Mastazilla",
+              "agentId": "09bddd40-df90-436a-aad5-f5c2a71f0a9c",
+              "coAgentId": "6708accf-622d-46be-9e17-7acf38dd018c",
+              "coAgentName": "minizilla",
+              "labels": {
+                "credits": "Credits",
+                "coAgents": "Minizillas",
+                "stop": "/stopzilla"
+              }
+            },
+            {
+              "name": "CodeZilla",
+              "agentId": "5f2f2cbf-b4fb-40d6-bc1d-327217a2dee7",
+              "labels": {
+                "credits": "Credits",
+                "coAgents": "Co-agents",
+                "stop": "Stop"
+              }
+            }
+          ]
+        },
+        "monarch.maxCredits": {
+          "type": "number",
+          "default": 1000,
+          "description": "Credit cap per chat (agent + co-agents). Reaching it stops everything. 0 = no cap."
+        },
+        "monarch.maxCoAgents": {
+          "type": "number",
+          "default": 3,
+          "description": "Max. co-agents per job (until cancel/stopzilla). 0 = no cap."
+        },
+        "monarch.maxRounds": {
+          "type": "number",
+          "default": 20,
+          "description": "Max. messages to co-agents per job. 0 = no cap."
+        },
+        "monarch.relayTimeout": {
+          "type": "number",
+          "default": 900,
+          "description": "Seconds the relay waits before waking the agent with the current state. 0 = no limit."
+        },
+        "monarch.pollInterval": {
+          "type": "number",
+          "default": 3,
+          "description": "Seconds between status checks."
+        },
+        "monarch.maxFolderMB": {
+          "type": "number",
+          "default": 20,
+          "description": "Max. size of a folder attachment in MB."
+        }
+      }
+    }
+  }
+}

@@ -1,8 +1,0 @@
-mastazilla_agent_id = "09bddd40-df90-436a-aad5-f5c2a71f0a9c"
-minizilla_agent_id = "6708accf-622d-46be-9e17-7acf38dd018c"
-api_base_url = "https://api.awork.com/api/v1"
-max_credits = 1000        # credit cap per session (mastazilla + minizillas); 0 = no cap
-poll_interval = 3          # seconds between status and credit checks
-relay_timeout = 900        # seconds the relay waits before waking mastazilla anyway; 0 = no limit
-output_dir = "./output"    # where result files are saved
-log_dir = "./logs"         # one log file per job
