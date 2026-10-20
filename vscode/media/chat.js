@@ -92,12 +92,12 @@
                 event.stopPropagation();
                 vscode.postMessage({ type: 'remove_chat', thread_id: chat.thread_id });
             });
-            return menu_item(chat.title, format_date(chat.updated), chat.current, () => {
+            return menu_item(chat.title, [chat.repo, format_date(chat.updated)].filter(Boolean).join(' · '), chat.current, () => {
                 close_menus();
                 if (!chat.current) vscode.postMessage({ type: 'open_chat', thread_id: chat.thread_id });
             }, remove);
         });
-        menu.replaceChildren(header_node('Chat history'), ...(items.length ? items : [note_node('No chats yet in this repo.')]));
+        menu.replaceChildren(header_node('Chat history'), ...(items.length ? items : [note_node('No chats yet.')]));
     }
 
     // --- model menu ---

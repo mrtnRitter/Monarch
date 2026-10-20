@@ -25,8 +25,8 @@ Requirements: VS Code 1.85+, Python 3.11+ (only for building).
 
 ```bash
 cd monarch/vscode
-python build_vsix.py                         # -> monarch-0.5.1.vsix
-code --install-extension monarch-0.5.1.vsix
+python build_vsix.py                         # -> monarch-0.6.0.vsix
+code --install-extension monarch-0.6.0.vsix
 ```
 
 Or in VS Code: Extensions view → `…` → **Install from VSIX…**. Optional local tests: `node test/test.js` and `node test/extension_smoke.js`.
@@ -77,7 +77,7 @@ All settings are optional. The agent list comes from awork (see `monarch.agentFi
 | Element | Function |
 |---|---|
 | Agent circles | Agents according to `monarch.agentFilter`, with their profile pictures; click to select. If they do not fit into the panel, a dropdown is shown instead. |
-| History (clock) | Chats of the selected agent in this repo, newest first; click to continue a chat, ✕ removes it from the list (the chat stays in awork) |
+| History (clock) | Chats of the selected agent from all repos (max. 100), newest first, with repo name and date; click to continue a chat, ✕ removes it from the list (the chat stays in awork) |
 | New chat (blue +) | Start a new conversation with the selected agent |
 | Credits | Credits of the current chat (agent + co-agents) against `maxCredits` |
 | Co-agents | Co-agents of the current job against `maxCoAgents`, incl. how many are working |
@@ -86,7 +86,7 @@ All settings are optional. The agent list comes from awork (see `monarch.agentFi
 | **Current file** / **Files** / **Folder** | Attach repo files to the next message; folders are sent as ZIP (without `.git`, `node_modules`, `__pycache__`, `.venv`, `*.pyc` and `files.exclude`); max. 20 attachments |
 | Enter / Shift+Enter | Send / new line |
 
-The labels of Credits, Co-agents and Stop come from `labels` of the selected agent. The history only contains chats started with monarch; chats started in the awork web app are not listed.
+The labels of Credits, Co-agents and Stop come from `labels` of the selected agent. The history is stored locally in VS Code for all repos together and survives restarts; the current chat is remembered per repo. Histories of older versions (per repo) are taken over when the repo is opened the first time. It only contains chats started with monarch; chats started in the awork web app are not listed.
 
 If credits cannot be read and `maxCredits` is not `0`, the chat does not accept further messages.
 

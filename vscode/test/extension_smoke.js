@@ -1,5 +1,5 @@
 'use strict';
-// Loads the extension with a stubbed vscode module: activation, agents from awork, history, model choice, a chat round trip.
+// Loads the extension with a stubbed vscode module: activation, agents from awork, shared history, model choice, a chat round trip.
 const assert = require('assert/strict');
 const Module = require('module');
 
@@ -7,7 +7,10 @@ const registered = {};
 const posted = [];
 let provider = null;
 let on_message = null;
-const workspace_state = new Map([['monarch.chat.Mastazilla', { thread_id: 'old1', rounds: 0, next_index: 1, co_agents: {} }]]);
+// 0.4 single chat (Mastazilla) and 0.5 list (CodeZilla) of this repo, plus a CodeZilla chat from another repo
+const workspace_state = new Map([['monarch.chat.Mastazilla', { thread_id: 'old1', rounds: 0, next_index: 1, co_agents: {} }], ['monarch.chats.code', { current: null, items: [{ thread_id: 'old05', title: 'Alt', updated: 1, state: { thread_id: 'old05' } }] }]]);
+const global_state = new Map([['monarch.chats.code', [{ thread_id: 'other1', title: 'Anderes Repo', repo: 'other', updated: 2, state: { thread_id: 'other1' } }]]]);
+const memento = map => ({ get: key => map.get(key), update: async (key, value) => (value === undefined ? map.delete(key) : map.set(key, value)) });
 const settings = {
     apiBaseUrl: 'https://api.awork.com/api/v1', clientId: 'monarch', redirectPort: 18766,
     agents: [{ agentId: 'master', name: 'Mastazilla', coAgentId: 'mini', coAgentName: 'minizilla', labels: { credits: 'Credits', coAgents: 'Minizillas', stop: '/stopzilla' } }],
@@ -45,7 +48,8 @@ const secrets = new Map([['monarch.oauth', JSON.stringify({ access_token: 'user'
 const context = {
     subscriptions: [],
     secrets: { get: async key => secrets.get(key), store: async (key, value) => secrets.set(key, value), delete: async key => secrets.delete(key) },
-    workspaceState: { get: key => workspace_state.get(key), update: async (key, value) => workspace_state.set(key, value) },
+    workspaceState: memento(workspace_state),
+    globalState: memento(global_state),
     extensionUri: uri('/ext'),
 };
 
@@ -93,13 +97,17 @@ const settle = () => new Promise(resolve => setTimeout(resolve, 20));
     assert.equal(init.agents[1].avatar.image.slice(0, 22), 'data:image/png;base64,');
     assert.deepEqual(init.agents[0].avatar, { image: null, initials: 'CZ' });
     assert.ok(init.user.image.startsWith('data:image/png'));
+    // 0.5 list moved into the shared list, chats of other repos visible with their repo name
+    assert.deepEqual(last('chats').items.map(chat => [chat.thread_id, chat.repo]), [['other1', 'other'], ['old05', 'repo']]);
+    assert.equal(workspace_state.has('monarch.chats.code'), false);
     await on_message({ type: 'select_agent', id: 'master' });
     await settle();
     assert.equal(last('init').labels.coAgents, 'Minizillas');
     assert.equal(last('models').default.name, 'opus');
     // the 0.4 chat was taken over, but no longer exists in awork -> removed
     assert.ok(posted.some(message => message.type === 'history' && message.items.some(item => item.role === 'error')));
-    assert.deepEqual(workspace_state.get('monarch.chats.master').items, []);
+    assert.deepEqual(global_state.get('monarch.chats.master'), []);
+    assert.equal(workspace_state.has('monarch.chat.Mastazilla'), false);
     // chat round trip, then model override on the next message
     await on_message({ type: 'send', text: 'Hallo Welt\nzweite Zeile' });
     assert.equal(posted.filter(message => message.type === 'message' && message.item.role === 'agent').pop().item.text, 'Hi Martin');
@@ -109,7 +117,9 @@ const settle = () => new Promise(resolve => setTimeout(resolve, 20));
     assert.deepEqual(bodies.filter(item => item.route === '/agents/threads/thread1/messages').pop().body, { content: 'Noch was', modelProvider: 'anthropic', modelName: 'opus', reasoningLevel: 'low' });
     // history list, new chat, reopen, remove
     let chats = last('chats').items;
-    assert.deepEqual(chats.map(chat => [chat.thread_id, chat.title, chat.current]), [['thread1', 'Hallo Welt', true]]);
+    assert.deepEqual(chats.map(chat => [chat.thread_id, chat.title, chat.repo, chat.current]), [['thread1', 'Hallo Welt', 'repo', true]]);
+    assert.equal(global_state.get('monarch.chats.master')[0].thread_id, 'thread1');
+    assert.equal(workspace_state.get('monarch.current.master'), 'thread1');
     await on_message({ type: 'new_chat' });
     assert.equal(last('chats').items[0].current, false);
     await on_message({ type: 'open_chat', thread_id: 'thread1' });
@@ -120,5 +130,10 @@ const settle = () => new Promise(resolve => setTimeout(resolve, 20));
     assert.deepEqual(last('chats').items, []);
     assert.ok(!posted.some(message => message.error), JSON.stringify(posted.filter(message => message.error)));
     const errors = posted.filter(message => message.type === "error"); assert.deepEqual(errors, [], JSON.stringify(errors));
+    // restart in another repo: same shared list, no current chat there
+    vscode.workspace.workspaceFolders = [{ uri: uri('/repo2') }];
+    const fresh = new (require('../src/chat_view').ChatView)({ ...context, workspaceState: memento(new Map()) }, null, null);
+    assert.deepEqual(fresh._chats({ agentId: 'code', name: 'CodeZilla' }), { current: null, items: global_state.get('monarch.chats.code') });
+    assert.deepEqual(global_state.get('monarch.chats.code').map(chat => chat.thread_id), ['other1', 'old05']);
     console.log("extension smoke test passed");
 })().catch(error => { console.error(error); process.exit(1); });

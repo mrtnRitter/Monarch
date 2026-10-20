@@ -9,7 +9,7 @@ const fixed_excludes = ['**/.git/**', '**/node_modules/**', '**/__pycache__/**',
 const default_labels = { credits: 'Credits', coAgents: 'Co-agents', stop: 'Stop' };
 const image_types = [[[0x89, 0x50, 0x4e, 0x47], 'image/png'], [[0xff, 0xd8, 0xff], 'image/jpeg'], [[0x47, 0x49, 0x46], 'image/gif'], [[0x52, 0x49, 0x46, 0x46], 'image/webp']];
 const mime_types = { '.py': 'text/x-python', '.md': 'text/markdown', '.json': 'application/json', '.txt': 'text/plain', '.zip': 'application/zip' };
-const max_chats = 50;
+const max_chats = 100;
 
 function _config() {
     return vscode.workspace.getConfiguration('monarch');
@@ -33,6 +33,20 @@ function _data_uri(data) {
     const head = bytes.subarray(0, 200).toString('utf8').trimStart();
     const type = image_types.find(([magic]) => magic.every((byte, index) => bytes[index] === byte))?.[1] || (/^(<\?xml|<svg)/i.test(head) ? 'image/svg+xml' : null);
     return type ? `data:${type};base64,${bytes.toString('base64')}` : null;
+}
+
+const _chats_key = agent => `monarch.chats.${agent.agentId}`;
+const _current_key = agent => `monarch.current.${agent.agentId}`;
+
+function _repo_name() {
+    return _root()?.path.split('/').filter(Boolean).pop() || null;
+}
+
+/** Deduplicate by thread (newest entry wins), newest first, at most max_chats. */
+function _merge_chats(items) {
+    const newest = new Map();
+    for (const item of items) if (!(newest.get(item.thread_id)?.updated >= item.updated)) newest.set(item.thread_id, item);
+    return [...newest.values()].sort((a, b) => b.updated - a.updated).slice(0, max_chats);
 }
 
 function _initials(name) {
@@ -135,23 +149,29 @@ class ChatView {
         return this.models.get(agent.agentId);
     }
 
-    // --- chats (per repo and agent) ---
-    _chats_key(agent) {
-        return `monarch.chats.${agent.agentId}`;
+    // --- chats (list per agent shared by all repos, current chat per repo) ---
+    _chats(agent) {
+        this._migrate_chats(agent);
+        return { current: this.context.workspaceState.get(_current_key(agent)) ?? null, items: this.context.globalState.get(_chats_key(agent)) || [] };
     }
 
-    _chats(agent) {
-        const chats = this.context.workspaceState.get(this._chats_key(agent));
-        if (chats) return chats;
-        // take over the single chat of version 0.4
-        const legacy = this.context.workspaceState.get(`monarch.chat.${agent.name}`);
-        const items = legacy?.thread_id ? [{ thread_id: legacy.thread_id, title: legacy.title || 'Earlier chat', updated: Date.now(), state: legacy }] : [];
-        return { current: legacy?.thread_id || null, items };
+    /** Move the per-repo lists of 0.4 (single chat) and 0.5 into the shared list. */
+    _migrate_chats(agent) {
+        const workspace = this.context.workspaceState;
+        const legacy_keys = [_chats_key(agent), `monarch.chat.${agent.name}`];
+        const [list, single] = legacy_keys.map(key => workspace.get(key));
+        if (!list && !single) return;
+        const legacy = list || (single.thread_id ? { current: single.thread_id, items: [{ thread_id: single.thread_id, title: single.title || 'Earlier chat', updated: Date.now(), state: single }] } : null);
+        if (legacy) {
+            const repo = _repo_name();
+            this.context.globalState.update(_chats_key(agent), _merge_chats([...(this.context.globalState.get(_chats_key(agent)) || []), ...legacy.items.map(item => ({ repo, ...item }))]));
+            if (workspace.get(_current_key(agent)) === undefined) workspace.update(_current_key(agent), legacy.current || null);
+        }
+        for (const key of legacy_keys) workspace.update(key, undefined);
     }
 
     _save_chats(agent, chats) {
-        chats.items = chats.items.sort((a, b) => b.updated - a.updated).slice(0, max_chats);
-        return this.context.workspaceState.update(this._chats_key(agent), chats);
+        return Promise.all([this.context.globalState.update(_chats_key(agent), _merge_chats(chats.items)), this.context.workspaceState.update(_current_key(agent), chats.current)]);
     }
 
     _store(agent) {
@@ -165,7 +185,7 @@ class ChatView {
                 chats.current = state.thread_id || null;
                 if (state.thread_id) {
                     const item = chats.items.find(entry => entry.thread_id === state.thread_id);
-                    const entry = { thread_id: state.thread_id, title: state.title || item?.title || 'Untitled chat', updated: Date.now(), state };
+                    const entry = { thread_id: state.thread_id, title: state.title || item?.title || 'Untitled chat', repo: item ? item.repo ?? null : _repo_name(), updated: Date.now(), state };
                     chats.items = [entry, ...chats.items.filter(other => other.thread_id !== state.thread_id)];
                 }
                 this._save_chats(agent, chats).then(() => this._post_chats(agent));
@@ -190,7 +210,7 @@ class ChatView {
 
     _post_chats(agent) {
         const chats = this._chats(agent);
-        this._post({ type: 'chats', agent: agent.agentId, items: chats.items.map(({ thread_id, title, updated }) => ({ thread_id, title, updated, current: thread_id === chats.current })) });
+        this._post({ type: 'chats', agent: agent.agentId, items: chats.items.map(({ thread_id, title, repo, updated }) => ({ thread_id, title, repo, updated, current: thread_id === chats.current })) });
     }
 
     // --- avatars (cached until VS Code restarts) ---
