@@ -226,8 +226,8 @@ class ChatView {
 <link rel="stylesheet" href="${asset('chat.css')}"></head><body>
 <div class="header" id="header">
 <div class="agents" id="agents"></div><select id="agent" class="agent-select hidden" title="Agent"></select>
-<div class="menu-wrap"><button id="history" class="icon-btn" title="Chat history"><svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 8a5.5 5.5 0 1 0 1.6-3.9"/><path d="M2.5 2.4v2.7h2.7"/><path d="M8 5v3.2l2.2 1.4"/></svg></button><div id="history_menu" class="menu right hidden"></div></div>
-<button id="new_chat" class="icon-btn primary" title="New chat"><svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M8 3.5v9M3.5 8h9"/></svg></button>
+<div class="menu-wrap"><button id="history" class="icon-btn" title="Chat history"><svg viewBox="0 0 16 16" width="21" height="21" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 8a5.5 5.5 0 1 0 1.6-3.9"/><path d="M2.5 2.4v2.7h2.7"/><path d="M8 5v3.2l2.2 1.4"/></svg></button><div id="history_menu" class="menu right hidden"></div></div>
+<button id="new_chat" class="icon-btn primary" title="New chat"><svg viewBox="0 0 16 16" width="21" height="21" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M8 3.5v9M3.5 8h9"/></svg></button>
 </div>
 <div class="statusbar"><span id="credits" class="badge"></span><span id="co_agents" class="badge"></span><span class="spacer"></span>
 <div class="menu-wrap"><button id="model" class="picker-btn" title="Model for this chat"></button><div id="model_menu" class="menu right hidden"></div></div>
