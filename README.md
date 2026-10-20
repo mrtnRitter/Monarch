@@ -13,6 +13,7 @@ monarch/
 │   ├── test/               # local tests (node, no network)
 │   └── build_vsix.py       # builds monarch-<version>.vsix
 ├── zillas/
+│   ├── codezilla.md        # system prompt for CodeZilla
 │   ├── mastazilla.md       # system prompt for mastazilla
 │   └── minizilla.md        # system prompt for minizilla
 └── skills/                 # skills for the agents
