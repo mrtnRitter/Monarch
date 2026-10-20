@@ -11,7 +11,8 @@ import time
 import tomllib
 import traceback
 from datetime import datetime, timezone
-from pathlib import Path
+from pathlib import Path, PurePosixPath
+from urllib.parse import urlsplit
 
 import requests
 
@@ -21,10 +22,14 @@ terminal_states = {"completed", "failed", "cancelled", "canceled", "error"}
 state_file = Path("scratch/orca_job.json")
 default_collect_dir = Path("scratch/minizillas")
 comment_pattern = re.compile(r"<!--.*?-->", re.S)
+# "### FILE: name" followed by a fenced block; the closing fence must match the opening one
+file_block_pattern = re.compile(r"^#{2,4}[ \t]*FILE:[ \t]*`?(?P<name>[^`\n]+?)`?[ \t]*\n+(?P<fence>`{3,}|~{3,})[^\n]*\n(?P<body>.*?)^(?P=fence)[ \t]*$", re.M | re.S)
+uuid_pattern = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", re.I)
+max_attachments = 20
 
 # --------- CONFIG ---------
 app_name = "orca"
-app_version = "0.1"
+app_version = "0.2"
 config_file = Path(__file__).parent / "orca.toml"
 
 
@@ -42,8 +47,15 @@ class AworkClient:
         self.session.headers["Authorization"] = f"Bearer {api_key}"
         self.timeout = timeout
 
+    def _url(self, path: str) -> str:
+        if path.startswith(("http://", "https://")):
+            return path
+        base_path = urlsplit(self.base_url).path
+        # downloadUrl may already contain the API base path
+        return f"{self.base_url}{path.removeprefix(base_path) if base_path and path.startswith(base_path + '/') else path}"
+
     def _request(self, method: str, path: str, raw: bool = False, **kwargs):
-        response = self.session.request(method, f"{self.base_url}{path}", timeout=self.timeout, **kwargs)
+        response = self.session.request(method, self._url(path), timeout=self.timeout, **kwargs)
         if not response.ok:
             raise OrcaError(f"awork API {method} {path} failed with {response.status_code}: {response.text[:300]}")
         if raw:
@@ -81,11 +93,24 @@ class AworkClient:
         with path.open("rb") as handle:
             return self._request("POST", "/temporaryfiles", files={"file": (path.name, handle, mime_type)})["id"]
 
-    def download_thread_file(self, thread_id: str, file_id: str, target: Path) -> Path:
-        """Download a file attached to a thread into target."""
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_bytes(self._request("GET", f"/agents/threads/{thread_id}/files/{file_id}/download", raw=True))
-        return target
+    def download_thread_file(self, thread_id: str, file: dict, target: Path) -> Path:
+        """Download a message file into target: downloadUrl first, then the file route if id is a uuid.
+
+        Raises OrcaError with all route errors if no route works.
+        """
+        routes = [file["downloadUrl"]] if file.get("downloadUrl") else []
+        routes += [f"/agents/threads/{thread_id}/files/{file['id']}/download"] if uuid_pattern.match(file.get("id") or "") else []
+        errors = []
+        for route in routes:
+            try:
+                content = self._request("GET", route, raw=True)
+            except OrcaError as exc:
+                errors.append(str(exc)[:160])
+                continue
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(content)
+            return target
+        raise OrcaError("; ".join(errors) or "no download route")
 
     def thread_usage(self) -> list[dict]:
         """Return admin thread metadata incl. creditsUsed. Requires admin rights (API key)."""
@@ -134,10 +159,56 @@ def clean_text(text: str | None) -> str:
     return comment_pattern.sub("", text or "").strip()
 
 
-def download_answer_files(client: AworkClient, thread_id: str, answer: list[dict], target_dir: Path) -> list[Path]:
-    """Download all files attached to the given assistant messages."""
-    files = [file for message in answer for file in message.get("temporaryFiles") or []]
-    return [client.download_thread_file(thread_id, file["id"], target_dir / Path(file.get("name") or file["id"]).name) for file in files]
+def answer_text(answer: list[dict]) -> str:
+    """Return the visible text of all answer messages."""
+    return "\n\n".join(part for message in answer if (part := clean_text(message.get("content"))))
+
+
+def _file_name(name: str) -> str:
+    name = PurePosixPath(name.strip().replace("\\", "/")).name
+    return "" if name in ("", ".", "..") else name
+
+
+def _is_junk(path: str) -> bool:
+    path = PurePosixPath(path.replace("\\", "/"))
+    return path.suffix == ".pyc" or "__pycache__" in path.parts
+
+
+def file_blocks(text: str | None) -> dict[str, str]:
+    """Return {file name: content} of all FILE blocks in a text; a later block with the same name wins."""
+    return {name: match["body"] for match in file_block_pattern.finditer(text or "") if (name := _file_name(match["name"]))}
+
+
+def strip_file_blocks(text: str) -> str:
+    """Replace FILE blocks by a short [file: name] reference."""
+    return file_block_pattern.sub(lambda match: f"[file: {_file_name(match['name'])}]", text)
+
+
+def download_answer_files(client: AworkClient, thread_id: str, answer: list[dict], target_dir: Path) -> tuple[list[Path], list[str]]:
+    """Save all result files of an answer to target_dir.
+
+    Message files are downloaded first; FILE blocks in the answer text fill the gaps.
+    __pycache__ and *.pyc are skipped. A failing file never stops the others.
+    Returns the saved paths and one warning per file that could not be saved.
+    """
+    saved, failed = {}, {}
+    for file in (file for message in answer for file in message.get("temporaryFiles") or []):
+        name = _file_name(file.get("name") or file.get("id") or "")
+        if not name or name in saved or _is_junk(file.get("sandboxPath") or file.get("id") or name) or _is_junk(name):
+            continue
+        try:
+            saved[name] = client.download_thread_file(thread_id, file, target_dir / name)
+        except OrcaError as exc:
+            failed[name] = str(exc)
+    for name, body in file_blocks("\n".join(message.get("content") or "" for message in answer)).items():
+        if name in saved or _is_junk(name):
+            continue
+        target = target_dir / name
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(body, encoding="utf-8", newline="")
+        saved[name] = target
+        failed.pop(name, None)
+    return list(saved.values()), [f"{name} not saved ({reason})" for name, reason in failed.items()]
 
 
 # --------- JOB STATE ---------
@@ -258,7 +329,7 @@ def cmd_status(client: AworkClient, config: dict, state: dict, args, refreshed: 
     if not state["minizillas"]:
         print("no minizillas in this job")
     for minizilla_id, minizilla in state["minizillas"].items():
-        print(f"{minizilla_id}: {minizilla['state']}")
+        print(f"{minizilla_id}: {minizilla['state']} (thread {minizilla['thread_id']})")
 
 
 def cmd_collect(client: AworkClient, config: dict, state: dict, args) -> None:
@@ -267,10 +338,12 @@ def cmd_collect(client: AworkClient, config: dict, state: dict, args) -> None:
     if not answer:
         print(f"{args.minizilla_id}: no answer yet")
         return
-    print("\n\n".join(text for message in answer if (text := clean_text(message.get("content")))))
-    target_dir = Path(args.dest or default_collect_dir) / args.minizilla_id
-    for path in download_answer_files(client, minizilla["thread_id"], answer, target_dir):
+    print(strip_file_blocks(answer_text(answer)))
+    saved, warnings = download_answer_files(client, minizilla["thread_id"], answer, Path(args.dest or default_collect_dir) / args.minizilla_id)
+    for path in saved:
         print(f"file: {path}")
+    for warning in warnings:
+        print(f"warning: {warning}")
 
 
 def cmd_cancel(client: AworkClient, config: dict, state: dict, args) -> None:

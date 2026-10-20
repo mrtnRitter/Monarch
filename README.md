@@ -67,7 +67,28 @@ Commands inside the chat:
 
 When the session reaches `max_credits`, the console triggers `/stopzilla` automatically.
 
-Result files from mastazilla are saved to `output_dir`. Each job writes a log file to `log_dir`.
+### Relay
+
+While minizillas work, mastazilla pauses and the console waits for them (no mastazilla credits while waiting). The console shows `relay: waiting for minizillas`.
+
+mastazilla is woken with one `[monarch relay]` message, containing the answers and attached files, as soon as
+
+- all working minizillas have answered, or
+- an answer has `STATUS: question` or `STATUS: blocked`, or
+- `relay_timeout` is reached (message lists the minizillas still working).
+
+mastazilla answers the minizillas directly and pauses again. When no minizilla is working, the console returns to the `you>` prompt. `Ctrl+C` during the relay works as `/stopzilla`; `max_credits` is checked continuously.
+
+### Result files
+
+| Source | Saved to |
+|---|---|
+| mastazilla | `output_dir/` |
+| minizillas (relay) | `output_dir/minizillas/<minizilla_id>_<thread>/` |
+
+Files are taken from the answer's file download or, if that fails, from the FILE blocks in the answer text (text files only). `__pycache__` and `*.pyc` are skipped. Files that could not be saved are shown as `warning:`.
+
+Each job writes a log file to `log_dir`.
 
 ## orca commands
 
@@ -77,9 +98,9 @@ Used by mastazilla inside awork. Listed here for reference.
 |---|---|
 | `orca spawn "<task>" [--file PATH ...]` | Start a new minizilla with a task; returns its `minizilla_id` (e.g. `minizilla_1`) |
 | `orca send <minizilla_id> "<message>" [--file PATH ...]` | Send a follow-up message to a minizilla |
-| `orca wait [<minizilla_id> ...] [--timeout SEC]` | Wait until the given (or all) minizillas have answered, max. `wait_timeout` |
-| `orca status` | Show state of all minizillas of the current job |
-| `orca collect <minizilla_id> [--dest DIR]` | Fetch the latest answer and result files of a minizilla |
+| `orca wait [<minizilla_id> ...] [--timeout SEC]` | Without relay only: wait until the given (or all) minizillas have answered, max. `wait_timeout` |
+| `orca status` | Show state and thread of all minizillas of the current job |
+| `orca collect <minizilla_id> [--dest DIR]` | Without relay only: fetch the latest answer and result files of a minizilla |
 | `orca cancel <minizilla_id>` | Stop one minizilla |
 | `orca budget` | Show used credits, rounds and running minizillas against the limits |
 | `orca stopzilla` | Stop all minizillas and close the current job |
@@ -97,6 +118,7 @@ minizilla_agent_id = "<agent-id>"
 api_base_url = "https://api.awork.com/api/v1"
 max_credits = 1000        # credit cap per session (mastazilla + minizillas); 0 = no cap
 poll_interval = 3          # seconds between status and credit checks
+relay_timeout = 900        # seconds the relay waits before waking mastazilla anyway; 0 = no limit
 output_dir = "./output"    # where result files are saved
 log_dir = "./logs"         # one log file per job
 ```
@@ -122,5 +144,6 @@ poll_interval = 5          # seconds between status checks
 | `max_credits_per_job` | Credit cap for all minizillas of one job (`orca.toml`) |
 | `max_rounds` | Upper limit of messages to minizillas per job |
 | `wait_timeout` | Max. duration of one `orca wait` call |
-| `poll_interval` | Interval between status and credit checks |
+| `poll_interval` | Interval between status and credit checks (also used by the relay) |
+| `relay_timeout` | Max. seconds the relay waits before waking mastazilla with the current state; `0` = no limit (`monarch.toml`) |
 | `output_dir` / `log_dir` | Local folders for results and logs |
