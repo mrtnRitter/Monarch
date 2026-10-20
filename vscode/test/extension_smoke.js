@@ -1,5 +1,5 @@
 'use strict';
-// Loads the extension with a stubbed vscode module: activation, commands, webview html and a chat round trip.
+// Loads the extension with a stubbed vscode module: activation, agents from awork, history, model choice, a chat round trip.
 const assert = require('assert/strict');
 const Module = require('module');
 
@@ -7,10 +7,10 @@ const registered = {};
 const posted = [];
 let provider = null;
 let on_message = null;
-const workspace_state = new Map();
+const workspace_state = new Map([['monarch.chat.Mastazilla', { thread_id: 'old1', rounds: 0, next_index: 1, co_agents: {} }]]);
 const settings = {
-    apiBaseUrl: 'https://api.awork.com/api/v1', clientId: 'client', redirectPort: 18766,
-    agents: [{ name: 'Mastazilla', agentId: 'master', coAgentId: 'mini', coAgentName: 'minizilla', labels: { credits: 'Credits', coAgents: 'Minizillas', stop: '/stopzilla' } }, { name: 'CodeZilla', agentId: 'code' }],
+    apiBaseUrl: 'https://api.awork.com/api/v1', clientId: 'monarch', redirectPort: 18766,
+    agents: [{ agentId: 'master', name: 'Mastazilla', coAgentId: 'mini', coAgentName: 'minizilla', labels: { credits: 'Credits', coAgents: 'Minizillas', stop: '/stopzilla' } }],
     maxCredits: 0, maxCoAgents: 3, maxRounds: 20, relayTimeout: 0, pollInterval: 0, maxFolderMB: 20,
 };
 const uri = path => ({ path, scheme: 'file', toString: () => `file://${path}` });
@@ -22,6 +22,7 @@ const vscode = {
         asRelativePath: value => value.path.replace('/repo/', ''),
         applyEdit: async () => true,
         openTextDocument: async () => ({ save: async () => true, getText: () => '', positionAt: () => ({}) }),
+        onDidChangeConfiguration: () => ({ dispose() {} }),
     },
     window: {
         registerWebviewViewProvider: (id, value) => { provider = value; return { dispose() {} }; },
@@ -49,46 +50,73 @@ const context = {
 };
 
 // fake awork API over fetch
-let message_count = 0;
+const bodies = [];
+const png = Uint8Array.from([0x89, 0x50, 0x4e, 0x47, 1, 2]).buffer;
 global.fetch = async (url, options) => {
-    const route = new URL(url).pathname.replace('/api/v1', '');
+    const parsed = new URL(url);
+    const route = parsed.pathname.replace('/api/v1', '');
     const reply = body => ({ ok: true, status: 200, text: async () => JSON.stringify(body), json: async () => body, arrayBuffer: async () => new ArrayBuffer(0) });
-    if (route === '/agents/management/threads') return reply([{ id: 'thread1', creditsUsed: 7 }]);
+    const missing = () => ({ ok: false, status: 404, text: async () => 'not found' });
+    if (options.body && typeof options.body === 'string') bodies.push({ route, body: JSON.parse(options.body) });
+    if (route === '/agents') return reply([{ id: 'master', name: 'Mastazilla', hasImage: true }, { id: 'mini', name: 'minizilla' }, { id: 'code', name: 'CodeZilla' }]);
+    if (route === '/agents/defaults') return reply({ modelProvider: 'anthropic', modelName: 'opus', reasoningLevel: 'high', availableModels: { providers: [{ provider: 'anthropic', displayName: 'Anthropic', modelDetails: [{ id: 'opus', displayName: 'Claude Opus', supportedReasoningLevels: ['low', 'high'] }] }] } });
     if (route === '/me') return reply({ id: 'user1', firstName: 'Martin', lastName: 'Ritter' });
-    if (route === '/files/images/users/user1') return { ok: true, status: 200, arrayBuffer: async () => Uint8Array.from([0x89, 0x50, 0x4e, 0x47, 1, 2]).buffer };
-    if (route.startsWith('/files/images/agents/')) return { ok: false, status: 404, text: async () => 'not found' };
+    if (route === '/files/images/users/user1' || route === '/files/images/agents/master') return { ok: true, status: 200, arrayBuffer: async () => png };
+    if (route.startsWith('/files/images/')) return missing();
+    if (route === '/agents/threads/old1/messages' || route === '/agents/threads/old1') return missing();
+    if (route === '/agents/threads/thread1') return reply({ id: 'thread1', usage: { creditsUsed: 7 } });
     if (route === '/agents/threads' && options.method === 'POST') return reply({ id: 'thread1', acceptedMessageId: 'u1' });
+    if (route === '/agents/threads/thread1/messages' && options.method === 'POST') return reply({ acceptedMessageId: 'u2' });
     if (route.endsWith('/status')) return reply({ status: 'completed', hasAgentResponse: true });
-    if (route === '/agents/threads/thread1/messages') { message_count += 1; return reply([{ id: 'u1', role: 'user', content: 'Hallo', messageOrder: 1 }, { id: 'a1', role: 'agent', content: 'Hi Martin', messageOrder: 2 }]); }
+    if (route === '/agents/threads/thread1/messages') return reply([{ id: 'u1', role: 'user', content: 'Hallo', messageOrder: 1 }, { id: 'a1', role: 'agent', content: 'Hi Martin', messageOrder: 2 }]);
     throw new Error(`unexpected ${options.method} ${route}`);
 };
+
+const last = type => posted.filter(message => message.type === type).pop();
+const settle = () => new Promise(resolve => setTimeout(resolve, 20));
 
 (async () => {
     const extension = require('../src/extension');
     extension.activate(context);
-    assert.deepEqual(Object.keys(registered).sort(), ['monarch.clearApiKey', 'monarch.newChat', 'monarch.setApiKey', 'monarch.signIn', 'monarch.signOut', 'monarch.stop']);
+    assert.deepEqual(Object.keys(registered).sort(), ['monarch.newChat', 'monarch.signIn', 'monarch.signOut', 'monarch.stop']);
     const view = { webview: { options: null, html: '', cspSource: 'csp', asWebviewUri: value => value.path, postMessage: message => posted.push(message), onDidReceiveMessage: fn => { on_message = fn; } } };
     provider.resolveWebviewView(view);
-    assert.match(view.webview.html, /id="stop"/);
-    assert.match(view.webview.html, /script-src 'nonce-/);
+    for (const id of ['agents', 'agent', 'history', 'history_menu', 'model', 'model_menu', 'stop', 'new_chat']) assert.match(view.webview.html, new RegExp(`id="${id}"`), id);
     await on_message({ type: 'ready' });
-    await new Promise(resolve => setTimeout(resolve, 20));
-    const init = posted.find(message => message.type === 'init');
-    assert.deepEqual([init.current, init.signed_in, init.labels.coAgents], ['Mastazilla', true, 'Minizillas']);
-    assert.ok(init.avatars.user.image.startsWith('data:image/png;base64,'));
-    assert.deepEqual(init.avatars.agent, { image: null, initials: 'M' });
-    assert.match(view.webview.html, /img-src data:/);
-    assert.match(view.webview.html, /markdown\.js/);
-    await on_message({ type: 'send', text: 'Hallo' });
-    const agent_message = posted.filter(message => message.type === 'message' && message.item.role === 'agent').pop();
-    assert.equal(agent_message.item.text, 'Hi Martin');
-    const status = posted.filter(message => message.type === 'status').pop().status;
-    assert.equal(status.credits, 7);
-    assert.equal(workspace_state.get('monarch.chat.Mastazilla').thread_id, 'thread1');
-    await on_message({ type: 'select_agent', name: 'CodeZilla' });
-    const code_init = posted.filter(message => message.type === 'init').pop();
-    assert.equal(code_init.labels.stop, 'Stop');
-    assert.equal(code_init.avatars.agent.initials, 'CZ');
-    assert.ok(!posted.some(message => message.type === 'error' || message.error), JSON.stringify(posted.filter(message => message.type === 'error' || message.error)));
-    console.log('extension smoke test passed');
+    await settle();
+    // agents from awork: minizilla hidden as co-agent, sorted, avatars
+    const init = last('init');
+    assert.deepEqual(init.agents.map(agent => agent.name), ['CodeZilla', 'Mastazilla']);
+    assert.equal(init.current, 'code');
+    assert.equal(init.agents[1].avatar.image.slice(0, 22), 'data:image/png;base64,');
+    assert.deepEqual(init.agents[0].avatar, { image: null, initials: 'CZ' });
+    assert.ok(init.user.image.startsWith('data:image/png'));
+    await on_message({ type: 'select_agent', id: 'master' });
+    await settle();
+    assert.equal(last('init').labels.coAgents, 'Minizillas');
+    assert.equal(last('models').default.name, 'opus');
+    // the 0.4 chat was taken over, but no longer exists in awork -> removed
+    assert.ok(posted.some(message => message.type === 'history' && message.items.some(item => item.role === 'error')));
+    assert.deepEqual(workspace_state.get('monarch.chats.master').items, []);
+    // chat round trip, then model override on the next message
+    await on_message({ type: 'send', text: 'Hallo Welt\nzweite Zeile' });
+    assert.equal(posted.filter(message => message.type === 'message' && message.item.role === 'agent').pop().item.text, 'Hi Martin');
+    assert.equal(last('status').status.credits, 7);
+    await on_message({ type: 'set_model', model: { provider: 'anthropic', name: 'opus', reasoning: 'low' } });
+    await on_message({ type: 'send', text: 'Noch was' });
+    assert.deepEqual(bodies.filter(item => item.route === '/agents/threads/thread1/messages').pop().body, { content: 'Noch was', modelProvider: 'anthropic', modelName: 'opus', reasoningLevel: 'low' });
+    // history list, new chat, reopen, remove
+    let chats = last('chats').items;
+    assert.deepEqual(chats.map(chat => [chat.thread_id, chat.title, chat.current]), [['thread1', 'Hallo Welt', true]]);
+    await on_message({ type: 'new_chat' });
+    assert.equal(last('chats').items[0].current, false);
+    await on_message({ type: 'open_chat', thread_id: 'thread1' });
+    await settle();
+    assert.equal(last('chats').items[0].current, true);
+    assert.equal(last('status').status.model.reasoning, 'low');
+    await on_message({ type: 'remove_chat', thread_id: 'thread1' });
+    assert.deepEqual(last('chats').items, []);
+    assert.ok(!posted.some(message => message.error), JSON.stringify(posted.filter(message => message.error)));
+    const errors = posted.filter(message => message.type === "error"); assert.deepEqual(errors, [], JSON.stringify(errors));
+    console.log("extension smoke test passed");
 })().catch(error => { console.error(error); process.exit(1); });

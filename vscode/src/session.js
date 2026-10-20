@@ -45,6 +45,11 @@ function answer_text(answer) {
     return answer.map(message => files.clean_text(message.content)).filter(Boolean).join('\n\n');
 }
 
+/** Chat state with defaults: thread, title, model override, job (rounds, co-agents). */
+function _new_state(state) {
+    return { thread_id: null, title: null, model: null, rounds: 0, next_index: 1, co_agents: {}, ...(state || {}) };
+}
+
 class ChatSession {
     /**
      * @param {object} options
@@ -61,7 +66,7 @@ class ChatSession {
             const timer = setTimeout(resolve, ms);
             signal.addEventListener('abort', () => { clearTimeout(timer); reject(new StopRequested()); }, { once: true });
         }));
-        this.state = { thread_id: null, rounds: 0, next_index: 1, co_agents: {}, ...(store.load() || {}) };
+        this.state = _new_state(store.load());
         Object.assign(this, { credits: null, credit_error: null, credits_at: 0, busy: false, stopping: false, controller: null, answers: new Map(), phase: null, phase_since: null });
     }
 
@@ -76,7 +81,7 @@ class ChatSession {
             co_agents: this._co_agents(co_agent => co_agent.state !== 'cancelled').length,
             working: this._co_agents(co_agent => co_agent.state === 'working').length,
             max_co_agents: this.limits.maxCoAgents, busy: this.busy, thread_id: this.state.thread_id,
-            phase: this.phase, phase_since: this.phase_since,
+            phase: this.phase, phase_since: this.phase_since, model: this.state.model,
         };
     }
 
@@ -94,12 +99,12 @@ class ChatSession {
     }
 
     // --- credits ---
-    /** Credits of this chat: agent thread plus all co-agent threads. null if not readable. */
+    /** Credits of this chat: agent thread plus all co-agent threads (thread details, no admin rights needed). null if not readable. */
     async refresh_credits() {
-        const ids = new Set([this.state.thread_id, ...Object.values(this.state.co_agents).map(co_agent => co_agent.thread_id)].filter(Boolean));
+        const ids = [...new Set([this.state.thread_id, ...Object.values(this.state.co_agents).map(co_agent => co_agent.thread_id)].filter(Boolean))];
         try {
-            const rows = await this.client.thread_usage();
-            this.credits = rows.filter(row => ids.has(row.id)).reduce((sum, row) => sum + (row.creditsUsed || 0), 0);
+            const threads = await Promise.all(ids.map(id => this.client.thread(id)));
+            this.credits = threads.reduce((sum, thread) => sum + (thread.usage?.creditsUsed || 0), 0);
             this.credit_error = null;
         } catch (error) {
             Object.assign(this, { credits: null, credit_error: error.message });
@@ -114,7 +119,7 @@ class ChatSession {
         const used = await this.refresh_credits();
         if (!limit) return;
         if (used === null) {
-            if (strict) throw new Error(`Credits not readable (${this.credit_error}). Store an API key or set monarch.maxCredits to 0.`);
+            if (strict) throw new Error(`Credits not readable (${this.credit_error}). Set monarch.maxCredits to 0 to chat without a credit cap.`);
             return;
         }
         if (used >= limit) {
@@ -153,10 +158,11 @@ class ChatSession {
         const started = Date.now();
         this._set_phase('agent');
         let accepted;
+        const options = this._model_options();
         if (this.state.thread_id) {
-            accepted = await this.client.send_message(this.state.thread_id, content, attachments);
+            accepted = await this.client.send_message(this.state.thread_id, content, attachments, options);
         } else {
-            accepted = await this.client.create_thread(this.agent.agentId, content, `monarch – ${this.agent.name} ${new Date().toISOString().slice(0, 16).replace('T', ' ')}`, attachments);
+            accepted = await this.client.create_thread(this.agent.agentId, content, `monarch – ${this.agent.name} ${new Date().toISOString().slice(0, 16).replace('T', ' ')}`, attachments, options);
             this.state.thread_id = accepted.id;
             this._save();
         }
@@ -176,6 +182,7 @@ class ChatSession {
         this._emit();
         try {
             await this._check_budget(true);
+            if (!this.state.thread_id && !this.state.title) this.state.title = _first_line(text);
             let next = { content: text, attachments: await this._upload(uploads) };
             this.ui.message({ role: 'user', text });
             while (next) next = await this._handle_answer(await this._post(next.content, next.attachments));
@@ -423,6 +430,20 @@ class ChatSession {
         return { content: parts.join('\n\n'), attachments };
     }
 
+    // --- model ---
+    _model_options() {
+        const model = this.state.model;
+        if (!model) return {};
+        return { modelProvider: model.provider, modelName: model.name, ...(model.reasoning ? { reasoningLevel: model.reasoning } : {}) };
+    }
+
+    /** Set the model override {provider, name, reasoning} for the next messages of this chat; null = agent default. */
+    set_model(model) {
+        this.state.model = model ? { provider: model.provider, name: model.name, reasoning: model.reasoning || null } : null;
+        this._save();
+        this._emit();
+    }
+
     // --- control ---
     /** Emergency stop: cancel the agent run and all co-agents, close the job. */
     async stop(reason = 'manual') {
@@ -439,8 +460,18 @@ class ChatSession {
     /** Forget the current chat; the next message starts a new thread. */
     new_chat() {
         if (this.busy) throw new Error('Stop the agent first.');
-        this.state = { thread_id: null, rounds: 0, next_index: 1, co_agents: {} };
+        this.state = _new_state();
         this.credits = 0;
+        this._save();
+        this._emit();
+    }
+
+    /** Switch to a stored chat state. */
+    load_state(state) {
+        if (this.busy) throw new Error('Stop the agent first.');
+        this.state = _new_state(state);
+        this.answers.clear();
+        this.credits = null;
         this._save();
         this._emit();
     }

@@ -25,46 +25,42 @@ Requirements: VS Code 1.85+, Python 3.11+ (only for building).
 
 ```bash
 cd monarch/vscode
-python build_vsix.py                         # -> monarch-0.4.0.vsix
-code --install-extension monarch-0.4.0.vsix
+python build_vsix.py                         # -> monarch-0.5.0.vsix
+code --install-extension monarch-0.5.0.vsix
 ```
 
 Or in VS Code: Extensions view → `…` → **Install from VSIX…**. Optional local tests: `node test/test.js` and `node test/extension_smoke.js`.
 
-## Setup in awork
+## Setup in awork (once per workspace)
 
-1. **Client app for sign-in:** Settings → Integrations → add a client application of type **Public**. Redirect URI: `http://localhost:8765/callback` (port = `monarch.redirectPort`). Copy the client ID to `monarch.clientId`.
+1. **Client app for sign-in:** Settings → Integrations → add a client application of type **Public** with the name `monarch`. Redirect URI: `http://localhost:8765/callback` (port = `monarch.redirectPort`). If the client ID is not `monarch`, enter it in `monarch.clientId`.
 2. **Agents:** Create **minizilla** with `zillas/minizilla.md` and a low model preset (e.g. `fast`), **mastazilla** with `zillas/mastazilla.md` and a high model preset (e.g. `deep`). No skill and no secret are needed.
-3. Enter the agent IDs in `monarch.agents` (see below).
+
+## Sharing with colleagues
+
+Colleagues in the same awork workspace only need to install the `.vsix` and run **monarch: Sign in** with their own account. They see the agents shared with them in awork; credits and limits apply per chat.
 
 ## Settings
 
-In VS Code settings (`settings.json`):
+All settings are optional. The agent list comes from awork; `monarch.agents` only adds co-agents and labels to single agents:
 
 ```json
-"monarch.clientId": "<client-id>",
 "monarch.agents": [
   {
-    "name": "Mastazilla",
     "agentId": "<mastazilla-agent-id>",
     "coAgentId": "<minizilla-agent-id>",
     "coAgentName": "minizilla",
     "labels": { "credits": "Credits", "coAgents": "Minizillas", "stop": "/stopzilla" }
-  },
-  {
-    "name": "CodeZilla",
-    "agentId": "<codezilla-agent-id>",
-    "labels": { "credits": "Credits", "coAgents": "Co-agents", "stop": "Stop" }
   }
 ]
 ```
 
 | Setting | Default | Meaning |
 |---|---|---|
-| `monarch.clientId` | – | Client ID of the public awork client app |
+| `monarch.clientId` | `monarch` | Client ID of the public awork client app |
 | `monarch.redirectPort` | `8765` | Local port of the sign-in callback; must match the redirect URI |
 | `monarch.apiBaseUrl` | `https://api.awork.com/api/v1` | awork API base URL |
-| `monarch.agents` | Mastazilla, CodeZilla | Agents in the chat window: `name`, `agentId`, optional `coAgentId` (agent started by `ORCA: spawn`; empty = no co-agents), `coAgentName` (prefix of co-agent IDs), `labels` (UI names of the three status items) |
+| `monarch.agents` | entry for Mastazilla | Additions per agent, matched by `agentId` (or `name`): `coAgentId` (agent started by `ORCA: spawn`; empty = no co-agents), `coAgentName` (prefix of co-agent IDs), `labels` (UI names of the three status items). Agents used as `coAgentId` are not shown in the agent list. |
 | `monarch.maxCredits` | `1000` | Credit cap per chat (agent + co-agents); reaching it stops everything; `0` = no cap |
 | `monarch.maxCoAgents` | `3` | Max. co-agents per job (a co-agent holds its slot until cancel/stopzilla); `0` = no cap |
 | `monarch.maxRounds` | `20` | Max. messages to co-agents per job; `0` = no cap |
@@ -79,15 +75,19 @@ In VS Code settings (`settings.json`):
 
 | Element | Function |
 |---|---|
-| Agent list | Select the agent; each agent keeps its own chat per repo |
-| **New chat** | Start a new conversation with the selected agent |
+| Agent circles | All non-archived agents you can see in awork, with their profile pictures; click to select. If they do not fit into the panel, a dropdown is shown instead. |
+| 🕘 History | Chats of the selected agent in this repo, newest first; click to continue a chat, ✕ removes it from the list (the chat stays in awork) |
+| ＋ New chat | Start a new conversation with the selected agent |
 | Credits | Credits of the current chat (agent + co-agents) against `maxCredits` |
 | Co-agents | Co-agents of the current job against `maxCoAgents`, incl. how many are working |
+| Model | Model and reasoning level for the next messages of this chat; **Agent default** uses the agent's settings. Saved with the chat; co-agents keep their own model. |
 | Stop | Stops the agent and all co-agents and closes the job |
 | **Current file** / **Files** / **Folder** | Attach repo files to the next message; folders are sent as ZIP (without `.git`, `node_modules`, `__pycache__`, `.venv`, `*.pyc` and `files.exclude`); max. 20 attachments |
 | Enter / Shift+Enter | Send / new line |
 
-The labels of Credits, Co-agents and Stop come from `labels` of the selected agent.
+The labels of Credits, Co-agents and Stop come from `labels` of the selected agent. The history only contains chats started with monarch; chats started in the awork web app are not listed.
+
+If credits cannot be read and `maxCredits` is not `0`, the chat does not accept further messages.
 
 ### Chat view
 
@@ -135,8 +135,5 @@ monarch wakes the agent with a `[monarch relay]` message when all working co-age
 | Command | Effect |
 |---|---|
 | `monarch: Sign in` / `monarch: Sign out` | OAuth sign-in in the browser / delete the stored sign-in |
-| `monarch: Store API key` / `monarch: Remove API key` | Optional API key, used only to read credits if your user may not read them |
-| `monarch: New chat` | Same as the button |
+| `monarch: New chat` | Same as the ＋ button |
 | `monarch: Stop agent and co-agents` | Same as the Stop button |
-
-The API key is taken from the environment variable `AWORK_API_KEY` or from **monarch: Store API key** (stored in VS Code's secret storage). If credits cannot be read and `maxCredits` is not `0`, the chat does not start.

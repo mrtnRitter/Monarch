@@ -88,19 +88,22 @@ test('OAuth: login via local callback, refresh rotates token', async () => {
     assert.equal(JSON.parse(secrets.store_map.get('monarch.oauth')).refresh_token, 'refresh_2');
 });
 
-test('client: base path, download route order, API key fallback for credits', async () => {
+test('client: base path, download route order, model options in the message body', async () => {
     const seen = [];
     const fake_fetch = async (url, options) => {
-        seen.push([url, options.headers.Authorization]);
-        const status = url.includes('artifacts') ? 401 : url.includes('management') && options.headers.Authorization === 'Bearer user' ? 403 : 200;
-        return { ok: status === 200, status, text: async () => (status === 200 ? '[{"id":"t1","creditsUsed":5}]' : 'no'), arrayBuffer: async () => new ArrayBuffer(1) };
+        seen.push({ url, body: options.body ? JSON.parse(options.body) : null, auth: options.headers.Authorization });
+        const status = url.includes('artifacts') ? 401 : 200;
+        return { ok: status === 200, status, text: async () => (status === 200 ? '{"acceptedMessageId":"m1"}' : 'no'), arrayBuffer: async () => new ArrayBuffer(1) };
     };
-    const client = new AworkClient({ base_url: () => 'https://api.awork.com/api/v1', get_token: async () => 'user', get_api_key: async () => 'key', fetch_impl: fake_fetch });
+    const client = new AworkClient({ base_url: () => 'https://api.awork.com/api/v1', get_token: async () => 'user', fetch_impl: fake_fetch });
     await assert.rejects(client.download_file('t', { id: '/workspace/output/a.py', downloadUrl: '/api/v1/agents/threads/t/artifacts/download?path=a' }));
-    assert.equal(seen[0][0], 'https://api.awork.com/api/v1/agents/threads/t/artifacts/download?path=a');
+    assert.equal(seen[0].url, 'https://api.awork.com/api/v1/agents/threads/t/artifacts/download?path=a');
     assert.equal(seen.length, 1);
-    assert.deepEqual(await client.thread_usage(), [{ id: 't1', creditsUsed: 5 }]);
-    assert.deepEqual(seen.slice(1).map(item => item[1]), ['Bearer user', 'Bearer key']);
+    await client.send_message('t', 'hi', [], { modelProvider: 'anthropic', modelName: 'claude', reasoningLevel: 'high' });
+    assert.deepEqual(seen[1].body, { content: 'hi', modelProvider: 'anthropic', modelName: 'claude', reasoningLevel: 'high' });
+    assert.equal(seen[1].auth, 'Bearer user');
+    await client.agent_defaults('a1');
+    assert.equal(seen[2].url, 'https://api.awork.com/api/v1/agents/defaults?type=custom-agent&agentId=a1');
 });
 
 // --- session with fake awork ---
@@ -120,12 +123,13 @@ class FakeAwork {
         thread.pending = { id, polls: 0 };
         return id;
     }
-    async create_thread(agent_id, content, title, attachments) {
+    async create_thread(agent_id, content, title, attachments, options) {
         const id = this._thread(agent_id);
-        this.threads[id].title = title;
+        Object.assign(this.threads[id], { title, options: [options] });
         return { id, acceptedMessageId: this._user(id, content, attachments) };
     }
-    async send_message(thread_id, content, attachments) {
+    async send_message(thread_id, content, attachments, options) {
+        this.threads[thread_id].options.push(options);
         return { acceptedMessageId: this._user(thread_id, content, attachments) };
     }
     async message_status(thread_id, message_id) {
@@ -151,9 +155,9 @@ class FakeAwork {
     async download_file() {
         throw new Error('401 no permissions');
     }
-    async thread_usage() {
+    async thread(thread_id) {
         if (this.usage_error) throw new Error(this.usage_error);
-        return Object.keys(this.threads).map(id => ({ id, creditsUsed: 10 }));
+        return { id: thread_id, usage: { creditsUsed: 10 } };
     }
 }
 
@@ -243,7 +247,9 @@ test('budget: unreadable credits block the start, cap stops everything', async (
     const fake = new FakeAwork();
     fake.usage_error = 'forbidden';
     const { session } = make_session(fake, () => ({ content: 'x' }), { maxCredits: 100 });
-    await assert.rejects(session.send('go'), /Credits not readable/);
+    // a new chat has no thread yet, so the first message cannot be checked
+    await session.send('go');
+    await assert.rejects(session.send('again'), /Credits not readable/);
     fake.usage_error = null;
     let master_turn = 0;
     const capped = make_session(fake, (thread_id) => {
@@ -305,6 +311,54 @@ test('session: answer duration, phase in status, history durations', async () =>
     const history = await session.history();
     assert.deepEqual(history.map(item => [item.role, item.duration_ms ?? null]), [['user', null], ['agent', 19000]]);
 });
+
+test('session: model override per chat, title, load_state', async () => {
+    const fake = new FakeAwork();
+    const { session } = make_session(fake, () => ({ content: 'ok' }));
+    session.set_model({ provider: 'anthropic', name: 'claude', reasoning: 'high' });
+    await session.send('Erste Frage\nmehr Text');
+    session.set_model(null);
+    await session.send('Zweite');
+    const thread = fake.threads[session.state.thread_id];
+    assert.deepEqual(thread.options, [{ modelProvider: 'anthropic', modelName: 'claude', reasoningLevel: 'high' }, {}]);
+    assert.equal(session.state.title, 'Erste Frage');
+    session.set_model({ provider: 'openai', name: 'gpt', reasoning: null });
+    assert.deepEqual(session._model_options(), { modelProvider: 'openai', modelName: 'gpt' });
+    const saved = JSON.parse(JSON.stringify(session.state));
+    session.new_chat();
+    assert.equal(session.state.thread_id, null);
+    assert.equal(session.state.model, null);
+    session.load_state(saved);
+    assert.equal(session.state.thread_id, saved.thread_id);
+    assert.equal(session.status().model.name, 'gpt');
+    assert.equal(session.credits, null);
+    await session.refresh_credits();
+    assert.equal(session.credits, 10);
+});
+
+test('agents and models: merge with overrides, hide co-agents, parse model catalog', () => {
+    const { merge_agents, parse_models } = load_chat_view();
+    const agents = merge_agents([
+        { id: 'm', name: 'Mastazilla', hasImage: true }, { id: 'mini', name: 'minizilla' }, { id: 'c', name: 'CodeZilla' }, { id: 'old', name: 'Alt', isArchived: true },
+    ], [{ agentId: 'm', coAgentId: 'mini', coAgentName: 'minizilla', labels: { coAgents: 'Minizillas' } }, { name: 'CodeZilla', labels: { stop: 'Halt' } }]);
+    assert.deepEqual(agents.map(agent => [agent.name, agent.coAgentId, agent.labels.coAgents, agent.labels.stop, agent.has_image]), [['CodeZilla', '', 'Co-agents', 'Halt', false], ['Mastazilla', 'mini', 'Minizillas', 'Stop', true]]);
+    const models = parse_models({ modelProvider: 'anthropic', modelName: 'opus', reasoningLevel: 'high', availableModels: { providers: [
+        { provider: 'anthropic', displayName: 'Anthropic', modelDetails: [{ id: 'opus', displayName: 'Claude Opus', kind: 'text', status: 'active', isAvailable: true, supportedReasoningLevels: ['low', 'high', null], creditFactor: 3 }, { id: 'img', kind: 'image' }, { id: 'off', isAvailable: false }] },
+    ] } });
+    assert.deepEqual(models.default, { provider: 'anthropic', name: 'opus', reasoning: 'high' });
+    assert.deepEqual(models.models, [{ provider: 'anthropic', provider_name: 'Anthropic', name: 'opus', display: 'Claude Opus', levels: ['low', 'high'], factor: 3 }]);
+});
+
+function load_chat_view() {
+    const Module = require('module');
+    const original = Module._load;
+    Module._load = function (request, ...rest) { return request === 'vscode' ? {} : original.call(this, request, ...rest); };
+    try {
+        return require('../src/chat_view');
+    } finally {
+        Module._load = original;
+    }
+}
 
 (async () => {
     let failed = 0;

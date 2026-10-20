@@ -1,9 +1,16 @@
-// monarch chat webview: renders messages and status, forwards user actions to the extension.
+// monarch chat webview: renders agents, messages, history, model menu and status; forwards user actions to the extension.
 (function () {
     const vscode = acquireVsCodeApi();
     const { render_markdown, escape_html } = window.monarch_markdown;
     const element = id => document.getElementById(id);
-    const state = { agent: null, labels: { credits: 'Credits', coAgents: 'Co-agents', stop: 'Stop' }, avatars: null, signed_in: false, status: null, steps: null };
+    const level_names = { minimal: 'Minimal', low: 'Low', medium: 'Medium', high: 'High', xhigh: 'Extra high', max: 'Maximum', maximum: 'Maximum' };
+    const state = {
+        agents: [], agent: null, agent_name: null, labels: { credits: 'Credits', coAgents: 'Co-agents', stop: 'Stop' },
+        user: null, signed_in: false, status: null, steps: null, chats: [], models: { default: {}, models: [] },
+    };
+
+    const level_name = level => level_names[level] || (level ? level[0].toUpperCase() + level.slice(1) : '');
+    const current_agent = () => state.agents.find(agent => agent.id === state.agent) || null;
 
     function avatar(entity, large = false) {
         const node = document.createElement(entity?.image ? 'img' : 'span');
@@ -18,17 +25,161 @@
         return seconds < 60 ? `${seconds} s` : `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')} min`;
     }
 
+    function format_date(ms) {
+        const date = new Date(ms);
+        const today = new Date().toDateString() === date.toDateString();
+        return today ? date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : date.toLocaleDateString([], { day: '2-digit', month: '2-digit', year: '2-digit' });
+    }
+
+    // --- agents: avatar circles, dropdown if they do not fit ---
+    function render_agents() {
+        const box = element('agents');
+        box.replaceChildren(...state.agents.map(agent => {
+            const button = document.createElement('button');
+            button.className = `agent-circle${agent.id === state.agent ? ' selected' : ''}`;
+            button.title = agent.name;
+            button.appendChild(avatar(agent.avatar));
+            button.addEventListener('click', () => agent.id !== state.agent && vscode.postMessage({ type: 'select_agent', id: agent.id }));
+            return button;
+        }));
+        element('agent').innerHTML = state.agents.map(agent => `<option value="${escape_html(agent.id)}"${agent.id === state.agent ? ' selected' : ''}>${escape_html(agent.name)}</option>`).join('');
+        fit_agents();
+    }
+
+    function fit_agents() {
+        const box = element('agents');
+        box.classList.remove('hidden');
+        element('agent').classList.add('hidden');
+        if (box.scrollWidth <= box.clientWidth || state.agents.length < 2) return;
+        box.classList.add('hidden');
+        element('agent').classList.remove('hidden');
+    }
+    new ResizeObserver(fit_agents).observe(element('header'));
+
+    // --- menus ---
+    function close_menus(except) {
+        for (const id of ['history_menu', 'model_menu']) if (id !== except) element(id).classList.add('hidden');
+    }
+
+    function toggle_menu(id, render) {
+        const menu = element(id);
+        const open = menu.classList.contains('hidden');
+        close_menus(id);
+        if (!open) return menu.classList.add('hidden');
+        render();
+        menu.classList.remove('hidden');
+    }
+    document.addEventListener('click', event => { if (!event.target.closest('.menu-wrap')) close_menus(); });
+    document.addEventListener('keydown', event => { if (event.key === 'Escape') close_menus(); });
+
+    function menu_item(label, meta, checked, on_click, extra) {
+        const item = document.createElement('div');
+        item.className = `menu-item${checked ? ' selected' : ''}`;
+        item.innerHTML = `<span class="check">${checked ? '✓' : ''}</span><span class="item-label">${escape_html(label)}</span><span class="item-meta">${escape_html(meta || '')}</span>`;
+        if (extra) item.appendChild(extra);
+        item.addEventListener('click', event => { event.stopPropagation(); on_click(event); });
+        return item;
+    }
+
+    function render_history() {
+        const menu = element('history_menu');
+        const items = state.chats.map(chat => {
+            const remove = document.createElement('span');
+            remove.className = 'item-remove';
+            remove.textContent = '✕';
+            remove.title = 'Remove from history (stays in awork)';
+            remove.addEventListener('click', event => {
+                event.stopPropagation();
+                vscode.postMessage({ type: 'remove_chat', thread_id: chat.thread_id });
+            });
+            return menu_item(chat.title, format_date(chat.updated), chat.current, () => {
+                close_menus();
+                if (!chat.current) vscode.postMessage({ type: 'open_chat', thread_id: chat.thread_id });
+            }, remove);
+        });
+        menu.replaceChildren(header_node('Chat history'), ...(items.length ? items : [note_node('No chats yet in this repo.')]));
+    }
+
+    // --- model menu ---
+    function effective_model() {
+        const override = state.status?.model;
+        return override || state.models.default || {};
+    }
+
+    function model_of(choice) {
+        return state.models.models.find(model => model.provider === choice.provider && model.name === choice.name) || null;
+    }
+
+    function model_label() {
+        const choice = effective_model();
+        const model = model_of(choice);
+        const name = model?.display || choice.name || 'Model';
+        return `${name}${choice.reasoning ? ` · ${level_name(choice.reasoning)}` : ''}`;
+    }
+
+    function set_model(model) {
+        vscode.postMessage({ type: 'set_model', model });
+    }
+
+    function render_model_menu() {
+        const menu = element('model_menu');
+        const choice = effective_model();
+        const override = state.status?.model || null;
+        const fallback = state.models.default || {};
+        const fallback_model = model_of(fallback);
+        const nodes = [header_node('AI models')];
+        nodes.push(menu_item('Agent default', `${fallback_model?.display || fallback.name || ''}${fallback.reasoning ? ` · ${level_name(fallback.reasoning)}` : ''}`, !override, () => { close_menus(); set_model(null); }));
+        const levels = model_of(choice)?.levels || [];
+        if (levels.length) {
+            const row = document.createElement('div');
+            row.className = 'levels';
+            row.insertAdjacentHTML('beforeend', '<span class="levels-label">Reasoning</span>');
+            for (const level of levels) {
+                const button = document.createElement('button');
+                button.className = `level${level === choice.reasoning ? ' selected' : ''}`;
+                button.textContent = level_name(level);
+                button.addEventListener('click', event => {
+                    event.stopPropagation();
+                    set_model({ provider: choice.provider, name: choice.name, reasoning: level });
+                });
+                row.appendChild(button);
+            }
+            nodes.push(row);
+        }
+        nodes.push(separator_node());
+        for (const model of state.models.models) {
+            const checked = Boolean(override) && override.provider === model.provider && override.name === model.name;
+            const item = menu_item(model.display, model.provider_name, checked, () => {
+                close_menus();
+                set_model({ provider: model.provider, name: model.name, reasoning: model.levels.includes(choice.reasoning) ? choice.reasoning : null });
+            });
+            if (model.factor !== null) item.title = `Credit factor ${model.factor}`;
+            nodes.push(item);
+        }
+        if (!state.models.models.length) nodes.push(note_node('No models available.'));
+        menu.replaceChildren(...nodes);
+    }
+
+    const header_node = text => Object.assign(document.createElement('div'), { className: 'menu-header', textContent: text });
+    const note_node = text => Object.assign(document.createElement('div'), { className: 'menu-note', textContent: text });
+    const separator_node = () => Object.assign(document.createElement('div'), { className: 'menu-separator' });
+
+    // --- messages ---
     function messages_box() {
         return element('messages');
     }
 
+    function agent_avatar() {
+        return current_agent()?.avatar || { initials: (state.agent_name || '?')[0] };
+    }
+
     function show_empty_state() {
-        const agent = state.avatars?.agent || { initials: (state.agent || '?')[0] };
         const box = document.createElement('div');
         box.className = 'empty-state';
-        box.appendChild(avatar(agent, true));
-        box.insertAdjacentHTML('beforeend', `<div class="title">${escape_html(state.agent || 'monarch')}</div>`);
-        box.insertAdjacentHTML('beforeend', `<div class="subtitle">${state.signed_in ? 'Start a conversation below.' : 'Sign in to awork to start chatting.'}</div>`);
+        box.appendChild(avatar(agent_avatar(), true));
+        box.insertAdjacentHTML('beforeend', `<div class="title">${escape_html(state.agent_name || 'monarch')}</div>`);
+        const subtitle = !state.signed_in ? 'Sign in to awork to start chatting.' : state.agents.length ? 'Start a conversation below.' : 'No agents available for your user.';
+        box.insertAdjacentHTML('beforeend', `<div class="subtitle">${subtitle}</div>`);
         if (!state.signed_in) {
             const button = document.createElement('button');
             button.className = 'primary-btn';
@@ -76,15 +227,15 @@
             const bubble = document.createElement('div');
             bubble.className = 'bubble';
             bubble.textContent = item.text;
-            row.append(bubble, avatar(state.avatars?.user || { initials: 'Du' }));
+            row.append(bubble, avatar(state.user || { initials: 'Du' }));
             return append(row);
         }
         const turn = document.createElement('div');
         turn.className = 'turn';
         const head = document.createElement('div');
         head.className = 'turn-head';
-        head.appendChild(avatar(state.avatars?.agent || { initials: (state.agent || '?')[0] }));
-        head.insertAdjacentHTML('beforeend', `<span class="name">${escape_html(state.agent || 'Agent')}</span>${item.duration_ms ? `<span class="meta">· ${format_duration(item.duration_ms)}</span>` : ''}`);
+        head.appendChild(avatar(agent_avatar()));
+        head.insertAdjacentHTML('beforeend', `<span class="name">${escape_html(state.agent_name || 'Agent')}</span>${item.duration_ms ? `<span class="meta">· ${format_duration(item.duration_ms)}</span>` : ''}`);
         const body = document.createElement('div');
         body.className = 'turn-body';
         body.insertAdjacentHTML('beforeend', `<div class="md">${render_markdown(item.text || '')}</div>`);
@@ -105,6 +256,7 @@
         append(turn);
     }
 
+    // --- status ---
     function show_status(status) {
         state.status = status;
         const credits_full = status.max_credits && status.credits !== null && status.credits >= status.max_credits * 0.9;
@@ -112,6 +264,8 @@
         element('credits').innerHTML = `<span class="label">${escape_html(state.labels.credits)}</span>${status.credits ?? '?'} / ${status.max_credits || '∞'}`;
         element('co_agents').innerHTML = `<span class="label">${escape_html(state.labels.coAgents)}</span>${status.co_agents} / ${status.max_co_agents || '∞'}${status.working ? ` · ${status.working} working` : ''}`;
         element('send').disabled = status.busy;
+        element('model').textContent = `${model_label()} ▾`;
+        if (!element('model_menu').classList.contains('hidden')) render_model_menu();
         update_working();
     }
 
@@ -121,16 +275,24 @@
         element('working').classList.toggle('hidden', !active);
         if (!active) return;
         const elapsed = format_duration(Date.now() - status.phase_since);
-        element('working_text').textContent = status.phase === 'relay' ? `waiting for ${state.labels.coAgents.toLowerCase()} … ${elapsed}` : `${state.agent} is working … ${elapsed}`;
+        element('working_text').textContent = status.phase === 'relay' ? `waiting for ${state.labels.coAgents.toLowerCase()} … ${elapsed}` : `${state.agent_name} is working … ${elapsed}`;
     }
     setInterval(update_working, 1000);
+
+    function set_enabled(enabled) {
+        for (const id of ['history', 'new_chat', 'model', 'stop', 'send', 'attach_current', 'attach_files', 'attach_folder']) element(id).disabled = !enabled;
+        element('input').disabled = !enabled;
+    }
 
     window.addEventListener('message', ({ data }) => {
         if (data.agent && data.agent !== state.agent) return;
         if (data.type === 'init') {
-            Object.assign(state, { agent: data.current, labels: data.labels, avatars: data.avatars, signed_in: data.signed_in, steps: null });
-            element('agent').innerHTML = data.agents.map(name => `<option${name === data.current ? ' selected' : ''}>${escape_html(name)}</option>`).join('');
+            Object.assign(state, { agents: data.agents, agent: data.current, agent_name: data.current_name, labels: data.labels, user: data.user, signed_in: data.signed_in, steps: null, chats: [], models: { default: {}, models: [] }, status: null });
             element('stop').textContent = data.labels.stop;
+            element('model').textContent = 'Model ▾';
+            render_agents();
+            set_enabled(Boolean(data.current));
+            close_menus();
             show_empty_state();
         } else if (data.type === 'history') {
             state.steps = null;
@@ -140,6 +302,12 @@
             add_message(data.item);
         } else if (data.type === 'status') {
             show_status(data.status);
+        } else if (data.type === 'chats') {
+            state.chats = data.items;
+            if (!element('history_menu').classList.contains('hidden')) render_history();
+        } else if (data.type === 'models') {
+            state.models = { default: data.default || {}, models: data.models || [] };
+            element('model').textContent = `${model_label()} ▾`;
         } else if (data.type === 'attachments') {
             element('attachments').replaceChildren(...data.items.map(item => {
                 const chip = document.createElement('span');
@@ -166,7 +334,9 @@
     });
     element('stop').addEventListener('click', () => vscode.postMessage({ type: 'stop' }));
     element('new_chat').addEventListener('click', () => vscode.postMessage({ type: 'new_chat' }));
-    element('agent').addEventListener('change', event => vscode.postMessage({ type: 'select_agent', name: event.target.value }));
+    element('history').addEventListener('click', event => { event.stopPropagation(); toggle_menu('history_menu', render_history); });
+    element('model').addEventListener('click', event => { event.stopPropagation(); toggle_menu('model_menu', render_model_menu); });
+    element('agent').addEventListener('change', event => vscode.postMessage({ type: 'select_agent', id: event.target.value }));
     for (const kind of ['current', 'files', 'folder']) element(`attach_${kind}`).addEventListener('click', () => vscode.postMessage({ type: 'attach', kind }));
     vscode.postMessage({ type: 'ready' });
 })();

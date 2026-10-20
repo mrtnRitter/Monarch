@@ -137,10 +137,10 @@ class OAuth {
 class AworkClient {
     /**
      * Minimal client for the awork agents API.
-     * @param {{base_url: () => string, get_token: () => Promise<string>, get_api_key?: () => Promise<string|undefined>, fetch_impl?: typeof fetch}} options
+     * @param {{base_url: () => string, get_token: () => Promise<string>, fetch_impl?: typeof fetch}} options
      */
-    constructor({ base_url, get_token, get_api_key, fetch_impl }) {
-        Object.assign(this, { base_url, get_token, get_api_key: get_api_key || (async () => undefined), fetch: fetch_impl || fetch });
+    constructor({ base_url, get_token, fetch_impl }) {
+        Object.assign(this, { base_url, get_token, fetch: fetch_impl || fetch });
     }
 
     _url(route) {
@@ -151,10 +151,9 @@ class AworkClient {
         return base + (base_path && route.startsWith(`${base_path}/`) ? route.slice(base_path.length) : route);
     }
 
-    /** Send a request with the OAuth token (or the API key if use_api_key). Throws AworkError on non-2xx. */
-    async request(method, route, { json, body, raw = false, use_api_key = false } = {}) {
-        const token = use_api_key ? await this.get_api_key() : await this.get_token();
-        if (!token) throw new AworkError('No API key available.', 401);
+    /** Send a request with the OAuth token. Throws AworkError on non-2xx. */
+    async request(method, route, { json, body, raw = false } = {}) {
+        const token = await this.get_token();
         const headers = { Authorization: `Bearer ${token}`, ...(json !== undefined ? { 'Content-Type': 'application/json' } : {}) };
         const response = await this.fetch(this._url(route), { method, headers, body: json !== undefined ? JSON.stringify(json) : body, signal: AbortSignal.timeout(request_timeout_ms) });
         if (!response.ok) throw new AworkError(`awork API ${method} ${route} failed with ${response.status}: ${(await response.text()).slice(0, 300)}`, response.status);
@@ -163,14 +162,32 @@ class AworkClient {
         return text ? JSON.parse(text) : {};
     }
 
-    /** Create a custom-agent thread with a first message. Returns the thread incl. acceptedMessageId. */
-    create_thread(agent_id, content, title, attachments = []) {
-        return this.request('POST', '/agents/threads', { json: { type: 'custom-agent', agentId: agent_id, title, content, ...(attachments.length ? { attachments } : {}) } });
+    /**
+     * Create a custom-agent thread with a first message. Returns the thread incl. acceptedMessageId.
+     * options: optional {modelProvider, modelName, reasoningLevel} override for this message.
+     */
+    create_thread(agent_id, content, title, attachments = [], options = {}) {
+        return this.request('POST', '/agents/threads', { json: { type: 'custom-agent', agentId: agent_id, title, content, ...(attachments.length ? { attachments } : {}), ...options } });
     }
 
-    /** Submit a message to a thread. Returns the acceptance incl. acceptedMessageId. */
-    send_message(thread_id, content, attachments = []) {
-        return this.request('POST', `/agents/threads/${thread_id}/messages`, { json: { content, ...(attachments.length ? { attachments } : {}) } });
+    /** Submit a message to a thread. Returns the acceptance incl. acceptedMessageId. options as in create_thread. */
+    send_message(thread_id, content, attachments = [], options = {}) {
+        return this.request('POST', `/agents/threads/${thread_id}/messages`, { json: { content, ...(attachments.length ? { attachments } : {}), ...options } });
+    }
+
+    /** Thread details incl. title and usage.creditsUsed. */
+    thread(thread_id) {
+        return this.request('GET', `/agents/threads/${thread_id}`);
+    }
+
+    /** Custom agents visible to the signed-in user. */
+    async agents() {
+        return (await this.request('GET', '/agents')) || [];
+    }
+
+    /** Effective model settings of a custom agent incl. availableModels. */
+    agent_defaults(agent_id) {
+        return this.request('GET', `/agents/defaults?type=custom-agent&agentId=${agent_id}`);
     }
 
     message_status(thread_id, message_id) {
@@ -216,16 +233,6 @@ class AworkClient {
     /** Profile image of a user or agent (kind 'users' or 'agents'), square and size x size pixels, as Buffer. */
     image(kind, id, size = 64) {
         return this.request('GET', `/files/images/${kind}/${id}?width=${size}&height=${size}&crop=true`, { raw: true });
-    }
-
-    /** Thread metadata incl. creditsUsed. Falls back to the API key if the signed-in user may not read it. */
-    async thread_usage() {
-        try {
-            return (await this.request('GET', '/agents/management/threads')) || [];
-        } catch (error) {
-            if (![401, 403].includes(error.status) || !(await this.get_api_key())) throw error;
-            return (await this.request('GET', '/agents/management/threads', { use_api_key: true })) || [];
-        }
     }
 }
 

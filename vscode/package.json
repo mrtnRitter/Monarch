@@ -1,7 +1,7 @@
 {
   "name": "monarch",
   "displayName": "monarch",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "publisher": "mrtnritter",
   "description": "Chat with awork agents in VS Code. Relays work to co-agents (minizillas) without credits while waiting.",
   "license": "UNLICENSED",
@@ -50,14 +50,6 @@
         "title": "monarch: Sign out"
       },
       {
-        "command": "monarch.setApiKey",
-        "title": "monarch: Store API key"
-      },
-      {
-        "command": "monarch.clearApiKey",
-        "title": "monarch: Remove API key"
-      },
-      {
         "command": "monarch.newChat",
         "title": "monarch: New chat"
       },
@@ -76,7 +68,7 @@
         },
         "monarch.clientId": {
           "type": "string",
-          "default": "",
+          "default": "monarch",
           "description": "Client ID of the public awork client app used for sign-in."
         },
         "monarch.redirectPort": {
@@ -86,21 +78,18 @@
         },
         "monarch.agents": {
           "type": "array",
-          "description": "Agents shown in the chat window.",
+          "description": "Optional additions per agent. The agent list itself comes from awork. Match by agentId (or name).",
           "items": {
             "type": "object",
-            "required": [
-              "name",
-              "agentId"
-            ],
+            "required": [],
             "properties": {
               "name": {
                 "type": "string",
-                "description": "Display name."
+                "description": "Agent name, used for matching if agentId is empty."
               },
               "agentId": {
                 "type": "string",
-                "description": "awork agent ID."
+                "description": "awork agent ID this entry applies to."
               },
               "coAgentId": {
                 "type": "string",
@@ -129,8 +118,8 @@
           },
           "default": [
             {
-              "name": "Mastazilla",
               "agentId": "09bddd40-df90-436a-aad5-f5c2a71f0a9c",
+              "name": "Mastazilla",
               "coAgentId": "6708accf-622d-46be-9e17-7acf38dd018c",
               "coAgentName": "minizilla",
               "labels": {
@@ -138,22 +127,13 @@
                 "coAgents": "Minizillas",
                 "stop": "/stopzilla"
               }
-            },
-            {
-              "name": "CodeZilla",
-              "agentId": "5f2f2cbf-b4fb-40d6-bc1d-327217a2dee7",
-              "labels": {
-                "credits": "Credits",
-                "coAgents": "Co-agents",
-                "stop": "Stop"
-              }
             }
           ]
         },
         "monarch.maxCredits": {
           "type": "number",
           "default": 1000,
-          "description": "Credit cap per chat (agent + co-agents). Reaching it stops everything. 0 = no cap."
+          "description": "Credit cap per chat (agent + co-agents). Reaching it stops everything. 0 = no cap (also needed if credits cannot be read)."
         },
         "monarch.maxCoAgents": {
           "type": "number",
