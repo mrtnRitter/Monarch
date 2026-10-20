@@ -33,7 +33,7 @@ Or in VS Code: Extensions view → `…` → **Install from VSIX…**. Optional 
 
 ## Setup in awork (once per workspace)
 
-1. **Client app for sign-in:** Settings → Integrations → add a client application of type **Public** with the name `monarch`. Redirect URI: `http://localhost:8765/callback` (port = `monarch.redirectPort`). If the client ID is not `monarch`, enter it in `monarch.clientId`.
+1. **Client app for sign-in:** Settings → Integrations → add a client application of type **Public** with the name `monarch`. Redirect URI: `http://localhost:8080/callback` (port = `monarch.redirectPort`). If the client ID is not `monarch`, enter it in `monarch.clientId`.
 2. **Agents:** Create **minizilla** with `zillas/minizilla.md` and a low model preset (e.g. `fast`), **mastazilla** with `zillas/mastazilla.md` and a high model preset (e.g. `deep`). No skill and no secret are needed.
 
 ## Sharing with colleagues
