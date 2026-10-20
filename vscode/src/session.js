@@ -3,15 +3,23 @@
 const files = require('./files');
 const { parse_commands } = require('./orca');
 const { strip_context } = require('./repo');
+const { log } = require('./log');
 
-const terminal_states = new Set(['completed', 'failed', 'cancelled', 'canceled', 'error']);
+// any other status ends the wait, so an unknown final status cannot block the chat
+const active_states = new Set(['', 'accepted', 'created', 'queued', 'pending', 'started', 'running', 'processing', 'in_progress', 'inprogress', 'streaming']);
+const max_empty_polls = 10;
 const urgent_states = new Set(['question', 'blocked']);
 const skip_roles = new Set(['user', 'tool', 'system']);
 const status_pattern = /^\W*STATUS:\W*(\w+)/im;
 const max_attachments = 20;
+const attach_pattern = /^\s*ATTACH:\s*`?([^`\n]+?)`?\s*$/;
 const relay_prefix = '[monarch relay]';
 
 class StopRequested extends Error {}
+/** Hint about an action that is not possible right now; shown briefly instead of as an error. */
+class Notice extends Error {}
+/** The chat was continued elsewhere (newer user message in awork) while monarch waited. */
+class Superseded extends StopRequested {}
 
 function _is_user(message) {
     return (message.role || '').toLowerCase() === 'user';
@@ -21,9 +29,6 @@ function _first_line(text) {
     return ((text || '').split('\n').find(line => line.trim()) || '').trim().slice(0, 60);
 }
 
-function _basename(path) {
-    return path.split('/').pop();
-}
 
 /** Messages of the run started by message_id (all messages after it). */
 function _run_messages(messages, message_id) {
@@ -98,7 +103,7 @@ class ChatSession {
             signal.addEventListener('abort', () => { clearTimeout(timer); reject(new StopRequested()); }, { once: true });
         }));
         this.state = _new_state(store.load());
-        Object.assign(this, { credits: null, credit_error: null, credits_at: 0, busy: false, stopping: false, controller: null, answers: new Map(), phase: null, phase_since: null });
+        Object.assign(this, { credits: null, credit_error: null, credits_at: 0, busy: false, stopping: false, controller: null, answers: new Map(), phase: null, phase_since: null, last_states: new Map(), empty_polls: new Map() });
     }
 
     // --- state ---
@@ -169,8 +174,20 @@ class ChatSession {
     async _run_state(thread_id, message_id) {
         const status = await this.client.message_status(thread_id, message_id);
         const state = (status.status || '').toLowerCase();
+        const key = `${thread_id}:${message_id}`;
+        if (this.last_states.get(key) !== state) log(`run ${key}: status "${state}"${status.hasAgentResponse ? ' with response' : ''}${status.error ? `, error: ${status.error}` : ''}`);
+        this.last_states.set(key, state);
+        if (active_states.has(state)) return { state: null };
         // "completed" can be reported before the answer is stored
-        return terminal_states.has(state) && (status.hasAgentResponse || state !== 'completed') ? { state, response_id: status.responseId } : { state: null };
+        if (state === 'completed' && !status.hasAgentResponse) {
+            const polls = (this.empty_polls.get(key) || 0) + 1;
+            this.empty_polls.set(key, polls);
+            if (polls < max_empty_polls) return { state: null };
+            log(`run ${key}: completed without response after ${polls} checks, taking the messages as they are`);
+        }
+        this.empty_polls.delete(key);
+        this.last_states.delete(key);
+        return { state, response_id: status.responseId };
     }
 
     async _accepted_id(thread_id, accepted) {
@@ -181,10 +198,27 @@ class ChatSession {
 
     async _wait_for_run(thread_id, message_id) {
         let run;
-        while (!(run = await this._run_state(thread_id, message_id)).state) await this._tick();
+        let checked_at = Date.now();
+        while (!(run = await this._run_state(thread_id, message_id)).state) {
+            const every = (this.limits.syncInterval || 0) * 1000;
+            if (every && thread_id === this.state.thread_id && Date.now() - checked_at >= every) {
+                checked_at = Date.now();
+                await this._check_superseded(thread_id, message_id);
+            }
+            await this._tick();
+        }
         const messages = await this.client.messages(thread_id);
         if (thread_id === this.state.thread_id) this.synced = _signature(messages);
         return { ...answer_of(messages, message_id, run.response_id), state: run.state };
+    }
+
+    /** Throw Superseded if a newer user message (written elsewhere) follows message_id. */
+    async _check_superseded(thread_id, message_id) {
+        const messages = await this.client.messages(thread_id);
+        const index = messages.findIndex(message => message.id === message_id);
+        if (index < 0 || !messages.slice(index + 1).some(_is_user)) return;
+        log(`chat ${thread_id}: continued elsewhere, stop waiting for ${message_id}`);
+        throw new Superseded();
     }
 
     async _post(content, attachments) {
@@ -208,9 +242,9 @@ class ChatSession {
      * Resolves when the agent is done or stopped.
      */
     async send(text, uploads = [], context = '') {
-        if (this.busy) throw new Error('The agent is still working.');
-        if (!this.agent.agentId) throw new Error(`Set agentId for ${this.agent.name} in monarch.agents.`);
-        if (uploads.length > max_attachments) throw new Error(`Max. ${max_attachments} attachments per message.`);
+        if (this.busy) throw new Notice('The agent is still working.');
+        if (!this.agent.agentId) throw new Notice(`Set agentId for ${this.agent.name} in monarch.agents.`);
+        if (uploads.length > max_attachments) throw new Notice(`Max. ${max_attachments} attachments per message.`);
         Object.assign(this, { busy: true, stopping: false, controller: new AbortController() });
         this._emit();
         try {
@@ -220,7 +254,8 @@ class ChatSession {
             this.ui.message({ role: 'user', text });
             while (next) next = await this._handle_answer(await this._post(next.content, next.attachments));
         } catch (error) {
-            if (!(error instanceof StopRequested)) throw error;
+            if (error instanceof Superseded) this.ui.info('chat continued in awork: stopped waiting, the chat is reloaded');
+            else if (!(error instanceof StopRequested)) throw error;
         } finally {
             Object.assign(this, { busy: false, controller: null, phase: null, phase_since: null });
             await this.refresh_credits();
@@ -236,9 +271,9 @@ class ChatSession {
     // --- answer handling ---
     async _handle_answer({ answer, run, state, duration_ms }) {
         const { text, commands } = parse_commands(answer_text(answer));
-        const written = await this._write_repo_files(text, run);
+        const written = await this._write_repo_files(run);
         const questions = questions_of(run);
-        const shown = _without_questions(files.strip_file_blocks(text), questions);
+        const shown = _without_questions(text, questions);
         this.ui.message({ role: 'agent', text: shown || (questions.length ? '' : state === 'completed' ? '(no answer)' : `(run ${state})`), files: written.files, warnings: written.warnings, duration_ms });
         questions.forEach(question => this.ui.message(question));
         if (!commands.length) return null;
@@ -253,48 +288,36 @@ class ChatSession {
         return this._build_relay([], this._co_agents(co_agent => co_agent.state === 'working'), results, false);
     }
 
-    /** Collect the files of a run: downloads first, FILE blocks fill the gaps. Returns {files: [{path, data, check}], warnings}. */
-    async _collect_files(thread_id, text, run) {
+    /** Download the output files of a run: {files: [{path, data}], warnings}. */
+    async _collect_files(thread_id, run) {
         const found = new Map();
-        const failed = new Map();
         const warnings = [];
         for (const file of run.flatMap(message => message.temporaryFiles || [])) {
             const path = files.safe_rel_path(files.output_rel_path(file));
             if (!path || files.is_junk(path) || files.is_junk(file.sandboxPath || file.id || '') || found.has(path)) continue;
             try {
-                found.set(path, { path, data: await this.client.download_file(thread_id, file), check: 'download' });
+                found.set(path, { path, data: await this.client.download_file(thread_id, file) });
+                log(`download ${path}: ok`);
             } catch (error) {
-                failed.set(path, error.message);
+                log(`download ${path}: failed: ${error.message}`);
+                warnings.push(`${path} not received (download failed: ${error.message.slice(0, 160)})`);
             }
         }
-        for (const block of files.parse_file_blocks(text)) {
-            const path = files.safe_rel_path(block.path);
-            if (!path) {
-                warnings.push(`${block.path} skipped (unsafe path)`);
-                continue;
-            }
-            if (files.is_junk(path) || found.has(path)) continue;
-            found.set(path, { path, data: block.content, check: block.check });
-            failed.delete(path);
-        }
-        failed.forEach((reason, path) => warnings.push(`${path} not received (${reason.slice(0, 160)})`));
         return { files: [...found.values()], warnings };
     }
 
-    async _write_repo_files(text, run) {
-        const { files: found, warnings } = await this._collect_files(this.state.thread_id, text, run);
+    async _write_repo_files(run) {
+        const { files: found, warnings } = await this._collect_files(this.state.thread_id, run);
         const written = [];
         for (const file of found) {
-            if (['mismatch', 'unverified'].includes(file.check)) {
-                warnings.push(`${file.path} not written (${file.check === 'mismatch' ? 'checksum mismatch' : 'unverified'})`);
-            } else if (!this.workspace) {
+            if (!this.workspace) {
                 warnings.push(`${file.path} not written (no folder open)`);
-            } else {
-                try {
-                    written.push({ path: await this.workspace.write(file.path, file.data), check: file.check });
-                } catch (error) {
-                    warnings.push(`${file.path} not written (${error.message})`);
-                }
+                continue;
+            }
+            try {
+                written.push({ path: await this.workspace.write(file.path, file.data) });
+            } catch (error) {
+                warnings.push(`${file.path} not written (${error.message})`);
             }
         }
         return { files: written, warnings };
@@ -311,16 +334,27 @@ class ChatSession {
         return null;
     }
 
-    /** Turn FILE blocks of a brief into attachments; refuses unverified files. */
+    /** Turn "ATTACH: <repo path>" lines of a brief into attachments read from the local repo. */
     async _brief(body) {
-        const blocks = files.parse_file_blocks(body);
-        const bad = blocks.filter(block => block.check !== 'verified');
-        if (bad.length) throw new Error(`file ${bad.map(block => `${block.path} ${block.check === 'mismatch' ? 'checksum mismatch' : 'unverified'}`).join(', ')}`);
-        if (blocks.length > max_attachments) throw new Error(`max. ${max_attachments} files per message`);
+        const lines = body.split('\n');
+        const paths = lines.map(line => attach_pattern.exec(line)?.[1].trim()).filter(Boolean);
+        if (!paths.length) return { content: body, attachments: [] };
+        if (paths.length > max_attachments) throw new Error(`max. ${max_attachments} files per message`);
+        const unsafe = paths.filter(path => !files.safe_rel_path(path) || files.is_junk(path));
+        if (unsafe.length) throw new Error(`unsafe attachment path ${unsafe.join(', ')}`);
+        if (!this.workspace?.read) throw new Error('no folder open for attachments');
         const attachments = [];
-        for (const block of blocks) attachments.push({ temporaryFileId: await this.client.upload_temporary_file(_basename(block.path), Buffer.from(block.content, 'utf8'), 'text/plain') });
-        const note = blocks.length ? `\n\nAttached files: ${blocks.map(block => block.path).join(', ')}` : '';
-        return { content: files.strip_file_blocks(body) + note, attachments };
+        for (const path of paths.map(files.safe_rel_path)) {
+            let data;
+            try {
+                data = await this.workspace.read(path);
+            } catch (error) {
+                throw new Error(`attachment ${path} not readable (${error.message})`);
+            }
+            attachments.push({ temporaryFileId: await this.client.upload_temporary_file(files.basename(path), data) });
+        }
+        const content = lines.filter(line => !attach_pattern.test(line)).join('\n').trim();
+        return { content: `${content}\n\nAttached files (relative to repo root): ${paths.join(', ')}`, attachments };
     }
 
     async _execute({ action, target, body }) {
@@ -421,19 +455,16 @@ class ChatSession {
         const co_agent = this.state.co_agents[id];
         const { answer, run } = await this._answer_for(id);
         const text = answer_text(answer);
-        const collected = await this._collect_files(co_agent.thread_id, text, run);
+        const collected = await this._collect_files(co_agent.thread_id, run);
         const warnings = [...collected.warnings];
         const attached = [];
         for (const file of collected.files) {
-            if (['mismatch', 'unverified'].includes(file.check)) {
-                warnings.push(`${file.path} ${file.check === 'mismatch' ? 'checksum mismatch' : 'unverified'} – not attached, request it again`);
-            } else if (attachments.length >= max_attachments) {
+            if (attachments.length >= max_attachments) {
                 warnings.push(`${file.path} not attached (max. ${max_attachments} files per message)`);
             } else {
                 try {
-                    const data = typeof file.data === 'string' ? Buffer.from(file.data, 'utf8') : file.data;
-                    attachments.push({ temporaryFileId: await this.client.upload_temporary_file(_basename(file.path), data) });
-                    attached.push(`${file.path} (${file.check})`);
+                    attachments.push({ temporaryFileId: await this.client.upload_temporary_file(files.basename(file.path), file.data) });
+                    attached.push(file.path);
                 } catch (error) {
                     warnings.push(`${file.path} not attached (${error.message.slice(0, 160)})`);
                 }
@@ -442,7 +473,7 @@ class ChatSession {
         co_agent.relayed = co_agent.message_id;
         this.answers.delete(id);
         this.ui.info(`relay: ${id} ${co_agent.state}, ${attached.length} files`);
-        const lines = [`## ${id} (${co_agent.state})`, files.strip_file_blocks(text) || '(no answer text)'];
+        const lines = [`## ${id} (${co_agent.state})`, text || '(no answer text)'];
         if (attached.length) lines.push(`attached: ${attached.join(', ')}`);
         return [...lines, ...warnings.map(warning => `warning: ${warning}`)].join('\n');
     }
@@ -495,7 +526,7 @@ class ChatSession {
 
     /** Forget the current chat; the next message starts a new thread. */
     new_chat() {
-        if (this.busy) throw new Error('Stop the agent first.');
+        if (this.busy) throw new Notice('Stop the agent first.');
         this.state = _new_state();
         this.credits = 0;
         this._save();
@@ -504,7 +535,7 @@ class ChatSession {
 
     /** Switch to a stored chat state. */
     load_state(state) {
-        if (this.busy) throw new Error('Stop the agent first.');
+        if (this.busy) throw new Notice('Stop the agent first.');
         this.state = _new_state(state);
         this.answers.clear();
         this.credits = null;
@@ -537,10 +568,10 @@ class ChatSession {
                 asked_at = created;
                 return [text.startsWith(relay_prefix) ? { role: 'info', text: 'relay: co-agent update' } : { role: 'user', text: strip_context(text) }];
             }
-            const shown = _without_questions(files.strip_file_blocks(parse_commands(text).text), questions);
+            const shown = _without_questions(parse_commands(text).text, questions);
             return [{ role: 'agent', text: shown, duration_ms: asked_at && created ? created - asked_at : null }, ...questions];
         });
     }
 }
 
-module.exports = { ChatSession, StopRequested, answer_of, answer_text, questions_of, relay_prefix };
+module.exports = { ChatSession, Notice, StopRequested, Superseded, answer_of, answer_text, questions_of, relay_prefix };

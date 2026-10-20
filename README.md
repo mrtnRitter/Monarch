@@ -25,8 +25,8 @@ Requirements: VS Code 1.85+, Python 3.11+ (only for building).
 
 ```bash
 cd monarch/vscode
-python build_vsix.py                         # -> monarch-0.8.0.vsix
-code --install-extension monarch-0.8.0.vsix
+python build_vsix.py                         # -> monarch-0.9.0.vsix
+code --install-extension monarch-0.9.0.vsix
 ```
 
 Or in VS Code: Extensions view → `…` → **Install from VSIX…**. Optional local tests: `node test/test.js` and `node test/extension_smoke.js`.
@@ -68,7 +68,7 @@ All settings are optional. The agent list comes from awork (see `monarch.agentFi
 | `monarch.relayTimeout` | `900` | Seconds the relay waits before waking the agent with the current state; `0` = no limit |
 | `monarch.pollInterval` | `3` | Seconds between status checks |
 | `monarch.maxFolderMB` | `20` | Max. size of a folder or file attachment |
-| `monarch.syncInterval` | `10` | Seconds between checks for new messages of the current chat written elsewhere (e.g. awork web app) while the chat window is visible and the agent is not working; `0` = off |
+| `monarch.syncInterval` | `4` | Seconds between checks for new messages of the current chat written elsewhere (e.g. awork web app) while the chat window is visible; while the agent is working, a newer message of yours written elsewhere ends the wait; `0` = off |
 
 ## Usage
 
@@ -84,7 +84,7 @@ All settings are optional. The agent list comes from awork (see `monarch.agentFi
 | Co-agents | Co-agents of the current job against `maxCoAgents`, incl. how many are working |
 | Model | Model and reasoning level for the next messages of this chat; **Agent default** uses the agent's settings. Saved with the chat; co-agents keep their own model. |
 | Stop | Stops the agent and all co-agents and closes the job |
-| **Current file** / **Files** / **Folder** | Attach repo files to the next message; **Current file** takes the file of the active editor tab (also Markdown preview, images, notebooks, diffs), otherwise the last active file; folders are sent as ZIP (without `.git`, `node_modules`, `__pycache__`, `.venv`, `*.pyc` and `files.exclude`); max. 20 attachments and `maxFolderMB` per file or folder; hints about attachments disappear after 5 s |
+| **Current file** / **Files** / **Folder** | Attach repo files to the next message; **Current file** takes the file of the active editor tab (also Markdown preview, images, notebooks, diffs), otherwise the last active file; folders are sent as ZIP (without `.git`, `node_modules`, `__pycache__`, `.venv`, `*.pyc` and `files.exclude`); max. 20 attachments and `maxFolderMB` per file or folder |
 | Line above the input | Drag up/down to resize the input (min. 3 lines, max. 70 % of the panel); the height is kept |
 | Enter / Shift+Enter | Send / new line |
 
@@ -103,7 +103,7 @@ If credits cannot be read and `maxCredits` is not `0`, the chat does not accept 
 | Questions | Questions with answer options from the agent as a card; click an option to send it as your answer, or type your own answer |
 | Steps | Relay and command events as collapsible group (`relay · 3 events`) |
 | While running | Spinner with elapsed time: `<agent> is working …` or `waiting for <co-agents> …` |
-| Errors | Red box in the middle |
+| Errors | Red box in the middle; hints about actions that are not possible right now (e.g. `Stop the agent first.`, attachments) disappear after 5 s |
 
 Profile pictures are loaded once per VS Code session; without a picture, initials are shown.
 
@@ -119,18 +119,13 @@ The agent prompts in `zillas/` contain the matching rule; copy them into the age
 
 ### Files written into the repo
 
-Files from the agent's answer are written into the first open workspace folder:
+The agent saves its result files in `/workspace/output/` with their repo path (e.g. `/workspace/output/src/app.py` → `src/app.py`). monarch downloads the files attached to the answer and writes them into the first open workspace folder; existing files are overwritten. Text files are written as undoable edits. Only paths inside the repo are written (no absolute paths, no `..`, nothing in `.git`), Python caches never. Written files appear as links in the chat; files that could not be downloaded are shown as warning (`not received (download failed: …)`).
 
-- FILE blocks (`### FILE: <path> sha256=<checksum>` plus code block) with a matching checksum
-- output files of the agent that can be downloaded (path below `/workspace/output/` = path in the repo)
+Download order: the download link of the file, the file route by id, then the file list of the chat (matched by unique file name).
 
-Only paths inside the repo are written (no absolute paths, no `..`, nothing in `.git`). Text files are written as undoable edits. Files with `checksum mismatch` or without checksum (`unverified`) and Python caches are not written; the chat shows a warning. Written files appear as links in the chat.
+### Log
 
-The checksum is SHA-256 over the file as UTF-8 text with LF line endings and exactly one final line break. Check a file manually:
-
-```bash
-python3 -c "import hashlib,pathlib,sys;[print(hashlib.sha256((pathlib.Path(p).read_text(encoding='utf-8').replace('\r\n','\n').rstrip('\n')+'\n').encode()).hexdigest(),p) for p in sys.argv[1:]]" <file>
-```
+**Output → monarch** shows the run status reported by awork, downloads (ok or the error of awork) and every reload by `syncInterval`.
 
 ### Co-agents (ORCA commands)
 
@@ -144,7 +139,7 @@ An agent with `coAgentId` controls co-agents with blocks at the end of its answe
 | `### ORCA: wait` | Keep waiting |
 | `### ORCA: stopzilla` | Stop all co-agents, close the job |
 
-monarch wakes the agent with a `[monarch relay]` message when all working co-agents have answered, when one answers with `STATUS: question`/`blocked`, or after `relayTimeout`. Co-agent files are attached to that message (only with matching checksum). Commands beyond the limits are refused and reported to the agent.
+monarch wakes the agent with a `[monarch relay]` message when all working co-agents have answered, when one answers with `STATUS: question`/`blocked`, or after `relayTimeout`. Downloaded output files of the co-agents are attached to that message. A line `ATTACH: <repo path>` in a brief or message attaches that file from the local repo (max. 20, `maxFolderMB` each). Commands beyond the limits are refused and reported to the agent.
 
 ## Commands
 

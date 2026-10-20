@@ -1,7 +1,7 @@
 {
   "name": "monarch",
   "displayName": "monarch",
-  "version": "0.8.0",
+  "version": "0.9.0",
   "publisher": "mrtnritter",
   "description": "Chat with awork agents in VS Code. Relays work to co-agents (minizillas) without credits while waiting.",
   "license": "UNLICENSED",
@@ -175,7 +175,7 @@
         },
         "monarch.syncInterval": {
           "type": "number",
-          "default": 10,
+          "default": 4,
           "minimum": 0,
           "description": "Seconds between checks for messages written elsewhere (e.g. awork web app) while the chat window is visible; 0 = off."
         }

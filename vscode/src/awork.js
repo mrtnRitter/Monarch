@@ -211,18 +211,39 @@ class AworkClient {
         return (await this.request('POST', '/temporaryfiles', { body: form })).id;
     }
 
-    /** Download a message file: downloadUrl first, then the documented file route if id is a uuid. */
+    /**
+     * Download a message file: downloadUrl first, then the documented file route if id is a uuid,
+     * then the thread file list (matched by unique file name) with the documented file route.
+     */
     async download_file(thread_id, file) {
         const routes = [file.downloadUrl, uuid_pattern.test(file.id || '') ? `/agents/threads/${thread_id}/files/${file.id}/download` : null].filter(Boolean);
         const errors = [];
-        for (const route of routes) {
+        const attempt = async route => {
             try {
                 return await this.request('GET', route, { raw: true });
             } catch (error) {
-                errors.push(error.message.slice(0, 160));
+                errors.push(error.message.slice(0, 300));
+                return null;
             }
+        };
+        for (const route of routes) {
+            const data = await attempt(route);
+            if (data) return data;
         }
+        const listed = await this._listed_file_id(thread_id, file).catch(error => { errors.push(error.message.slice(0, 300)); return null; });
+        const data = listed && await attempt(`/agents/threads/${thread_id}/files/${listed}/download`);
+        if (data) return data;
         throw new AworkError(errors.join('; ') || 'no download route');
+    }
+
+    /** Id of the thread file with the same name as file; null if none or ambiguous. */
+    async _listed_file_id(thread_id, file) {
+        const name = (file.name || file.sandboxPath || file.id || '').replace(/\\/g, '/').split('/').pop();
+        const result = await this.request('GET', `/agents/threads/${thread_id}/files`);
+        const items = Array.isArray(result) ? result : result.items || [];
+        const matches = items.filter(item => uuid_pattern.test(item.id || '') && [item.name, item.fileName].includes(name));
+        if (matches.length > 1) throw new AworkError(`file list: ${matches.length} files named ${name}, not unique`);
+        return matches[0]?.id || null;
     }
 
     /** Signed-in user incl. id, firstName and lastName. */

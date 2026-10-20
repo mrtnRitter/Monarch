@@ -3,12 +3,18 @@
 const vscode = require('vscode');
 const { AworkClient, OAuth } = require('./awork');
 const { ChatView } = require('./chat_view');
+const { set_log } = require('./log');
 
 function _config() {
     return vscode.workspace.getConfiguration('monarch');
 }
 
 function activate(context) {
+    const channel = vscode.window.createOutputChannel?.('monarch');
+    if (channel) {
+        context.subscriptions.push(channel);
+        set_log(line => channel.appendLine(line));
+    }
     const oauth = new OAuth({
         settings: () => ({ base_url: _config().get('apiBaseUrl'), client_id: _config().get('clientId'), redirect_port: _config().get('redirectPort') }),
         secrets: context.secrets,

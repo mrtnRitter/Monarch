@@ -14,11 +14,12 @@ const memento = map => ({ get: key => map.get(key), update: async (key, value) =
 const settings = {
     apiBaseUrl: 'https://api.awork.com/api/v1', clientId: 'monarch', redirectPort: 18766,
     agents: [{ agentId: 'master', name: 'Mastazilla', coAgentId: 'mini', coAgentName: 'minizilla', labels: { credits: 'Credits', coAgents: 'Minizillas', stop: '/stopzilla' } }],
-    maxCredits: 0, maxCoAgents: 3, maxRounds: 20, relayTimeout: 0, pollInterval: 0, maxFolderMB: 20, syncInterval: 10,
+    maxCredits: 0, maxCoAgents: 3, maxRounds: 20, relayTimeout: 0, pollInterval: 0, maxFolderMB: 20, syncInterval: 4,
 };
 const uri = path => ({ path, scheme: 'file', toString: () => `file://${path}` });
 const git_repository = { state: { HEAD: { name: 'main', upstream: { remote: 'origin', name: 'main' }, ahead: 0 }, remotes: [{ name: 'origin', fetchUrl: 'git@github.com:mrtnRitter/Monarch.git' }], workingTreeChanges: [], indexChanges: [] } };
 let file_size = 1;
+const log_lines = [];
 let tab_listener = () => {};
 const open_tab = input => { vscode.window.tabGroups.activeTabGroup.activeTab = { input }; tab_listener(); };
 const vscode = {
@@ -34,6 +35,7 @@ const vscode = {
     window: {
         tabGroups: { activeTabGroup: { activeTab: null }, onDidChangeTabs: fn => { tab_listener = fn; return { dispose() {} }; } },
         onDidChangeActiveTextEditor: () => ({ dispose() {} }),
+        createOutputChannel: () => ({ appendLine: line => log_lines.push(line), dispose() {} }),
         registerWebviewViewProvider: (id, value) => { provider = value; return { dispose() {} }; },
         showErrorMessage: message => posted.push({ error: message }),
         showInformationMessage: () => {},
@@ -145,6 +147,12 @@ const settle = () => new Promise(resolve => setTimeout(resolve, 20));
     view.visible = true;
     await provider._sync();
     assert.deepEqual(last('history').items.slice(-2).map(item => item.text), ['Aus awork', 'Antwort im Web']);
+    assert.ok(log_lines.some(line => /sync: chat thread1 changed elsewhere, reloading$/.test(line)), log_lines.join('\n'));
+    // hints are transient, also "Stop the agent first."
+    provider.sessions.get('master').busy = true;
+    await on_message({ type: 'select_agent', id: 'code' });
+    assert.deepEqual([last('error').text, last('error').transient], ['Stop the agent first.', true]);
+    provider.sessions.get('master').busy = false;
     count = histories();
     await provider._sync();
     assert.equal(histories(), count);

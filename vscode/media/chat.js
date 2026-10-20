@@ -266,7 +266,7 @@
         for (const file of item.files || []) {
             const link = document.createElement('a');
             link.className = 'file';
-            link.textContent = `📄 ${file.path} (${file.check})`;
+            link.textContent = `📄 ${file.path}`;
             link.addEventListener('click', () => vscode.postMessage({ type: 'open_file', path: file.path }));
             body.appendChild(link);
         }

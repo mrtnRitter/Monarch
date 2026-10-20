@@ -13,28 +13,16 @@ const { render_markdown } = require('../media/markdown');
 
 const tests = [];
 const test = (name, fn) => tests.push({ name, fn });
-const block = (path, content, hash = files.sha256_text(content)) => `### FILE: ${path} sha256=${hash}\n\`\`\`python\n${content}\`\`\`\n`;
+const out = path => ({ name: path.split('/').pop(), sandboxPath: `/workspace/output/${path}`, downloadUrl: `/agents/threads/x/artifacts/download?path=${path}` });
 
 // --- files ---
-test('checksum matches the one-liner from the prompts', () => {
-    assert.equal(files.sha256_text('a\r\nb'), '911169ddaaf146aff539f58c26c489af3b892dff0fe283c1c264c65ae5aa59a2');
-    assert.equal(files.sha256_text('a\nb\n\n'), files.sha256_text('a\nb'));
-    assert.equal(files.sha256_text(''), '01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b');
-});
-
-test('FILE blocks: verified, mismatch, unverified, nested fences', () => {
-    const text = [block('src/a.py', 'A = 1\n'), block('b.py', 'B = 2\n', 'f'.repeat(64)), '### FILE: c.md\n````markdown\n```python\nx\n```\n````\n'].join('\n');
-    const blocks = files.parse_file_blocks(text);
-    assert.deepEqual(blocks.map(item => [item.path, item.check]), [['src/a.py', 'verified'], ['b.py', 'mismatch'], ['c.md', 'unverified']]);
-    assert.equal(blocks[2].content, '```python\nx\n```\n');
-    assert.equal(files.strip_file_blocks(text), '[file: src/a.py]\n\n[file: b.py]\n\n[file: c.md]');
-});
-
 test('safe paths and junk', () => {
     assert.equal(files.safe_rel_path('./src\\a.py'), 'src/a.py');
     for (const bad of ['/etc/x', 'C:/x', '../x', 'a/../../x', '.git/config', '']) assert.equal(files.safe_rel_path(bad), null, bad);
     assert.ok(files.is_junk('x/__pycache__/a.cpython-312.pyc'));
     assert.equal(files.output_rel_path({ id: '/workspace/output/src/a.py', name: 'a.py' }), 'src/a.py');
+    assert.equal(files.basename('src\\sub/a.py'), 'a.py');
+    assert.equal(files.clean_text('a <!-- hidden --> b'), 'a  b');
 });
 
 // --- orca ---
@@ -97,9 +85,10 @@ test('client: base path, download route order, model options in the message body
         return { ok: status === 200, status, text: async () => (status === 200 ? '{"acceptedMessageId":"m1"}' : 'no'), arrayBuffer: async () => new ArrayBuffer(1) };
     };
     const client = new AworkClient({ base_url: () => 'https://api.awork.com/api/v1', get_token: async () => 'user', fetch_impl: fake_fetch });
-    await assert.rejects(client.download_file('t', { id: '/workspace/output/a.py', downloadUrl: '/api/v1/agents/threads/t/artifacts/download?path=a' }));
-    assert.equal(seen[0].url, 'https://api.awork.com/api/v1/agents/threads/t/artifacts/download?path=a');
-    assert.equal(seen.length, 1);
+    await assert.rejects(client.download_file('t', { id: '/workspace/output/a.py', downloadUrl: '/api/v1/agents/threads/t/artifacts/download?path=a' }), /401/);
+    // artifact link first, then the thread file list (no match here)
+    assert.deepEqual(seen.map(item => item.url), ['https://api.awork.com/api/v1/agents/threads/t/artifacts/download?path=a', 'https://api.awork.com/api/v1/agents/threads/t/files']);
+    seen.length = 1;
     await client.send_message('t', 'hi', [], { modelProvider: 'anthropic', modelName: 'claude', reasoningLevel: 'high' });
     assert.deepEqual(seen[1].body, { content: 'hi', modelProvider: 'anthropic', modelName: 'claude', reasoningLevel: 'high' });
     assert.equal(seen[1].auth, 'Bearer user');
@@ -153,8 +142,10 @@ class FakeAwork {
         this.uploads.push({ name, data: Buffer.from(data).toString('utf8') });
         return `tmp${this.uploads.length}`;
     }
-    async download_file() {
-        throw new Error('401 no permissions');
+    async download_file(thread_id, file) {
+        const data = (this.downloads || {})[file.sandboxPath];
+        if (data === undefined) throw new Error('401 no permissions');
+        return Buffer.from(data);
     }
     async thread(thread_id) {
         if (this.usage_error) throw new Error(this.usage_error);
@@ -171,39 +162,63 @@ function make_session(fake, reply, limits = {}) {
         agent: { name: 'Mastazilla', agentId: 'master', coAgentId: 'mini', coAgentName: 'minizilla' },
         limits: { maxCredits: 0, maxCoAgents: 3, maxRounds: 20, relayTimeout: 0, pollInterval: 0, ...limits },
         store: { load: () => undefined, save: () => {} },
-        workspace: { write: async (path, data) => { written[path] = data; return path; } },
+        workspace: {
+            write: async (path, data) => { written[path] = Buffer.from(data).toString('utf8'); return path; },
+            read: async path => { if (!(path in (fake.repo || {}))) throw new Error('missing'); return Buffer.from(fake.repo[path]); },
+        },
         ui: { message: item => events.push(item), info: text => events.push({ role: 'info', text }), status: () => {} },
         sleep: async () => {},
     });
     return { session, written, events };
 }
 
-const mini_answer = (status, file_content) => ({ content: `STATUS: ${status}\nNOTES: x\n\n${file_content ? block('hello.py', file_content) : ''}` });
+const mini_answer = (status, with_file = false) => ({ content: `STATUS: ${status}\nNOTES: x`, files: with_file ? [out('hello.py')] : [] });
 
-test('relay: spawn two, forward together, write verified final file, skip unverified', async () => {
+test('client: download falls back to the thread file list with a unique name', async () => {
+    const id = '0f0e0d0c-0b0a-4908-8706-050403020100';
+    const listing = [{ id, name: 'a.py' }, { id: 'not-a-uuid', name: 'a.py' }, { id: '1f0e0d0c-0b0a-4908-8706-050403020100', name: 'b.py' }];
+    const urls = [];
+    const fake_fetch = async url => {
+        urls.push(url);
+        if (url.includes('artifacts')) return { ok: false, status: 401, text: async () => 'no permissions' };
+        if (url.endsWith('/files')) return { ok: true, status: 200, text: async () => JSON.stringify(listing) };
+        return { ok: true, status: 200, arrayBuffer: async () => Buffer.from('A = 1\n') };
+    };
+    const client = new AworkClient({ base_url: () => 'https://api.awork.com/api/v1', get_token: async () => 'user', fetch_impl: fake_fetch });
+    assert.equal((await client.download_file('t', out('src/a.py'))).toString(), 'A = 1\n');
+    assert.equal(urls.at(-1), `https://api.awork.com/api/v1/agents/threads/t/files/${id}/download`);
+    listing.push({ id: '2f0e0d0c-0b0a-4908-8706-050403020100', fileName: 'a.py' });
+    await assert.rejects(client.download_file('t', out('src/a.py')), /2 files named a\.py, not unique/);
+});
+
+test('relay: spawn two, attach repo files, forward downloads, write downloaded final file', async () => {
     const fake = new FakeAwork();
+    fake.repo = { 'docs/brief.txt': 'input\n' };
+    fake.downloads = { '/workspace/output/hello.py': 'print("a")\n', '/workspace/output/src/final.py': 'X = 1\n' };
     let master_turn = 0;
     const { session, written, events } = make_session(fake, (thread_id, message) => {
-        if (fake.threads[thread_id].agent_id === 'mini') return mini_answer('done', message.content.includes('A') ? 'print("a")\n' : null);
+        if (fake.threads[thread_id].agent_id === 'mini') return mini_answer('done', message.content.includes('A'));
         master_turn += 1;
-        if (master_turn === 1) return { content: `Los gehts.\n### ORCA: spawn\nTask A\n${block('brief.txt', 'input\n')}\n### ORCA: spawn\nTask B` };
+        if (master_turn === 1) return { content: 'Los gehts.\n### ORCA: spawn\nTask A\nATTACH: docs/brief.txt\n### ORCA: spawn\nTask B' };
         assert.ok(message.content.startsWith('[monarch relay]'));
         assert.match(message.content, /## minizilla_1 \(answered\)/);
         assert.match(message.content, /## minizilla_2 \(answered\)/);
-        assert.match(message.content, /attached: hello\.py \(verified\)/);
+        assert.match(message.content, /attached: hello\.py/);
         assert.match(message.content, /ok: spawn minizilla_1/);
-        return { content: `Fertig.\n${block('src/final.py', 'X = 1\n')}\n### FILE: notes.md\n\`\`\`\nno hash\n\`\`\`\n### ORCA: stopzilla` };
+        assert.equal(message.attachments.length, 1);
+        return { content: 'Fertig.\n### ORCA: stopzilla', files: [out('src/final.py'), out('notes.md'), out('__pycache__/x.pyc')] };
     });
     await session.send('Bau was');
     assert.equal(master_turn, 2);
-    assert.deepEqual(Object.keys(written), ['src/final.py']);
-    assert.equal(written['src/final.py'], 'X = 1\n');
-    const agent_messages = events.filter(item => item.role === 'agent');
-    assert.ok(agent_messages.at(-1).warnings.some(warning => warning.includes('notes.md not written (unverified)')));
+    assert.deepEqual(written, { 'src/final.py': 'X = 1\n' });
+    const last_answer = events.filter(item => item.role === 'agent').at(-1);
+    assert.deepEqual(last_answer.files, [{ path: 'src/final.py' }]);
+    assert.ok(last_answer.warnings.some(warning => warning.startsWith('notes.md not received (download failed: 401')));
     const mini_threads = Object.values(fake.threads).filter(thread => thread.agent_id === 'mini');
     assert.equal(mini_threads[0].messages[0].attachments.length, 1);
-    assert.match(mini_threads[0].messages[0].content, /Attached files: brief\.txt/);
+    assert.equal(mini_threads[0].messages[0].content, 'Task A\n\nAttached files (relative to repo root): docs/brief.txt');
     assert.ok(fake.uploads.some(item => item.name === 'brief.txt' && item.data === 'input\n'));
+    assert.ok(fake.uploads.some(item => item.name === 'hello.py' && item.data === 'print("a")\n'));
     assert.equal(session.status().co_agents, 0);
     assert.equal(session.state.rounds, 0);
 });
@@ -267,20 +282,24 @@ test('budget: unreadable credits block the start, cap stops everything', async (
     assert.ok(fake.cancelled.length >= 1);
 });
 
-test('unsafe or mismatched brief files refuse the command', async () => {
+test('unsafe or missing ATTACH files refuse the command', async () => {
     const fake = new FakeAwork();
     let master_turn = 0;
     const { session } = make_session(fake, (thread_id, message) => {
         master_turn += 1;
-        if (master_turn === 1) return { content: `### ORCA: spawn\nTask\n${block('a.py', 'A\n', '0'.repeat(64))}` };
-        assert.match(message.content, /refused: spawn: file a\.py checksum mismatch/);
+        if (master_turn === 1) return { content: '### ORCA: spawn\nTask\nATTACH: ../secret.txt' };
+        if (master_turn === 2) {
+            assert.match(message.content, /refused: spawn: unsafe attachment path \.\.\/secret\.txt/);
+            return { content: '### ORCA: spawn\nTask\nATTACH: `src/missing.py`' };
+        }
+        assert.match(message.content, /refused: spawn: attachment src\/missing\.py not readable \(missing\)/);
         return { content: 'ok' };
     });
     await session.send('go');
-    assert.equal(Object.keys(session.state.co_agents).length, 0);
+    assert.equal(master_turn, 3);
+    assert.equal(Object.values(fake.threads).filter(thread => thread.agent_id === 'mini').length, 0);
 });
 
-// --- markdown ---
 test('markdown: tables, nested lists with code, quotes, rules, inline', () => {
     const html = render_markdown('## T\n\n**b** *i* `c **x**`\n\n- a\n  - b\n    ```py\n    x = 1\n    ```\n- c\n\n| A | B |\n|---|:-:|\n| 1 | 2 |\n\n> q\n\n---');
     assert.ok(html.startsWith('<h3>T</h3><p><strong>b</strong> <em>i</em> <code>c **x**</code></p>'));
@@ -387,6 +406,43 @@ test('session: has_updates detects messages written elsewhere', async () => {
     session.busy = true;
     assert.equal(await session.has_updates(), false);
     session.busy = false;
+    assert.equal(await session.has_updates(), true);
+});
+
+test('session: unknown final status and completed without response do not block the chat', async () => {
+    const fake = new FakeAwork();
+    const { session, events } = make_session(fake, () => ({ content: 'Antwort' }));
+    const original = fake.message_status.bind(fake);
+    fake.message_status = async (thread_id, message_id) => {
+        const status = await original(thread_id, message_id);
+        return status.status === 'completed' ? { status: 'awaiting_input', hasAgentResponse: true } : status;
+    };
+    await session.send('a');
+    assert.equal(events.filter(item => item.role === 'agent').at(-1).text, 'Antwort');
+    let polls = 0;
+    fake.message_status = async (thread_id, message_id) => {
+        polls += 1;
+        await original(thread_id, message_id);
+        return { status: 'completed', hasAgentResponse: false };
+    };
+    await session.send('b');
+    assert.equal(polls, 10);
+    assert.equal(session.busy, false);
+});
+
+test('session: stops waiting when the chat is continued elsewhere', async () => {
+    const fake = new FakeAwork();
+    const { session, events } = make_session(fake, () => ({ content: 'first' }), { syncInterval: 0.001 });
+    await session.send('a');
+    let polls = 0;
+    fake.message_status = async () => {
+        polls += 1;
+        if (polls === 3) fake.threads[session.state.thread_id].messages.push({ id: 'web1', role: 'user', content: 'aus awork' });
+        return { status: 'running' };
+    };
+    await session.send('b');
+    assert.ok(events.some(item => item.role === 'info' && item.text.startsWith('chat continued in awork')));
+    assert.equal(session.busy, false);
     assert.equal(await session.has_updates(), true);
 });
 

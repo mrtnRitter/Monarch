@@ -60,7 +60,7 @@ span.avatar {
 .turn-head .meta { opacity: 0.6; }
 .turn-body {
   align-self: flex-start; max-width: min(85%, calc(100% - var(--avatar) - 8px)); min-width: 0; margin-left: calc(var(--avatar) + 8px); padding: 8px 12px; border-radius: 12px;
-  line-height: 1.5; word-break: break-word; background: var(--vscode-input-background); border: 1px solid var(--vscode-panel-border);
+  line-height: 1.5; word-break: break-word; background: var(--vscode-sideBar-background);
 }
 .turn-body:empty { display: none; }
 .question {

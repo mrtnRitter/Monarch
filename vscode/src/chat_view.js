@@ -2,7 +2,8 @@
 /** Webview chat window: agents from awork, chat history, model choice, status (credits, co-agents, stop), messages and attachments. */
 const vscode = require('vscode');
 const crypto = require('crypto');
-const { ChatSession } = require('./session');
+const { ChatSession, Notice } = require('./session');
+const { log } = require('./log');
 const { create_zip } = require('./zip');
 const { context_line, git_info } = require('./repo');
 
@@ -12,7 +13,6 @@ const image_types = [[[0x89, 0x50, 0x4e, 0x47], 'image/png'], [[0xff, 0xd8, 0xff
 const mime_types = { '.py': 'text/x-python', '.md': 'text/markdown', '.json': 'application/json', '.txt': 'text/plain', '.zip': 'application/zip' };
 const max_chats = 100;
 const max_attachments = 20;
-const notice_types = new Set(['attach']);
 
 function _config() {
     return vscode.workspace.getConfiguration('monarch');
@@ -105,8 +105,16 @@ function parse_models(defaults) {
     return { default: { provider: defaults?.modelProvider || null, name: defaults?.modelName || null, reasoning: defaults?.reasoningLevel || null }, models };
 }
 
-/** Repo access for the session: writes text as undoable edit, binary directly. */
+/** Repo access for the session: reads files (max. maxFolderMB), writes text as undoable edit, binary directly. */
 const workspace_adapter = {
+    async read(path) {
+        const root = _root();
+        if (!root) throw new Error('no folder open');
+        const uri = vscode.Uri.joinPath(root, ...path.split('/'));
+        const limit_mb = _config().get('maxFolderMB');
+        if ((await vscode.workspace.fs.stat(uri)).size > limit_mb * 1024 * 1024) throw new Error(`exceeds monarch.maxFolderMB (${limit_mb} MB)`);
+        return vscode.workspace.fs.readFile(uri);
+    },
     async write(path, data) {
         const root = _root();
         if (!root) throw new Error('no folder open');
@@ -170,7 +178,7 @@ class ChatView {
 
     _limits() {
         const config = _config();
-        return Object.fromEntries(['maxCredits', 'maxCoAgents', 'maxRounds', 'relayTimeout', 'pollInterval'].map(key => [key, config.get(key)]));
+        return Object.fromEntries(['maxCredits', 'maxCoAgents', 'maxRounds', 'relayTimeout', 'pollInterval', 'syncInterval'].map(key => [key, config.get(key)]));
     }
 
     async _models(agent) {
@@ -223,7 +231,7 @@ class ChatView {
     }
 
     _session(agent = this._agent()) {
-        if (!agent) throw new Error('No agent available. Sign in first.');
+        if (!agent) throw new Notice('No agent available. Sign in first.');
         if (!this.sessions.has(agent.agentId)) {
             const ui = {
                 message: item => this._post({ type: 'message', item, agent: agent.agentId }),
@@ -292,7 +300,7 @@ class ChatView {
 </div>
 <script nonce="${nonce}" src="${asset('markdown.js')}"></script>
 <script nonce="${nonce}" src="${asset('chat.js')}"></script></body></html>`;
-        view.webview.onDidReceiveMessage(message => this._on_message(message).catch(error => this._post({ type: 'error', text: error.message, transient: notice_types.has(message.type) })));
+        view.webview.onDidReceiveMessage(message => this._on_message(message).catch(error => this._post({ type: 'error', text: error.message, transient: error instanceof Notice })));
         this._schedule_sync();
     }
 
@@ -304,7 +312,7 @@ class ChatView {
         const handlers = {
             ready: () => this.refresh(),
             select_agent: async () => {
-                if (this._agent() && this._session().busy) throw new Error('Stop the agent first.');
+                if (this._agent() && this._session().busy) throw new Notice('Stop the agent first.');
                 await this.context.workspaceState.update('monarch.agent', message.id);
                 await this.refresh();
             },
@@ -355,7 +363,7 @@ class ChatView {
         clearTimeout(this.sync_timer);
         const seconds = _config().get('syncInterval');
         // with 0 (off) the setting is checked again after 10 s
-        this.sync_timer = setTimeout(() => this._sync().catch(() => {}).finally(() => this._schedule_sync()), (seconds > 0 ? seconds : 10) * 1000);
+        this.sync_timer = setTimeout(() => this._sync().catch(error => log(`sync failed: ${error.message}`)).finally(() => this._schedule_sync()), (seconds > 0 ? seconds : 10) * 1000);
         // do not keep the process alive only for the sync (tests, shutdown)
         this.sync_timer.unref?.();
     }
@@ -365,6 +373,7 @@ class ChatView {
         const agent = this.agent_list && this._agent();
         const session = agent && this.sessions.get(agent.agentId);
         if (!session || !(await session.has_updates())) return;
+        log(`sync: chat ${session.state.thread_id} changed elsewhere, reloading`);
         await this._show_history(session, agent);
         session.refresh_credits();
     }
@@ -389,7 +398,7 @@ class ChatView {
         const agent = this._agent();
         const session = this._session(agent);
         const item = this._chats(agent).items.find(entry => entry.thread_id === thread_id);
-        if (!item) throw new Error('Chat not found in the history.');
+        if (!item) throw new Notice('Chat not found in the history.');
         session.load_state(item.state || { thread_id });
         await this._show_history(session, agent);
         session.refresh_credits();
@@ -448,8 +457,8 @@ class ChatView {
         let picked = [];
         if (kind === 'current') {
             const uri = _tab_uri(vscode.window.tabGroups?.activeTabGroup?.activeTab) || vscode.window.activeTextEditor?.document.uri || this.last_file;
-            if (!uri) throw new Error('No file open in the editor.');
-            if (uri.scheme === 'untitled') throw new Error('Save the file first, then attach it.');
+            if (!uri) throw new Notice('No file open in the editor.');
+            if (uri.scheme === 'untitled') throw new Notice('Save the file first, then attach it.');
             picked = [{ uri, folder: false }];
         } else {
             const uris = await vscode.window.showOpenDialog({ canSelectMany: true, canSelectFiles: kind === 'files', canSelectFolders: kind === 'folder', defaultUri: _root() || undefined });
@@ -459,9 +468,9 @@ class ChatView {
         try {
             for (const { uri, folder } of picked) {
                 if (this.attachments.some(item => item.uri.toString() === uri.toString())) continue;
-                if (this.attachments.length >= max_attachments) throw new Error(`Max. ${max_attachments} attachments per message.`);
+                if (this.attachments.length >= max_attachments) throw new Notice(`Max. ${max_attachments} attachments per message.`);
                 const rel = vscode.workspace.asRelativePath(uri, false);
-                if (!folder && (await vscode.workspace.fs.stat(uri)).size > limit_mb * 1024 * 1024) throw new Error(`File ${rel} exceeds monarch.maxFolderMB (${limit_mb} MB).`);
+                if (!folder && (await vscode.workspace.fs.stat(uri)).size > limit_mb * 1024 * 1024) throw new Notice(`File ${rel} exceeds monarch.maxFolderMB (${limit_mb} MB).`);
                 this.attachments.push({ id: crypto.randomUUID(), uri, folder, rel, label: folder ? `${rel}/` : rel });
             }
         } finally {
@@ -493,10 +502,10 @@ class ChatView {
         for (const uri of found) {
             const stat = await vscode.workspace.fs.stat(uri);
             total += stat.size;
-            if (total > limit) throw new Error(`Folder ${name} exceeds monarch.maxFolderMB (${_config().get('maxFolderMB')} MB).`);
+            if (total > limit) throw new Notice(`Folder ${name} exceeds monarch.maxFolderMB (${_config().get('maxFolderMB')} MB).`);
             entries.push({ name: `${name}/${uri.path.slice(folder_uri.path.replace(/\/$/, '').length + 1)}`, data: await vscode.workspace.fs.readFile(uri), mtime: new Date(stat.mtime) });
         }
-        if (!entries.length) throw new Error(`Folder ${name} has no files to attach (only folders inside the open workspace are supported).`);
+        if (!entries.length) throw new Notice(`Folder ${name} has no files to attach (only folders inside the open workspace are supported).`);
         return create_zip(entries);
     }
 
