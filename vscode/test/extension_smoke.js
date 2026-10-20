@@ -58,7 +58,7 @@ global.fetch = async (url, options) => {
     const reply = body => ({ ok: true, status: 200, text: async () => JSON.stringify(body), json: async () => body, arrayBuffer: async () => new ArrayBuffer(0) });
     const missing = () => ({ ok: false, status: 404, text: async () => 'not found' });
     if (options.body && typeof options.body === 'string') bodies.push({ route, body: JSON.parse(options.body) });
-    if (route === '/agents') return reply([{ id: 'master', name: 'Mastazilla', hasImage: true }, { id: 'mini', name: 'minizilla' }, { id: 'code', name: 'CodeZilla' }]);
+    if (route === '/agents') return reply([{ id: 'master', name: 'Mastazilla', hasImage: true, createdBy: 'other' }, { id: 'mini', name: 'minizilla', createdBy: 'user1' }, { id: 'code', name: 'CodeZilla', createdBy: 'user1' }, { id: 'foreign', name: 'Fremd', createdBy: 'other' }]);
     if (route === '/agents/defaults') return reply({ modelProvider: 'anthropic', modelName: 'opus', reasoningLevel: 'high', availableModels: { providers: [{ provider: 'anthropic', displayName: 'Anthropic', modelDetails: [{ id: 'opus', displayName: 'Claude Opus', supportedReasoningLevels: ['low', 'high'] }] }] } });
     if (route === '/me') return reply({ id: 'user1', firstName: 'Martin', lastName: 'Ritter' });
     if (route === '/files/images/users/user1' || route === '/files/images/agents/master') return { ok: true, status: 200, arrayBuffer: async () => png };
@@ -82,6 +82,8 @@ const settle = () => new Promise(resolve => setTimeout(resolve, 20));
     const view = { webview: { options: null, html: '', cspSource: 'csp', asWebviewUri: value => value.path, postMessage: message => posted.push(message), onDidReceiveMessage: fn => { on_message = fn; } } };
     provider.resolveWebviewView(view);
     for (const id of ['agents', 'agent', 'history', 'history_menu', 'model', 'model_menu', 'stop', 'new_chat']) assert.match(view.webview.html, new RegExp(`id="${id}"`), id);
+    assert.match(view.webview.html, /id="new_chat" class="icon-btn primary"[^>]*><svg/);
+    assert.match(view.webview.html, /id="history" class="icon-btn"[^>]*><svg/);
     await on_message({ type: 'ready' });
     await settle();
     // agents from awork: minizilla hidden as co-agent, sorted, avatars

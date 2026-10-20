@@ -45,10 +45,15 @@ function _exclude_glob() {
     return `{${[...fixed_excludes, ...user].join(',')}}`;
 }
 
-/** Merge awork agents with the optional settings overrides; agents used as co-agent are hidden. */
-function merge_agents(aworks, overrides) {
-    const override_of = agent => overrides.find(item => item && item.agentId === agent.id) || overrides.find(item => item && !item.agentId && item.name === agent.name) || {};
-    const merged = aworks.filter(agent => agent.id && !agent.isArchived).map(agent => {
+/**
+ * Merge awork agents with the optional settings overrides; agents used as co-agent are hidden.
+ * filter 'own' keeps agents created by me_id plus agents listed in the overrides; 'all' keeps every visible agent.
+ */
+function merge_agents(aworks, overrides, { filter = 'all', me_id = null } = {}) {
+    const find_override = agent => overrides.find(item => item && item.agentId === agent.id) || overrides.find(item => item && !item.agentId && item.name === agent.name);
+    const override_of = agent => find_override(agent) || {};
+    const wanted = agent => filter !== 'own' || (me_id && agent.createdBy === me_id) || Boolean(find_override(agent));
+    const merged = aworks.filter(agent => agent.id && !agent.isArchived && wanted(agent)).map(agent => {
         const override = override_of(agent);
         return { agentId: agent.id, name: agent.name || 'Agent', has_image: Boolean(agent.hasImage), coAgentId: override.coAgentId || '', coAgentName: override.coAgentName || 'coagent', labels: { ...default_labels, ...(override.labels || {}) } };
     });
@@ -94,19 +99,23 @@ const workspace_adapter = {
 
 class ChatView {
     constructor(context, client, oauth) {
-        Object.assign(this, { context, client, oauth, view: null, sessions: new Map(), attachments: [], avatars: new Map(), user_avatar: null, agent_list: null, models: new Map() });
+        Object.assign(this, { context, client, oauth, view: null, sessions: new Map(), attachments: [], avatars: new Map(), user_avatar: null, me: null, agent_list: null, models: new Map() });
     }
 
     /** Drop everything that belongs to the signed-in user (after sign-in or sign-out). */
     forget_user() {
-        Object.assign(this, { agent_list: null, user_avatar: null });
+        Object.assign(this, { agent_list: null, user_avatar: null, me: null });
         this.models.clear();
         this.sessions.clear();
     }
 
     // --- agents ---
     async _load_agents(force = false) {
-        if (!this.agent_list || force) this.agent_list = merge_agents(await this.client.agents(), _config().get('agents') || []);
+        if (!this.agent_list || force) {
+            const filter = _config().get('agentFilter') || 'own';
+            const me = filter === 'own' ? await this._me().catch(() => null) : null;
+            this.agent_list = merge_agents(await this.client.agents(), _config().get('agents') || [], { filter, me_id: me?.id || null });
+        }
         return this.agent_list;
     }
 
@@ -192,8 +201,13 @@ class ChatView {
         return this.avatars.get(key);
     }
 
+    _me() {
+        this.me = this.me || this.client.me().catch(error => { this.me = null; throw error; });
+        return this.me;
+    }
+
     _user() {
-        this.user_avatar = this.user_avatar || this.client.me().then(
+        this.user_avatar = this.user_avatar || this._me().then(
             me => this._avatar('users', me.id, `${me.firstName || ''} ${me.lastName || ''}`.trim() || 'Du'),
             () => { this.user_avatar = null; return { image: null, initials: 'Du' }; },
         );
@@ -212,8 +226,8 @@ class ChatView {
 <link rel="stylesheet" href="${asset('chat.css')}"></head><body>
 <div class="header" id="header">
 <div class="agents" id="agents"></div><select id="agent" class="agent-select hidden" title="Agent"></select>
-<div class="menu-wrap"><button id="history" class="icon-btn" title="Chat history">🕘</button><div id="history_menu" class="menu right hidden"></div></div>
-<button id="new_chat" class="icon-btn" title="New chat">＋</button>
+<div class="menu-wrap"><button id="history" class="icon-btn" title="Chat history"><svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 8a5.5 5.5 0 1 0 1.6-3.9"/><path d="M2.5 2.4v2.7h2.7"/><path d="M8 5v3.2l2.2 1.4"/></svg></button><div id="history_menu" class="menu right hidden"></div></div>
+<button id="new_chat" class="icon-btn primary" title="New chat"><svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M8 3.5v9M3.5 8h9"/></svg></button>
 </div>
 <div class="statusbar"><span id="credits" class="badge"></span><span id="co_agents" class="badge"></span><span class="spacer"></span>
 <div class="menu-wrap"><button id="model" class="picker-btn" title="Model for this chat"></button><div id="model_menu" class="menu right hidden"></div></div>

@@ -25,8 +25,8 @@ Requirements: VS Code 1.85+, Python 3.11+ (only for building).
 
 ```bash
 cd monarch/vscode
-python build_vsix.py                         # -> monarch-0.5.0.vsix
-code --install-extension monarch-0.5.0.vsix
+python build_vsix.py                         # -> monarch-0.5.1.vsix
+code --install-extension monarch-0.5.1.vsix
 ```
 
 Or in VS Code: Extensions view → `…` → **Install from VSIX…**. Optional local tests: `node test/test.js` and `node test/extension_smoke.js`.
@@ -38,11 +38,11 @@ Or in VS Code: Extensions view → `…` → **Install from VSIX…**. Optional 
 
 ## Sharing with colleagues
 
-Colleagues in the same awork workspace only need to install the `.vsix` and run **monarch: Sign in** with their own account. They see the agents shared with them in awork; credits and limits apply per chat.
+Colleagues in the same awork workspace only need to install the `.vsix` and run **monarch: Sign in** with their own account. They see their own agents plus the agents listed in `monarch.agents` (if shared with them); with `monarch.agentFilter` = `all` they see every agent shared with them. Credits and limits apply per chat.
 
 ## Settings
 
-All settings are optional. The agent list comes from awork; `monarch.agents` only adds co-agents and labels to single agents:
+All settings are optional. The agent list comes from awork (see `monarch.agentFilter`); `monarch.agents` adds co-agents and labels to single agents and always shows them in the list:
 
 ```json
 "monarch.agents": [
@@ -60,6 +60,7 @@ All settings are optional. The agent list comes from awork; `monarch.agents` onl
 | `monarch.clientId` | `monarch` | Client ID of the public awork client app |
 | `monarch.redirectPort` | `8765` | Local port of the sign-in callback; must match the redirect URI |
 | `monarch.apiBaseUrl` | `https://api.awork.com/api/v1` | awork API base URL |
+| `monarch.agentFilter` | `own` | `own`: agents you created plus agents listed in `monarch.agents`; `all`: every agent shared with you |
 | `monarch.agents` | entry for Mastazilla | Additions per agent, matched by `agentId` (or `name`): `coAgentId` (agent started by `ORCA: spawn`; empty = no co-agents), `coAgentName` (prefix of co-agent IDs), `labels` (UI names of the three status items). Agents used as `coAgentId` are not shown in the agent list. |
 | `monarch.maxCredits` | `1000` | Credit cap per chat (agent + co-agents); reaching it stops everything; `0` = no cap |
 | `monarch.maxCoAgents` | `3` | Max. co-agents per job (a co-agent holds its slot until cancel/stopzilla); `0` = no cap |
@@ -75,9 +76,9 @@ All settings are optional. The agent list comes from awork; `monarch.agents` onl
 
 | Element | Function |
 |---|---|
-| Agent circles | All non-archived agents you can see in awork, with their profile pictures; click to select. If they do not fit into the panel, a dropdown is shown instead. |
-| 🕘 History | Chats of the selected agent in this repo, newest first; click to continue a chat, ✕ removes it from the list (the chat stays in awork) |
-| ＋ New chat | Start a new conversation with the selected agent |
+| Agent circles | Agents according to `monarch.agentFilter`, with their profile pictures; click to select. If they do not fit into the panel, a dropdown is shown instead. |
+| History (clock) | Chats of the selected agent in this repo, newest first; click to continue a chat, ✕ removes it from the list (the chat stays in awork) |
+| New chat (blue +) | Start a new conversation with the selected agent |
 | Credits | Credits of the current chat (agent + co-agents) against `maxCredits` |
 | Co-agents | Co-agents of the current job against `maxCoAgents`, incl. how many are working |
 | Model | Model and reasoning level for the next messages of this chat; **Agent default** uses the agent's settings. Saved with the chat; co-agents keep their own model. |
@@ -135,5 +136,5 @@ monarch wakes the agent with a `[monarch relay]` message when all working co-age
 | Command | Effect |
 |---|---|
 | `monarch: Sign in` / `monarch: Sign out` | OAuth sign-in in the browser / delete the stored sign-in |
-| `monarch: New chat` | Same as the ＋ button |
+| `monarch: New chat` | Same as the blue + button |
 | `monarch: Stop agent and co-agents` | Same as the Stop button |

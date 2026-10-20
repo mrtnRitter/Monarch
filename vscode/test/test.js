@@ -342,6 +342,11 @@ test('agents and models: merge with overrides, hide co-agents, parse model catal
         { id: 'm', name: 'Mastazilla', hasImage: true }, { id: 'mini', name: 'minizilla' }, { id: 'c', name: 'CodeZilla' }, { id: 'old', name: 'Alt', isArchived: true },
     ], [{ agentId: 'm', coAgentId: 'mini', coAgentName: 'minizilla', labels: { coAgents: 'Minizillas' } }, { name: 'CodeZilla', labels: { stop: 'Halt' } }]);
     assert.deepEqual(agents.map(agent => [agent.name, agent.coAgentId, agent.labels.coAgents, agent.labels.stop, agent.has_image]), [['CodeZilla', '', 'Co-agents', 'Halt', false], ['Mastazilla', 'mini', 'Minizillas', 'Stop', true]]);
+    const visible = [{ id: 'mine', name: 'Meiner', createdBy: 'me' }, { id: 'other', name: 'Fremd', createdBy: 'x' }, { id: 'm', name: 'Mastazilla', createdBy: 'x' }, { id: 'n', name: 'Named', createdBy: 'x' }];
+    const overrides = [{ agentId: 'm', labels: {} }, { name: 'Named' }];
+    assert.deepEqual(merge_agents(visible, overrides, { filter: 'own', me_id: 'me' }).map(agent => agent.name), ['Mastazilla', 'Meiner', 'Named']);
+    assert.deepEqual(merge_agents(visible, overrides, { filter: 'all', me_id: 'me' }).map(agent => agent.name), ['Fremd', 'Mastazilla', 'Meiner', 'Named']);
+    assert.deepEqual(merge_agents(visible, [], { filter: 'own', me_id: null }).map(agent => agent.name), []);
     const models = parse_models({ modelProvider: 'anthropic', modelName: 'opus', reasoningLevel: 'high', availableModels: { providers: [
         { provider: 'anthropic', displayName: 'Anthropic', modelDetails: [{ id: 'opus', displayName: 'Claude Opus', kind: 'text', status: 'active', isAvailable: true, supportedReasoningLevels: ['low', 'high', null], creditFactor: 3 }, { id: 'img', kind: 'image' }, { id: 'off', isAvailable: false }] },
     ] } });
