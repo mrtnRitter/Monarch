@@ -88,6 +88,29 @@ mastazilla answers the minizillas directly and pauses again. When no minizilla i
 
 Files are taken from the answer's file download or, if that fails, from the FILE blocks in the answer text (text files only). `__pycache__` and `*.pyc` are skipped. Files that could not be saved are shown as `warning:`.
 
+FILE blocks look like this:
+
+~~~~
+### FILE: hello_world.py sha256=<checksum>
+```python
+print("hello")
+```
+~~~~
+
+The checksum is SHA-256 over the file as UTF-8 text with LF line endings and exactly one final line break. Files are saved in this form. monarch and `orca collect` compare each block with its checksum:
+
+| Output | Meaning |
+|---|---|
+| `file: <path>` | Saved, checksum matches |
+| `warning: <name> checksum mismatch` | Saved, but the block differs from the agent's file; mastazilla requests it again |
+| `warning: <name> unverified` | Saved, block has no checksum; mastazilla requests it again |
+
+Check a saved file manually:
+
+```bash
+python3 -c "import hashlib,pathlib,sys;[print(hashlib.sha256((pathlib.Path(p).read_text(encoding='utf-8').replace('\r\n','\n').rstrip('\n')+'\n').encode()).hexdigest(),p) for p in sys.argv[1:]]" output/<file>
+```
+
 Each job writes a log file to `log_dir`.
 
 ## orca commands

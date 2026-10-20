@@ -31,3 +31,7 @@ With the monarch console, end your turn after `spawn`/`send` with `<!-- orca:wai
 - When orca refuses a command because of a limit, do not work around it. Report the situation to Martin.
 - Exceeding `max_credits_per_job` during `wait` stops all minizillas automatically.
 - `collect` saves files from downloads and from FILE blocks in the answer text; `__pycache__` and `*.pyc` are skipped. Unsaved files are listed as `warning`.
+- FILE blocks carry a checksum (`### FILE: <name> sha256=<checksum>`). `collect` and the relay compare it with the saved content:
+  - match: file is listed as `file:` (verified)
+  - `checksum mismatch`: block differs from the minizilla's file; do not use it, request it again with `send`
+  - `unverified`: block has no checksum; request it again with `send`
