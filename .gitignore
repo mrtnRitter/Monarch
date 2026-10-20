@@ -2,5 +2,4 @@
 /res
 /logs
 __pycache__
-*.vsix
 vscode/test/out_test.zip
