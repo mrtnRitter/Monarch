@@ -16,7 +16,8 @@ monarch/
 │   ├── codezilla.md        # system prompt for CodeZilla
 │   ├── mastazilla.md       # system prompt for mastazilla
 │   └── minizilla.md        # system prompt for minizilla
-└── skills/                 # skills for the agents
+└── skills/
+    └── monarch-transfer/   # skill: sends output files to monarch (SKILL.md, pack.py)
 ```
 
 ## Installation
@@ -25,8 +26,8 @@ Requirements: VS Code 1.85+, Python 3.11+ (only for building).
 
 ```bash
 cd monarch/vscode
-python build_vsix.py                         # -> monarch-0.10.0.vsix
-code --install-extension monarch-0.10.0.vsix
+python build_vsix.py                         # -> monarch-0.11.0.vsix
+code --install-extension monarch-0.11.0.vsix
 ```
 
 Or in VS Code: Extensions view → `…` → **Install from VSIX…**. Optional local tests: `node test/test.js` and `node test/extension_smoke.js`.
@@ -34,7 +35,8 @@ Or in VS Code: Extensions view → `…` → **Install from VSIX…**. Optional 
 ## Setup in awork (once per workspace)
 
 1. **Client app for sign-in:** Settings → Integrations → add a client application of type **Public** with the name `monarch`. Redirect URI: `http://localhost:8080/callback` (port = `monarch.redirectPort`). If the client ID is not `monarch`, enter it in `monarch.clientId`.
-2. **Agents:** Create **minizilla** with `zillas/minizilla.md` and a low model preset (e.g. `fast`), **mastazilla** with `zillas/mastazilla.md` and a high model preset (e.g. `deep`). No skill and no secret are needed.
+2. **Agents:** Create **minizilla** with `zillas/minizilla.md` and a low model preset (e.g. `fast`), **mastazilla** with `zillas/mastazilla.md` and a high model preset (e.g. `deep`). No secret is needed.
+3. **Skill for files:** Create a skill **monarch-transfer** from `skills/monarch-transfer/` (`SKILL.md` and `pack.py`) and attach it to every agent used with monarch (CodeZilla, mastazilla, minizilla). Without it, files cannot reach the repo (see *Files written into the repo*).
 
 ## Sharing with colleagues
 
@@ -120,13 +122,15 @@ The agent prompts in `zillas/` contain the matching rule; copy them into the age
 
 ### Files written into the repo
 
-The agent saves its result files in `/workspace/output/` with their repo path (e.g. `/workspace/output/src/app.py` → `src/app.py`). monarch downloads the files attached to the answer and writes them into the first open workspace folder; existing files are overwritten. Text files are written as undoable edits. Only paths inside the repo are written (no absolute paths, no `..`, nothing in `.git`), Python caches never. Written files appear as links in the chat; files that could not be downloaded are shown as warning (`not received (download failed: …)`).
+The agent saves its result files in `/workspace/output/` with their repo path (e.g. `/workspace/output/src/app.py` → `src/app.py`) and then runs the skill **monarch-transfer** for the files it created or changed. The skill prints each file packed and with its SHA-256 as `MONARCH-FILE` lines into its tool results; awork stores these results with the chat. monarch reads them, puts the parts together, checks the checksum and writes the files into the first open workspace folder; existing files are overwritten. Text files are written as undoable edits. Only paths inside the repo are written (no absolute paths, no `..`, nothing in `.git`), Python caches never. Written files appear as links in the chat; files that could not be taken over are shown as warning, e.g. `not received (checksum mismatch)` or `not received (transfer incomplete (2/3 parts))`.
 
-Files are taken from the file list of the answer and from hidden file markers in the answer text (only paths below `/workspace/output/`). Download order per file: the download link of the file, the artifact route of the chat by output path (`artifacts/download?path=<path below output/>`, then with `output/` prefix), then the file route by id (only for real file IDs).
+The skill sends about 30,000 chars per tool call (roughly 60–100 KB of source code, less for binary files); larger sets take several calls. The agent reads these results, so they cost credits.
+
+Files of the answer that were not transferred are still downloaded the classic way (download link, artifact route, file route by id), which awork currently refuses for API clients (`401 No permissions to access this endpoint`); they then show up as `not received (download failed: …)`.
 
 ### Log
 
-**Output → monarch** shows the run status reported by awork, every download attempt (route and result), for failed downloads the file data reported by awork (`id`, `name`, `mimeType`, `sandboxPath`, `downloadUrl`) and every reload by `syncInterval`.
+**Output → monarch** shows the run status reported by awork, every transferred file (`transfer <path>: ok` or the reason), every download attempt (route and result), for failed downloads the file data reported by awork (`id`, `name`, `mimeType`, `sandboxPath`, `downloadUrl`) and every reload by `syncInterval`.
 
 ### Co-agents (ORCA commands)
 

@@ -189,7 +189,7 @@ class ChatView {
 
     _limits() {
         const config = _config();
-        return Object.fromEntries(['maxCredits', 'maxCoAgents', 'maxRounds', 'relayTimeout', 'pollInterval', 'syncInterval'].map(key => [key, config.get(key)]));
+        return Object.fromEntries(['maxCredits', 'maxCoAgents', 'maxRounds', 'relayTimeout', 'pollInterval', 'syncInterval', 'maxFolderMB'].map(key => [key, config.get(key)]));
     }
 
     async _models(agent) {

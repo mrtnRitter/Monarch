@@ -2,6 +2,7 @@
 /** One chat with an awork agent: messages, co-agent relay via ORCA commands, limits, credits and stop. */
 const files = require('./files');
 const { parse_commands } = require('./orca');
+const { collect_transfers } = require('./transfer');
 const { strip_context } = require('./repo');
 const { log } = require('./log');
 
@@ -295,11 +296,26 @@ class ChatSession {
         return this._build_relay([], this._co_agents(co_agent => co_agent.state === 'working'), results, false);
     }
 
-    /** Download the output files of a run (message files, then hidden artifact markers): {files: [{path, data}], warnings}. */
+    /**
+     * Output files of a run: files transferred in tool results (monarch-transfer), then downloads of the
+     * message files and hidden artifact markers that were not transferred. Returns {files: [{path, data}], warnings}.
+     */
     async _collect_files(thread_id, run) {
         const found = [];
         const warnings = [];
         const seen = new Set();
+        const transfer = collect_transfers(run, (this.limits.maxFolderMB || 20) * 1024 * 1024);
+        for (const { path: sent, data, reason } of [...transfer.files, ...transfer.failed]) {
+            const path = files.safe_rel_path(sent);
+            if (!path || files.is_junk(path)) {
+                warnings.push(`${sent} not written (unsafe path)`);
+                continue;
+            }
+            seen.add(path);
+            log(`transfer ${path}: ${data ? 'ok' : reason}`);
+            if (data) found.push({ path, data });
+            else warnings.push(`${path} not received (${reason})`);
+        }
         for (const file of run.flatMap(message => [...(message.temporaryFiles || []), ...(_is_user(message) ? [] : files.marker_files(message.content))])) {
             const path = files.safe_rel_path(files.output_rel_path(file));
             if (!path || files.is_junk(path) || files.is_junk(file.sandboxPath || file.id || '') || seen.has(path)) continue;

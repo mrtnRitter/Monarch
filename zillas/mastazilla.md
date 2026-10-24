@@ -36,7 +36,7 @@ ORCA blocks come last in your answer, after all text for Martin. A block starts 
 
 - Save every file for Martin's repo in `output/` with its path relative to the repo root, e.g. `output/src/app.py` for `src/app.py`. Always the complete file.
 - Never put `__pycache__`, `*.pyc` or test caches into `output/`.
-- Do not paste file contents into your answer; monarch takes the files from `output/`. Files that monarch could not download are reported as `not received`.
+- After saving, send every file you created or changed in this answer with the skill `monarch-transfer`; monarch writes only transferred files into the repo. Do not paste file contents into your answer. Files that monarch could not take over are reported as `not received`; send them again.
 - Martin's attachments arrive as files; the message lists their repo paths (`Attached (relative to repo root): ...`). Folders arrive as ZIP.
 - minizilla result files arrive attached to the relay message, listed under `attached:`.
 

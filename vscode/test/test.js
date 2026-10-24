@@ -8,6 +8,7 @@ const { parse_commands } = require('../src/orca');
 const { create_zip } = require('../src/zip');
 const { AworkClient, OAuth } = require('../src/awork');
 const { ChatSession } = require('../src/session');
+const { collect_transfers } = require('../src/transfer');
 const repo = require('../src/repo');
 const { render_markdown } = require('../media/markdown');
 
@@ -104,6 +105,31 @@ test('client: base path, download route order, model options in the message body
     assert.equal(seen[1].auth, 'Bearer user');
     await client.agent_defaults('a1');
     assert.equal(seen[2].url, 'https://api.awork.com/api/v1/agents/defaults?type=custom-agent&agentId=a1');
+});
+
+// --- transfer (format of skills/monarch-transfer/pack.py) ---
+const transfer_lines = (path, data, size = 20) => {
+    const packed = zlib.gzipSync(data).toString('base64url');
+    const chunks = packed.match(new RegExp(`.{1,${size}}`, 'g'));
+    const head = `MONARCH-FILE v1 path=${Buffer.from(path).toString('base64url')} sha256=${require('crypto').createHash('sha256').update(data).digest('hex')}`;
+    return chunks.map((chunk, index) => `${head} part=${index + 1}of${chunks.length} data=${chunk}`);
+};
+
+test('transfer: parts from several tool results, escaped results, last complete version, failures', () => {
+    const binary = Buffer.from([0, 255, 43, 47, 10, 13]);
+    const lines = transfer_lines('src/ü x.bin', binary);
+    // stored like awork: JSON with escaped "+" and newlines
+    const stored = text => JSON.stringify({ data: text }).replace(/\+/g, '\\u002B');
+    const old = transfer_lines('a.py', Buffer.from('old'));
+    const messages = [
+        { role: 'agent', content: transfer_lines('in/answer.txt', Buffer.from('ignored'))[0], toolCalls: [{ response: stored(lines.slice(0, 2).join('\n')) }, { response: old.join('\n') }] },
+        { role: 'tool', toolCalls: [{ response: stored(lines.slice(2).join('\n')) }, { response: transfer_lines('a.py', Buffer.from('new')).join('\n') }, { response: { data: transfer_lines('b.md', Buffer.from('B')).join('\n') } }] },
+        { role: 'agent', toolCalls: [{ response: transfer_lines('c.txt', Buffer.from('long enough text for parts')).slice(1).join('\n') }, { response: transfer_lines('d.txt', Buffer.from('D')).join('\n').replace(/sha256=\w{64}/g, `sha256=${'0'.repeat(64)}`) }] },
+    ];
+    const { files: got, failed } = collect_transfers(messages, 1024);
+    assert.deepEqual(got.map(file => [file.path, file.data.toString('latin1')]), [['src/ü x.bin', binary.toString('latin1')], ['a.py', 'new'], ['b.md', 'B']]);
+    assert.deepEqual(failed.map(item => [item.path, item.reason.replace(/\d+\/\d+/, 'n/m')]), [['c.txt', 'transfer incomplete (n/m parts)'], ['d.txt', 'checksum mismatch']]);
+    assert.match(collect_transfers(messages, 2).failed[0].reason, /larger than 2 bytes/);
 });
 
 // --- session with fake awork ---
@@ -215,6 +241,18 @@ test('session: files from hidden artifact markers are downloaded once, failures 
     assert.equal(answer.text, 'Fertig.');
     assert.deepEqual(answer.warnings.map(warning => warning.split(' (')[0]), ['c.txt not received']);
     assert.ok(lines.some(line => line.includes('download c.txt: failed, file {"id":null,"name":"c.txt","mimeType":null,"sandboxPath":"/workspace/output/c.txt","downloadUrl":null}')), lines.join('\n'));
+});
+
+test('session: transferred files are written and not downloaded, unsafe paths refused', async () => {
+    const fake = new FakeAwork();
+    let downloads = 0;
+    fake.download_file = async () => { downloads += 1; throw new Error('401 no permissions'); };
+    const response = [...transfer_lines('src/a.py', Buffer.from('A = 1\n')), ...transfer_lines('../x.py', Buffer.from('bad'))].join('\n');
+    const { session, written, events } = make_session(fake, () => ({ content: 'Fertig.', files: [out('src/a.py')], toolCalls: [{ id: 'c1', toolName: 'code_mode_execute', response }] }));
+    await session.send('go');
+    assert.deepEqual(written, { 'src/a.py': 'A = 1\n' });
+    assert.equal(downloads, 0);
+    assert.deepEqual(events.find(item => item.role === 'agent').warnings, ['../x.py not written (unsafe path)']);
 });
 
 test('relay: spawn two, attach repo files, forward downloads, write downloaded final file', async () => {
