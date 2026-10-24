@@ -30,15 +30,16 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
 .statusbar { display: flex; align-items: center; gap: 6px; padding: 6px var(--pad); border-bottom: 1px solid var(--vscode-panel-border); font-size: 0.85em; flex-wrap: wrap; }
 .badge { display: inline-flex; gap: 4px; padding: 1px 8px; border-radius: 10px; background: var(--vscode-badge-background); color: var(--vscode-badge-foreground); white-space: nowrap; }
 .badge .label { opacity: 0.8; }
-.badge.adjustable { gap: 3px; padding-left: 4px; padding-right: 4px; }
-.badge-content { display: inline-flex; align-items: center; gap: 4px; }
+.badge.adjustable { position: relative; }
 .adjust-btn {
-  visibility: hidden; flex: 0 0 16px; width: 16px; height: 18px; padding: 0;
-  border: 0; border-radius: 8px; background: transparent; color: inherit; line-height: 1;
+  display: none; position: absolute; top: 0; bottom: 0; width: 16px; padding: 0;
+  border: 0; background: var(--vscode-button-background); color: var(--vscode-button-foreground); line-height: 1;
 }
-.badge.adjustable:hover .adjust-btn { visibility: visible; }
-.adjust-btn:hover:not(:disabled) { background: var(--vscode-toolbar-hoverBackground); }
-.badge.adjustable .adjust-btn:disabled { opacity: 0.45; }
+.badge.adjustable:hover .adjust-btn { display: block; }
+.adjust-btn.less { left: 0; border-radius: 10px 0 0 10px; }
+.adjust-btn.more { right: 0; border-radius: 0 10px 10px 0; }
+.adjust-btn:hover:not(:disabled) { background: var(--vscode-button-hoverBackground); }
+.badge.adjustable .adjust-btn:disabled { opacity: 0.4; cursor: default; }
 .badge.warn { background: var(--vscode-inputValidation-warningBackground); color: var(--vscode-foreground); }
 .spacer { flex: 1; }
 .stop-btn {

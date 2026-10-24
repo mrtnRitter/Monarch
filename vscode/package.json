@@ -1,7 +1,7 @@
 {
   "name": "monarch",
   "displayName": "monarch",
-  "version": "0.15.0",
+  "version": "0.15.1",
   "publisher": "mrtnritter",
   "description": "Chat with awork agents in VS Code. Relays work to co-agents (minizillas) without credits while waiting.",
   "license": "UNLICENSED",

@@ -324,7 +324,7 @@
 
     function adjustment_button(item, direction, enabled, title) {
         const sign = direction < 0 ? '−' : '+';
-        return `<button class="adjust-btn" type="button" data-item="${item}" data-direction="${direction}" title="${escape_html(title)}" ${enabled ? '' : 'disabled'}>${sign}</button>`;
+        return `<button class="adjust-btn ${direction < 0 ? 'less' : 'more'}" type="button" data-item="${item}" data-direction="${direction}" title="${escape_html(title)}" ${enabled ? '' : 'disabled'}>${sign}</button>`;
     }
 
     function adjust_controls(item, max, can_less, can_more, step) {
