@@ -31,29 +31,35 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
 .badge { display: inline-flex; gap: 4px; padding: 1px 8px; border-radius: 10px; background: var(--vscode-badge-background); color: var(--vscode-badge-foreground); white-space: nowrap; }
 .badge .label { opacity: 0.8; }
 .badge.adjustable { position: relative; }
-.adjust-btn {
-  display: none; position: absolute; top: 0; bottom: 0; padding: 0;
-  z-index: 1; border: 0; font-size: 1.1em; font-weight: 600; line-height: 1;
+.adjust-btn, .adjust-value {
+  display: none; position: absolute; top: 0; bottom: 0; z-index: 1;
   align-items: center; justify-content: center;
 }
-.badge.adjustable:hover .adjust-btn { display: inline-flex; }
+.badge.adjustable:hover .adjust-btn, .badge.adjustable:hover .adjust-value { display: inline-flex; }
+.adjust-btn {
+  padding: 0; border: 0; font-size: 1.1em; font-weight: 600; line-height: 1;
+}
 .adjust-btn.less {
-  left: 0; width: 50%; border-radius: 10px 0 0 10px;
+  left: 0; width: 33.34%; border-radius: 10px 0 0 10px;
   background: var(--vscode-inputValidation-errorBackground, #5a1d1d);
   color: var(--vscode-inputValidation-errorForeground, #f48771);
 }
+.adjust-value {
+  left: 33.33%; width: 33.34%; font-weight: 600; text-align: center;
+  background: var(--vscode-badge-background); color: var(--vscode-badge-foreground);
+}
 .adjust-btn.more {
-  right: 0; width: 50%; border-radius: 0 10px 10px 0;
+  right: 0; width: 33.34%; border-radius: 0 10px 10px 0;
   background: var(--vscode-button-background); color: var(--vscode-button-foreground);
 }
 .adjust-btn:hover:not(:disabled) { filter: brightness(1.2); }
-/* stays opaque so the text stays covered; only the sign is dimmed */
+/* stays opaque so the sign stays legible against its overlay */
 .badge.adjustable .adjust-btn:disabled { opacity: 1; cursor: default; filter: grayscale(1) brightness(0.6); }
 .badge.warn { background: var(--vscode-inputValidation-warningBackground); color: var(--vscode-foreground); }
 .spacer { flex: 1; }
 .stop-btn {
   display: inline-flex; align-items: center; justify-content: center;
-  line-height: 1; padding: 0 12px; box-sizing: border-box;
+  line-height: 1; padding: 0 12px 3px; box-sizing: border-box;
   border-radius: 12px; height: 22px;
   background: var(--vscode-inputValidation-errorBackground, #5a1d1d); color: var(--vscode-inputValidation-errorForeground, #f48771);
   border: 1px solid var(--vscode-inputValidation-errorBorder, #be1100);

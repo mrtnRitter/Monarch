@@ -328,11 +328,12 @@
     }
 
     function adjust_controls(item, max, can_less, can_more, step) {
-        if (!(max > 0)) return { less: '', more: '' };
+        if (!(max > 0)) return { less: '', value: '', more: '' };
         const less_title = item === 'credits' ? `−${step} credits for this chat` : '−1 co-agent slot';
         const more_title = item === 'credits' ? `+${step} credits for this chat` : '+1 co-agent slot';
         return {
             less: adjustment_button(item, -1, can_less, less_title),
+            value: `<span class="adjust-value" title="Limit for this chat">${escape_html(String(max))}</span>`,
             more: adjustment_button(item, 1, can_more, more_title),
         };
     }
@@ -343,11 +344,11 @@
         const credit_controls = adjust_controls('credits', status.max_credits, status.can_less_credits, status.can_more_credits, status.credit_step);
         const credits = element('credits');
         credits.className = `badge adjustable${credits_full ? ' warn' : ''}`;
-        credits.innerHTML = `${credit_controls.less}<span class="badge-content"><span class="label">${escape_html(state.labels.chat)}</span> ${escape_html(String(status.credits ?? '?'))} / ${escape_html(String(status.max_credits || '∞'))}</span>${credit_controls.more}`;
+        credits.innerHTML = `${credit_controls.less}${credit_controls.value}<span class="badge-content"><span class="label">${escape_html(state.labels.chat)}</span> ${escape_html(String(status.credits ?? '?'))} / ${escape_html(String(status.max_credits || '∞'))}</span>${credit_controls.more}`;
         const co_controls = adjust_controls('co_agents', status.max_co_agents, status.can_less_co_agents, status.can_more_co_agents);
         const co_agents = element('co_agents');
         co_agents.className = 'badge adjustable';
-        co_agents.innerHTML = `${co_controls.less}<span class="badge-content"><span class="label">${escape_html(state.labels.coAgents)}</span> ${escape_html(String(status.co_agents))} / ${escape_html(String(status.max_co_agents || '∞'))}${status.working ? ` · ${escape_html(String(status.working))} working` : ''}</span>${co_controls.more}`;
+        co_agents.innerHTML = `${co_controls.less}${co_controls.value}<span class="badge-content"><span class="label">${escape_html(state.labels.coAgents)}</span> ${escape_html(String(status.co_agents))} / ${escape_html(String(status.max_co_agents || '∞'))}${status.working ? ` · ${escape_html(String(status.working))} working` : ''}</span>${co_controls.more}`;
         element('send').disabled = status.busy;
         element('model').textContent = `${model_label()} ▾`;
         if (!element('model_menu').classList.contains('hidden')) render_model_menu();

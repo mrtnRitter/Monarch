@@ -1,7 +1,14 @@
 'use strict';
 // Loads the extension with a stubbed vscode module: activation, agents from awork, shared history, model choice, a chat round trip.
 const assert = require('assert/strict');
+const fs = require('fs');
+const path = require('path');
 const Module = require('module');
+
+const chat_source = fs.readFileSync(path.join(__dirname, '../media/chat.js'), 'utf8');
+assert.match(chat_source, /class=\"adjust-value\" title=\"Limit for this chat\">\$\{escape_html\(String\(max\)\)\}/);
+assert.match(chat_source, /adjust_controls\('credits', status\.max_credits/);
+assert.match(chat_source, /adjust_controls\('co_agents', status\.max_co_agents/);
 
 const registered = {};
 const posted = [];
