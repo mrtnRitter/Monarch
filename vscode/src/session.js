@@ -305,6 +305,7 @@ class ChatSession {
         const warnings = [];
         const seen = new Set();
         const transfer = collect_transfers(run, (this.limits.maxFolderMB || 20) * 1024 * 1024);
+        if (!transfer.files.length && !transfer.failed.length) log(`transfer: no MONARCH-FILE lines in ${transfer.tools.length} tool results${transfer.tools.length ? ` (${transfer.tools.join(', ')})` : ''}`);
         for (const { path: sent, data, reason } of [...transfer.files, ...transfer.failed]) {
             const path = files.safe_rel_path(sent);
             if (!path || files.is_junk(path)) {

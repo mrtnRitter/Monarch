@@ -130,6 +130,7 @@ test('transfer: parts from several tool results, escaped results, last complete 
     assert.deepEqual(got.map(file => [file.path, file.data.toString('latin1')]), [['src/ü x.bin', binary.toString('latin1')], ['a.py', 'new'], ['b.md', 'B']]);
     assert.deepEqual(failed.map(item => [item.path, item.reason.replace(/\d+\/\d+/, 'n/m')]), [['c.txt', 'transfer incomplete (n/m parts)'], ['d.txt', 'checksum mismatch']]);
     assert.match(collect_transfers(messages, 2).failed[0].reason, /larger than 2 bytes/);
+    assert.deepEqual(collect_transfers([{ toolCalls: [{ toolName: 'load_skill', response: 'x' }] }, { content: 'no tools' }], 1).tools, ['load_skill']);
 });
 
 // --- session with fake awork ---
@@ -240,6 +241,7 @@ test('session: files from hidden artifact markers are downloaded once, failures 
     const answer = events.find(item => item.role === 'agent');
     assert.equal(answer.text, 'Fertig.');
     assert.deepEqual(answer.warnings.map(warning => warning.split(' (')[0]), ['c.txt not received']);
+    assert.ok(lines.some(line => line.endsWith('transfer: no MONARCH-FILE lines in 0 tool results')), lines.join('\n'));
     assert.ok(lines.some(line => line.includes('download c.txt: failed, file {"id":null,"name":"c.txt","mimeType":null,"sandboxPath":"/workspace/output/c.txt","downloadUrl":null}')), lines.join('\n'));
 });
 

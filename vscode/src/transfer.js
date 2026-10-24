@@ -43,7 +43,7 @@ function _unpack(sha, version, max_bytes) {
 }
 
 /**
- * Files transferred in the tool results of messages: {files: [{path, data}], failed: [{path, reason}]}.
+ * Files transferred in the tool results of messages: {files: [{path, data}], failed: [{path, reason}], tools: [tool names of all calls]}.
  * path = path below output/ as sent (not checked for safety); per path the last completely sent version wins.
  */
 function collect_transfers(messages, max_bytes) {
@@ -61,7 +61,7 @@ function collect_transfers(messages, max_bytes) {
         if (result.data) files.push({ path, data: result.data });
         else failed.push({ path, reason: result.reason });
     }
-    return { files, failed };
+    return { files, failed, tools: messages.flatMap(message => message.toolCalls || []).map(call => call.toolName || '?') };
 }
 
 module.exports = { collect_transfers };

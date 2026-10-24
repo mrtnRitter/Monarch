@@ -26,8 +26,8 @@ Requirements: VS Code 1.85+, Python 3.11+ (only for building).
 
 ```bash
 cd monarch/vscode
-python build_vsix.py                         # -> monarch-0.11.0.vsix
-code --install-extension monarch-0.11.0.vsix
+python build_vsix.py                         # -> monarch-0.11.1.vsix
+code --install-extension monarch-0.11.1.vsix
 ```
 
 Or in VS Code: Extensions view → `…` → **Install from VSIX…**. Optional local tests: `node test/test.js` and `node test/extension_smoke.js`.
@@ -122,7 +122,7 @@ The agent prompts in `zillas/` contain the matching rule; copy them into the age
 
 ### Files written into the repo
 
-The agent saves its result files in `/workspace/output/` with their repo path (e.g. `/workspace/output/src/app.py` → `src/app.py`) and then runs the skill **monarch-transfer** for the files it created or changed. The skill prints each file packed and with its SHA-256 as `MONARCH-FILE` lines into its tool results; awork stores these results with the chat. monarch reads them, puts the parts together, checks the checksum and writes the files into the first open workspace folder; existing files are overwritten. Text files are written as undoable edits. Only paths inside the repo are written (no absolute paths, no `..`, nothing in `.git`), Python caches never. Written files appear as links in the chat; files that could not be taken over are shown as warning, e.g. `not received (checksum mismatch)` or `not received (transfer incomplete (2/3 parts))`.
+The agent saves its result files in `/workspace/output/` with their repo path (e.g. `/workspace/output/src/app.py` → `src/app.py`) and then runs the skill **monarch-transfer** for the files it created or changed, via a code mode tool call (results of sandbox shell calls are not stored in the chat). The skill prints each file packed and with its SHA-256 as `MONARCH-FILE` lines into its tool results; awork stores these results with the chat. monarch reads them, puts the parts together, checks the checksum and writes the files into the first open workspace folder; existing files are overwritten. Text files are written as undoable edits. Only paths inside the repo are written (no absolute paths, no `..`, nothing in `.git`), Python caches never. Written files appear as links in the chat; files that could not be taken over are shown as warning, e.g. `not received (checksum mismatch)` or `not received (transfer incomplete (2/3 parts))`.
 
 The skill sends about 30,000 chars per tool call (roughly 60–100 KB of source code, less for binary files); larger sets take several calls. The agent reads these results, so they cost credits.
 
@@ -130,7 +130,7 @@ Files of the answer that were not transferred are still downloaded the classic w
 
 ### Log
 
-**Output → monarch** shows the run status reported by awork, every transferred file (`transfer <path>: ok` or the reason), every download attempt (route and result), for failed downloads the file data reported by awork (`id`, `name`, `mimeType`, `sandboxPath`, `downloadUrl`) and every reload by `syncInterval`.
+**Output → monarch** shows the run status reported by awork, every transferred file (`transfer <path>: ok` or the reason; `transfer: no MONARCH-FILE lines in N tool results (tool names)` if the agent sent none), every download attempt (route and result), for failed downloads the file data reported by awork (`id`, `name`, `mimeType`, `sandboxPath`, `downloadUrl`) and every reload by `syncInterval`.
 
 ### Co-agents (ORCA commands)
 
