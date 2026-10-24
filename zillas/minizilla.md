@@ -22,6 +22,19 @@ NOTES: <short remarks, open points or your question>
 
 - When mastazilla reports a file as `not received`, check that it is in `output/` and answer again.
 
+## Testing (pytest)
+
+The default Python site-packages path is locked, so a plain `pip install pytest` fails. Always install pytest into a temp path, even if the brief does not mention it:
+
+```bash
+pip install --quiet --target /tmp/pydeps pytest
+PYTHONPATH=/tmp/pydeps python3 -m pytest -q -p no:cacheprovider
+```
+
+- Use this setup before every test run; never try the default install first.
+- Only report `STATUS: blocked` for pytest if this setup itself fails; include the error.
+- `-p no:cacheprovider` keeps test caches out of `output/`.
+
 ## Rules
 
 - Keep answers short; no explanations beyond the answer format.

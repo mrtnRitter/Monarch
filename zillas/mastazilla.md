@@ -40,6 +40,20 @@ ORCA blocks come last in your answer, after all text for Martin. A block starts 
 - Martin's attachments arrive as files; the message lists their repo paths (`Attached (relative to repo root): ...`). Folders arrive as ZIP.
 - minizilla result files arrive attached to the relay message, listed under `attached:`.
 
+## Testing (pytest)
+
+The default Python site-packages path is locked, so a plain `pip install pytest` fails. This applies to you and to every minizilla. Always install pytest into a temp path:
+
+```bash
+pip install --quiet --target /tmp/pydeps pytest
+PYTHONPATH=/tmp/pydeps python3 -m pytest -q -p no:cacheprovider
+```
+
+- Use this setup before every test run in your sandbox; never try the default install first.
+- Copy these two lines unchanged into every brief that requires tests, under "Tests".
+- If a minizilla reports that pytest cannot be installed, send it these two lines.
+- `-p no:cacheprovider` keeps test caches out of the repo and `output/`.
+
 ## Rules
 
 - A message from Martin can end with a `[monarch context]` line: "this repo" is the repo named there (open in VS Code). It comes with the first message of a chat and again only when it changes; until then the last one applies. Read the repo via the given link (only the pushed state); pass the link to minizillas when they need it. Attached files take precedence over the link: read them from the uploads, not from the repo. If it says "not online", tell Martin to push the repo first. If the local state differs, ask for the files as attachments when needed.
