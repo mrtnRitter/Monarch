@@ -7,6 +7,9 @@
     const fence_pattern = /^(`{3,}|~{3,})/;
     const item_pattern = /^(\s*)(?:([-*+])|(\d+)[.)])\s+(.*)$/;
     const table_separator = /^\s*\|?\s*:?-+:?\s*(\|\s*:?-+:?\s*)*\|?\s*$/;
+    // [action, label, tooltip] of the code block toolbar; the chat window handles clicks on data-code-action
+    const code_actions = [['copy', 'Copy', 'Copy'], ['insert', 'Insert', 'Insert at cursor'], ['new_file', 'New file', 'Insert into new file'], ['terminal', 'Terminal', 'Insert into terminal (not run)']];
+    const code_buttons = code_actions.map(([action, label, title]) => `<button class="code-btn" data-code-action="${action}" title="${title}">${label}</button>`).join('');
 
     function escape_html(text) {
         return String(text).replace(/[&<>"']/g, char => escape_map[char]);
@@ -28,6 +31,12 @@
     function closes_fence(line, fence) {
         const trimmed = line.trim();
         return trimmed.length >= fence.length && trimmed[0] === fence[0] && /^(`+|~+)$/.test(trimmed);
+    }
+
+    /** Code block with toolbar (language, actions). */
+    function code_block(code, language) {
+        const lang = escape_html(language);
+        return `<div class="code-block" data-lang="${lang}"><div class="code-head"><span class="code-lang">${lang}</span>${code_buttons}</div><pre><code>${escape_html(code)}</code></pre></div>`;
     }
 
     function table_cells(line) {
@@ -54,7 +63,7 @@
                 const indent = line.length - line.trimStart().length;
                 const code = [];
                 while (++index < lines.length && !closes_fence(lines[index], fence[1])) code.push(lines[index].replace(new RegExp(`^ {0,${indent}}`), ''));
-                out.push(`<pre><code>${escape_html(code.join('\n'))}</code></pre>`);
+                out.push(code_block(code.join('\n'), line.trim().slice(fence[1].length).trim().split(/\s+/)[0]));
                 continue;
             }
             if (!line.trim()) {

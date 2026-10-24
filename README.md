@@ -25,8 +25,8 @@ Requirements: VS Code 1.85+, Python 3.11+ (only for building).
 
 ```bash
 cd monarch/vscode
-python build_vsix.py                         # -> monarch-0.9.0.vsix
-code --install-extension monarch-0.9.0.vsix
+python build_vsix.py                         # -> monarch-0.10.0.vsix
+code --install-extension monarch-0.10.0.vsix
 ```
 
 Or in VS Code: Extensions view → `…` → **Install from VSIX…**. Optional local tests: `node test/test.js` and `node test/extension_smoke.js`.
@@ -99,7 +99,8 @@ If credits cannot be read and `maxCredits` is not `0`, the chat does not accept 
 | Item | Display |
 |---|---|
 | Your messages | Right, in a bubble, with your awork profile picture |
-| Agent answers | Left, in a bubble (max. 85 % wide), with the agent's awork profile picture, name and answer time (e.g. `Mastazilla · 19 s`); Markdown incl. tables and code (wide code and tables scroll inside the bubble) |
+| Agent answers | Left, in a bubble (max. 85 % wide), with the agent's awork profile picture, name and answer time (e.g. `Mastazilla · 19 s`); Markdown incl. tables and code (wide code and tables scroll inside the bubble). **Copy** next to the name (on hover) copies the answer as Markdown |
+| Code blocks | Language and toolbar above each block: **Copy**; **Insert** at the cursor of the active or last active editor (replaces selections); **New file** opens an unsaved file with the block's language; **Terminal** puts the code into the active terminal (or a new `monarch` terminal) without running it. Multi-line code is pasted via the clipboard, so it stays in the clipboard |
 | Questions | Questions with answer options from the agent as a card; click an option to send it as your answer, or type your own answer |
 | Steps | Relay and command events as collapsible group (`relay · 3 events`) |
 | While running | Spinner with elapsed time: `<agent> is working …` or `waiting for <co-agents> …` |
@@ -109,10 +110,10 @@ Profile pictures are loaded once per VS Code session; without a picture, initial
 
 ### "This repo" (repo context)
 
-Every message gets a context line at the end that is not shown in the chat. It tells the agent which repo is open in VS Code (the first workspace folder), the browser link of its git remote (`origin` or the upstream of the branch, without credentials), the branch, the open file and whether there are uncommitted changes or commits not pushed. Without a remote it says that the repo is not online. The agent reads the repo via this link (only the pushed state); local changes have to be attached. Requires the built-in VS Code Git extension.
+The first message of a chat gets a context line at the end that is not shown in the chat. It tells the agent which repo is open in VS Code (the first workspace folder), the browser link of its git remote (`origin` or the upstream of the branch, without credentials), the branch and whether there are uncommitted changes or commits not pushed. Without a remote it says that the repo is not online. Later messages only get the line again when it changes (other repo, link or branch, or local changes appear or disappear). The agent reads the repo via this link (only the pushed state); attached files take precedence over the link. Requires the built-in VS Code Git extension.
 
 ```
-[monarch context] "this repo" = the repo open in VS Code: Monarch · online: https://github.com/mrtnRitter/Monarch · branch: main · open file: vscode/src/repo.js
+[monarch context] "this repo" = the repo open in VS Code: Monarch · online: https://github.com/mrtnRitter/Monarch · branch: main
 ```
 
 The agent prompts in `zillas/` contain the matching rule; copy them into the agents in awork after a change.
@@ -121,11 +122,11 @@ The agent prompts in `zillas/` contain the matching rule; copy them into the age
 
 The agent saves its result files in `/workspace/output/` with their repo path (e.g. `/workspace/output/src/app.py` → `src/app.py`). monarch downloads the files attached to the answer and writes them into the first open workspace folder; existing files are overwritten. Text files are written as undoable edits. Only paths inside the repo are written (no absolute paths, no `..`, nothing in `.git`), Python caches never. Written files appear as links in the chat; files that could not be downloaded are shown as warning (`not received (download failed: …)`).
 
-Download order: the download link of the file, the file route by id, then the file list of the chat (matched by unique file name).
+Files are taken from the file list of the answer and from hidden file markers in the answer text (only paths below `/workspace/output/`). Download order per file: the download link of the file, the artifact route of the chat by output path (`artifacts/download?path=<path below output/>`, then with `output/` prefix), then the file route by id (only for real file IDs).
 
 ### Log
 
-**Output → monarch** shows the run status reported by awork, downloads (ok or the error of awork) and every reload by `syncInterval`.
+**Output → monarch** shows the run status reported by awork, every download attempt (route and result), for failed downloads the file data reported by awork (`id`, `name`, `mimeType`, `sandboxPath`, `downloadUrl`) and every reload by `syncInterval`.
 
 ### Co-agents (ORCA commands)
 

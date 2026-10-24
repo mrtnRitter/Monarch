@@ -81,9 +81,9 @@ function _signature(messages) {
     return messages.map(message => `${message.id}:${(message.content || '').length}:${(message.toolCalls || []).length}:${message.isStreaming ? 1 : 0}`).join('|');
 }
 
-/** Chat state with defaults: thread, title, model override, job (rounds, co-agents). */
+/** Chat state with defaults: thread, title, model override, last sent repo context, job (rounds, co-agents). */
 function _new_state(state) {
-    return { thread_id: null, title: null, model: null, rounds: 0, next_index: 1, co_agents: {}, ...(state || {}) };
+    return { thread_id: null, title: null, model: null, context: null, rounds: 0, next_index: 1, co_agents: {}, ...(state || {}) };
 }
 
 class ChatSession {
@@ -221,7 +221,8 @@ class ChatSession {
         throw new Superseded();
     }
 
-    async _post(content, attachments) {
+    /** Send one message; context = repo context line contained in content, remembered once the message is accepted. */
+    async _post(content, attachments, context = null) {
         const started = Date.now();
         this._set_phase('agent');
         let accepted;
@@ -233,12 +234,17 @@ class ChatSession {
             this.state.thread_id = accepted.id;
             this._save();
         }
+        if (context) {
+            this.state.context = context;
+            this._save();
+        }
         const run = await this._wait_for_run(this.state.thread_id, await this._accepted_id(this.state.thread_id, accepted));
         return { ...run, duration_ms: Date.now() - started };
     }
 
     /**
      * Send a user message (with uploads [{name, data, mime_type}]) and run the relay until the agent stops issuing commands.
+     * The repo context line is only added when it differs from the last one sent in this chat.
      * Resolves when the agent is done or stopped.
      */
     async send(text, uploads = [], context = '') {
@@ -250,9 +256,10 @@ class ChatSession {
         try {
             await this._check_budget(true);
             if (!this.state.thread_id && !this.state.title) this.state.title = _first_line(text);
-            let next = { content: context ? `${text}\n\n${context}` : text, attachments: await this._upload(uploads) };
+            const fresh = context && context !== this.state.context ? context : null;
+            let next = { content: fresh ? `${text}\n\n${fresh}` : text, attachments: await this._upload(uploads), context: fresh };
             this.ui.message({ role: 'user', text });
-            while (next) next = await this._handle_answer(await this._post(next.content, next.attachments));
+            while (next) next = await this._handle_answer(await this._post(next.content, next.attachments, next.context));
         } catch (error) {
             if (error instanceof Superseded) this.ui.info('chat continued in awork: stopped waiting, the chat is reloaded');
             else if (!(error instanceof StopRequested)) throw error;
@@ -288,22 +295,25 @@ class ChatSession {
         return this._build_relay([], this._co_agents(co_agent => co_agent.state === 'working'), results, false);
     }
 
-    /** Download the output files of a run: {files: [{path, data}], warnings}. */
+    /** Download the output files of a run (message files, then hidden artifact markers): {files: [{path, data}], warnings}. */
     async _collect_files(thread_id, run) {
-        const found = new Map();
+        const found = [];
         const warnings = [];
-        for (const file of run.flatMap(message => message.temporaryFiles || [])) {
+        const seen = new Set();
+        for (const file of run.flatMap(message => [...(message.temporaryFiles || []), ...(_is_user(message) ? [] : files.marker_files(message.content))])) {
             const path = files.safe_rel_path(files.output_rel_path(file));
-            if (!path || files.is_junk(path) || files.is_junk(file.sandboxPath || file.id || '') || found.has(path)) continue;
+            if (!path || files.is_junk(path) || files.is_junk(file.sandboxPath || file.id || '') || seen.has(path)) continue;
+            seen.add(path);
             try {
-                found.set(path, { path, data: await this.client.download_file(thread_id, file) });
+                found.push({ path, data: await this.client.download_file(thread_id, file) });
                 log(`download ${path}: ok`);
             } catch (error) {
-                log(`download ${path}: failed: ${error.message}`);
+                const meta = Object.fromEntries(['id', 'name', 'mimeType', 'sandboxPath', 'downloadUrl'].map(key => [key, file[key] ?? null]));
+                log(`download ${path}: failed, file ${JSON.stringify(meta)}: ${error.message}`);
                 warnings.push(`${path} not received (download failed: ${error.message.slice(0, 160)})`);
             }
         }
-        return { files: [...found.values()], warnings };
+        return { files: found, warnings };
     }
 
     async _write_repo_files(run) {

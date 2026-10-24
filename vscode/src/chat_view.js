@@ -13,6 +13,7 @@ const image_types = [[[0x89, 0x50, 0x4e, 0x47], 'image/png'], [[0xff, 0xd8, 0xff
 const mime_types = { '.py': 'text/x-python', '.md': 'text/markdown', '.json': 'application/json', '.txt': 'text/plain', '.zip': 'application/zip' };
 const max_chats = 100;
 const max_attachments = 20;
+const language_aliases = { py: 'python', js: 'javascript', ts: 'typescript', sh: 'shellscript', bash: 'shellscript', zsh: 'shellscript', shell: 'shellscript', console: 'shellscript', ps1: 'powershell', pwsh: 'powershell', yml: 'yaml', md: 'markdown', txt: 'plaintext', text: 'plaintext', cs: 'csharp', rb: 'ruby', rs: 'rust', kt: 'kotlin' };
 
 function _config() {
     return vscode.workspace.getConfiguration('monarch');
@@ -42,6 +43,13 @@ function _data_uri(data) {
 function _tab_uri(tab) {
     const input = tab?.input;
     return input?.uri || input?.modified || null;
+}
+
+/** VS Code language id for a code fence language (aliases like py, sh); plaintext if unknown. */
+async function _language_id(language) {
+    const name = (language || '').toLowerCase();
+    const id = language_aliases[name] || name;
+    return id && (await vscode.languages.getLanguages()).includes(id) ? id : 'plaintext';
 }
 
 /** Repository of the VS Code git API for uri; null = no repository, undefined = git not available. */
@@ -142,12 +150,15 @@ const workspace_adapter = {
 
 class ChatView {
     constructor(context, client, oauth) {
-        Object.assign(this, { context, client, oauth, view: null, sessions: new Map(), attachments: [], avatars: new Map(), user_avatar: null, me: null, agent_list: null, models: new Map(), last_file: null, sync_timer: null });
+        Object.assign(this, { context, client, oauth, view: null, sessions: new Map(), attachments: [], avatars: new Map(), user_avatar: null, me: null, agent_list: null, models: new Map(), last_file: null, last_editor: null, sync_timer: null });
         // remember the last file so that "Current file" also works while a preview or other non-file tab is active
         const remember = uri => { if (uri && uri.scheme !== 'untitled') this.last_file = uri; };
+        // remember the last text editor for "Insert at cursor" while the chat window has the focus (output panels excluded)
+        const remember_editor = editor => { if (editor && editor.document.uri.scheme !== 'output') this.last_editor = editor; };
         remember(_tab_uri(vscode.window.tabGroups?.activeTabGroup?.activeTab) || vscode.window.activeTextEditor?.document.uri);
+        remember_editor(vscode.window.activeTextEditor);
         context.subscriptions.push(
-            vscode.window.onDidChangeActiveTextEditor?.(editor => remember(editor?.document.uri)) || { dispose() {} },
+            vscode.window.onDidChangeActiveTextEditor?.(editor => { remember(editor?.document.uri); remember_editor(editor); }) || { dispose() {} },
             vscode.window.tabGroups?.onDidChangeTabs?.(() => remember(_tab_uri(vscode.window.tabGroups.activeTabGroup?.activeTab))) || { dispose() {} },
             { dispose: () => clearTimeout(this.sync_timer) },
         );
@@ -329,6 +340,8 @@ class ChatView {
                 this._post_attachments();
             },
             open_file: () => this._open_file(message.path),
+            copy: () => vscode.env.clipboard.writeText(String(message.text || '')),
+            code_action: () => this._code_action(message.action, String(message.code || ''), message.language),
             input_height: () => this.context.globalState.update('monarch.inputHeight', Math.round(Number(message.height)) || null),
         };
         await (handlers[message.type] || (() => {}))();
@@ -428,13 +441,11 @@ class ChatView {
         await session.send(text + note, uploads, await this._context());
     }
 
-    /** Context line for the agent: open repo, online link, branch, open file, local changes. */
+    /** Context line for the agent: open repo, online link, branch, kind of local changes. */
     async _context() {
         const root = _root();
         if (!root) return context_line({ folder: null });
-        const uri = vscode.window.activeTextEditor?.document.uri;
-        const file = uri?.scheme === 'file' && uri.path.startsWith(`${root.path.replace(/\/$/, '')}/`) ? vscode.workspace.asRelativePath(uri, false) : null;
-        return context_line({ folder: _repo_name(), file, ...git_info(await _git_repository(root)) });
+        return context_line({ folder: _repo_name(), ...git_info(await _git_repository(root)) });
     }
 
     async stop() {
@@ -507,6 +518,37 @@ class ChatView {
         }
         if (!entries.length) throw new Notice(`Folder ${name} has no files to attach (only folders inside the open workspace are supported).`);
         return create_zip(entries);
+    }
+
+    // --- code block actions (like Copilot chat) ---
+    async _code_action(action, code, language) {
+        const actions = {
+            copy: () => vscode.env.clipboard.writeText(code),
+            insert: () => this._insert(code),
+            new_file: async () => vscode.window.showTextDocument(await vscode.workspace.openTextDocument({ language: await _language_id(language), content: code })),
+            terminal: () => this._to_terminal(code),
+        };
+        if (!actions[action]) throw new Notice(`Unknown action ${action}.`);
+        await actions[action]();
+    }
+
+    /** Insert at the cursor of the active (or last active) editor; replaces selections. */
+    async _insert(code) {
+        const editor = [vscode.window.activeTextEditor, this.last_editor].find(item => item && !item.document.isClosed && (vscode.window.visibleTextEditors || []).includes(item));
+        if (!editor) throw new Notice('Open a file in the editor first, then insert.');
+        if (!(await editor.edit(builder => editor.selections.forEach(selection => builder.replace(selection, code))))) throw new Notice('The editor did not accept the insert.');
+        await vscode.window.showTextDocument(editor.document, editor.viewColumn);
+    }
+
+    /** Put code into the active terminal (or a new one) without running it. */
+    async _to_terminal(code) {
+        const terminal = vscode.window.activeTerminal || vscode.window.createTerminal('monarch');
+        terminal.show();
+        const text = code.replace(/\s+$/, '');
+        if (!text.includes('\n')) return terminal.sendText(text, false);
+        // sendText would run multi-line text line by line; paste uses the bracketed paste mode of the shell instead
+        await vscode.env.clipboard.writeText(text);
+        await vscode.commands.executeCommand('workbench.action.terminal.paste');
     }
 
     async _open_file(path) {

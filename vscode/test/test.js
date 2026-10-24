@@ -23,6 +23,10 @@ test('safe paths and junk', () => {
     assert.equal(files.output_rel_path({ id: '/workspace/output/src/a.py', name: 'a.py' }), 'src/a.py');
     assert.equal(files.basename('src\\sub/a.py'), 'a.py');
     assert.equal(files.clean_text('a <!-- hidden --> b'), 'a  b');
+    assert.equal(files.output_path({ name: 'a.py', sandboxPath: 'context/uploads/a.py' }), null);
+    const marker = 'Done.\n<!-- awork-artifacts [{"path":"/workspace/output/src/a.py","inline":false},{"path":"/workspace/scratch/x.txt"},{"label":"no path"}] -->\n<!-- awork-artifacts [broken -->';
+    assert.deepEqual(files.marker_files(marker), [{ name: 'a.py', sandboxPath: '/workspace/output/src/a.py' }]);
+    assert.equal(files.clean_text(marker), 'Done.');
 });
 
 // --- orca ---
@@ -85,9 +89,15 @@ test('client: base path, download route order, model options in the message body
         return { ok: status === 200, status, text: async () => (status === 200 ? '{"acceptedMessageId":"m1"}' : 'no'), arrayBuffer: async () => new ArrayBuffer(1) };
     };
     const client = new AworkClient({ base_url: () => 'https://api.awork.com/api/v1', get_token: async () => 'user', fetch_impl: fake_fetch });
-    await assert.rejects(client.download_file('t', { id: '/workspace/output/a.py', downloadUrl: '/api/v1/agents/threads/t/artifacts/download?path=a' }), /401/);
-    // artifact link first, then the thread file list (no match here)
-    assert.deepEqual(seen.map(item => item.url), ['https://api.awork.com/api/v1/agents/threads/t/artifacts/download?path=a', 'https://api.awork.com/api/v1/agents/threads/t/files']);
+    await assert.rejects(client.download_file('t', { id: '/workspace/output/sub dir/a.py', downloadUrl: '/api/v1/agents/threads/t/artifacts/download?path=a' }), /401/);
+    // downloadUrl first, then the artifact route by output path (as given and with output/ prefix), no file route without uuid
+    const artifacts = 'https://api.awork.com/api/v1/agents/threads/t/artifacts/download?path=';
+    assert.deepEqual(seen.map(item => item.url), [`${artifacts}a`, `${artifacts}sub%20dir/a.py`, `${artifacts}output/sub%20dir/a.py`]);
+    // a downloadUrl equal to the artifact route is not tried twice
+    seen.length = 0;
+    await assert.rejects(client.download_file('x', out('a.py')), /401/);
+    assert.deepEqual(seen.map(item => item.url), [`${artifacts.replace('/t/', '/x/')}a.py`, `${artifacts.replace('/t/', '/x/')}output/a.py`]);
+    await assert.rejects(client.download_file('t', { name: 'x' }), /no download route/);
     seen.length = 1;
     await client.send_message('t', 'hi', [], { modelProvider: 'anthropic', modelName: 'claude', reasoningLevel: 'high' });
     assert.deepEqual(seen[1].body, { content: 'hi', modelProvider: 'anthropic', modelName: 'claude', reasoningLevel: 'high' });
@@ -174,21 +184,37 @@ function make_session(fake, reply, limits = {}) {
 
 const mini_answer = (status, with_file = false) => ({ content: `STATUS: ${status}\nNOTES: x`, files: with_file ? [out('hello.py')] : [] });
 
-test('client: download falls back to the thread file list with a unique name', async () => {
+test('client: download falls back to the file route for a uuid id', async () => {
     const id = '0f0e0d0c-0b0a-4908-8706-050403020100';
-    const listing = [{ id, name: 'a.py' }, { id: 'not-a-uuid', name: 'a.py' }, { id: '1f0e0d0c-0b0a-4908-8706-050403020100', name: 'b.py' }];
     const urls = [];
     const fake_fetch = async url => {
         urls.push(url);
         if (url.includes('artifacts')) return { ok: false, status: 401, text: async () => 'no permissions' };
-        if (url.endsWith('/files')) return { ok: true, status: 200, text: async () => JSON.stringify(listing) };
         return { ok: true, status: 200, arrayBuffer: async () => Buffer.from('A = 1\n') };
     };
     const client = new AworkClient({ base_url: () => 'https://api.awork.com/api/v1', get_token: async () => 'user', fetch_impl: fake_fetch });
-    assert.equal((await client.download_file('t', out('src/a.py'))).toString(), 'A = 1\n');
-    assert.equal(urls.at(-1), `https://api.awork.com/api/v1/agents/threads/t/files/${id}/download`);
-    listing.push({ id: '2f0e0d0c-0b0a-4908-8706-050403020100', fileName: 'a.py' });
-    await assert.rejects(client.download_file('t', out('src/a.py')), /2 files named a\.py, not unique/);
+    assert.equal((await client.download_file('x', { ...out('src/a.py'), id })).toString(), 'A = 1\n');
+    assert.equal(urls.length, 3);
+    assert.equal(urls.at(-1), `https://api.awork.com/api/v1/agents/threads/x/files/${id}/download`);
+});
+
+test('session: files from hidden artifact markers are downloaded once, failures logged with file data', async () => {
+    const fake = new FakeAwork();
+    fake.downloads = { '/workspace/output/src/a.py': 'A\n', '/workspace/output/b.md': 'B\n' };
+    const lines = [];
+    require('../src/log').set_log(line => lines.push(line));
+    const marker = '<!-- awork-artifacts [{"path":"/workspace/output/src/a.py"},{"path":"/workspace/output/b.md"},{"path":"/workspace/output/c.txt"}] -->';
+    const { session, written, events } = make_session(fake, () => ({ content: `Fertig.\n${marker}`, files: [out('src/a.py')] }));
+    try {
+        await session.send('go');
+    } finally {
+        require('../src/log').set_log(null);
+    }
+    assert.deepEqual(written, { 'src/a.py': 'A\n', 'b.md': 'B\n' });
+    const answer = events.find(item => item.role === 'agent');
+    assert.equal(answer.text, 'Fertig.');
+    assert.deepEqual(answer.warnings.map(warning => warning.split(' (')[0]), ['c.txt not received']);
+    assert.ok(lines.some(line => line.includes('download c.txt: failed, file {"id":null,"name":"c.txt","mimeType":null,"sandboxPath":"/workspace/output/c.txt","downloadUrl":null}')), lines.join('\n'));
 });
 
 test('relay: spawn two, attach repo files, forward downloads, write downloaded final file', async () => {
@@ -303,7 +329,8 @@ test('unsafe or missing ATTACH files refuse the command', async () => {
 test('markdown: tables, nested lists with code, quotes, rules, inline', () => {
     const html = render_markdown('## T\n\n**b** *i* `c **x**`\n\n- a\n  - b\n    ```py\n    x = 1\n    ```\n- c\n\n| A | B |\n|---|:-:|\n| 1 | 2 |\n\n> q\n\n---');
     assert.ok(html.startsWith('<h3>T</h3><p><strong>b</strong> <em>i</em> <code>c **x**</code></p>'));
-    assert.ok(html.includes('<ul><li>a<ul><li>b<pre><code>x = 1</code></pre></li></ul></li><li>c</li></ul>'));
+    assert.ok(html.includes('<ul><li>a<ul><li>b<div class="code-block" data-lang="py"><div class="code-head"><span class="code-lang">py</span>'));
+    assert.ok(html.includes('data-code-action="insert"') && html.includes('<pre><code>x = 1</code></pre></div></li></ul></li><li>c</li></ul>'));
     assert.ok(html.includes('<table><thead><tr><th>A</th><th>B</th></tr></thead><tbody><tr><td>1</td><td>2</td></tr></tbody></table>'));
     assert.ok(html.endsWith('<blockquote><p>q</p></blockquote><hr>'));
 });
@@ -367,8 +394,9 @@ test('repo: context line for online, not online, no git, no folder; strip for di
     assert.deepEqual(repo.git_info({ state }), { git: true, remote: 'https://github.com/o/r.git', branch: 'dev', changes: 3, ahead: 2 });
     assert.deepEqual(repo.git_info(null), { git: false });
     assert.deepEqual(repo.git_info(undefined), { git: null });
-    const online = repo.context_line({ folder: 'r', file: 'src/a.py', ...repo.git_info({ state }) });
-    assert.equal(online, '[monarch context] "this repo" = the repo open in VS Code: r · online: https://github.com/o/r · branch: dev · open file: src/a.py · local state differs from online (3 uncommitted changes, 2 commits not pushed); ask for attachments if needed');
+    const online = repo.context_line({ folder: 'r', ...repo.git_info({ state }) });
+    assert.equal(online, '[monarch context] "this repo" = the repo open in VS Code: r · online: https://github.com/o/r · branch: dev · local state differs from online (uncommitted changes, commits not pushed); ask for attachments if needed');
+    assert.equal(repo.context_line({ folder: 'r', ...repo.git_info({ state: { ...state, workingTreeChanges: [1, 2, 3, 4] } }) }), online);
     assert.match(repo.context_line({ folder: 'r', git: true, remote: 'https://github.com/o/r', branch: 'new', ahead: null }), /branch not pushed/);
     assert.match(repo.context_line({ folder: 'r', git: true, remote: null }), /not online \(no remote\); tell the user to push it first/);
     assert.match(repo.context_line({ folder: 'r', git: false }), /not a git repository, not online/);
@@ -389,6 +417,20 @@ test('session: context is sent but not shown; question cards live and in history
     thread.messages.push({ id: 'tool1', role: 'tool', content: '{}', toolCalls: [ask] }, { id: 'a9', role: 'agent', content: '', toolCalls: [{ id: 'call2', arguments: JSON.stringify({ question: 'Sure?', options: ['yes'] }) }, { id: 'call3', arguments: { question: 'no options' } }] });
     const history = await session.history();
     assert.deepEqual(history.map(item => [item.role, item.text]), [['user', 'Hallo'], ['agent', 'Plan ready.'], ['question', 'Which way?'], ['question', 'Sure?']]);
+});
+
+test('session: context line only on the first message and when it changes', async () => {
+    const fake = new FakeAwork();
+    const { session } = make_session(fake, () => ({ content: 'ok' }));
+    await session.send('Hallo', [], '[monarch context] x');
+    await session.send('Weiter', [], '[monarch context] x');
+    await session.send('Anders', [], '[monarch context] y');
+    const thread = fake.threads[session.state.thread_id];
+    assert.deepEqual(thread.messages.filter(message => message.role === 'user').map(message => message.content), ['Hallo\n\n[monarch context] x', 'Weiter', 'Anders\n\n[monarch context] y']);
+    assert.equal(session.state.context, '[monarch context] y');
+    session.new_chat();
+    await session.send('Neu', [], '[monarch context] y');
+    assert.equal(fake.threads[session.state.thread_id].messages[0].content, 'Neu\n\n[monarch context] y');
 });
 
 test('session: has_updates detects messages written elsewhere', async () => {

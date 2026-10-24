@@ -260,6 +260,11 @@
         head.className = 'turn-head';
         head.appendChild(avatar(agent_avatar()));
         head.insertAdjacentHTML('beforeend', `<span class="name">${escape_html(state.agent_name || 'Agent')}</span>${item.duration_ms ? `<span class="meta">· ${format_duration(item.duration_ms)}</span>` : ''}`);
+        if (item.text) {
+            const copy = Object.assign(document.createElement('button'), { className: 'code-btn turn-copy', textContent: 'Copy', title: 'Copy answer (Markdown)' });
+            copy.addEventListener('click', () => { vscode.postMessage({ type: 'copy', text: item.text }); flash(copy); });
+            head.appendChild(copy);
+        }
         const body = document.createElement('div');
         body.className = 'turn-body';
         if (item.text) body.insertAdjacentHTML('beforeend', `<div class="md">${render_markdown(item.text)}</div>`);
@@ -279,6 +284,21 @@
         turn.append(head, body);
         append(turn);
     }
+
+    // --- code block actions: one handler for all blocks, also for blocks from the history ---
+    function flash(button) {
+        const label = button.dataset.label || (button.dataset.label = button.textContent);
+        button.textContent = 'Copied';
+        setTimeout(() => { button.textContent = label; }, 1200);
+    }
+    messages_box().addEventListener('click', event => {
+        const button = event.target.closest('[data-code-action]');
+        if (!button) return;
+        const block = button.closest('.code-block');
+        const action = button.dataset.codeAction;
+        vscode.postMessage({ type: 'code_action', action, code: block.querySelector('code').textContent, language: block.dataset.lang || '' });
+        if (action === 'copy') flash(button);
+    });
 
     // --- status ---
     function show_status(status) {

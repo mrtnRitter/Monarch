@@ -2,6 +2,8 @@
 /** awork API client and OAuth 2.0 login (PKCE, local callback). No VS Code dependency. */
 const crypto = require('crypto');
 const http = require('http');
+const files = require('./files');
+const { log } = require('./log');
 
 const uuid_pattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const token_key = 'monarch.oauth';
@@ -212,38 +214,30 @@ class AworkClient {
     }
 
     /**
-     * Download a message file: downloadUrl first, then the documented file route if id is a uuid,
-     * then the thread file list (matched by unique file name) with the documented file route.
+     * Routes for an agent output file, each once: downloadUrl, the artifact route by output path
+     * (as given and with "output/" prefix, the expected form is not documented), then the file route if id is a uuid.
      */
-    async download_file(thread_id, file) {
-        const routes = [file.downloadUrl, uuid_pattern.test(file.id || '') ? `/agents/threads/${thread_id}/files/${file.id}/download` : null].filter(Boolean);
-        const errors = [];
-        const attempt = async route => {
-            try {
-                return await this.request('GET', route, { raw: true });
-            } catch (error) {
-                errors.push(error.message.slice(0, 300));
-                return null;
-            }
-        };
-        for (const route of routes) {
-            const data = await attempt(route);
-            if (data) return data;
-        }
-        const listed = await this._listed_file_id(thread_id, file).catch(error => { errors.push(error.message.slice(0, 300)); return null; });
-        const data = listed && await attempt(`/agents/threads/${thread_id}/files/${listed}/download`);
-        if (data) return data;
-        throw new AworkError(errors.join('; ') || 'no download route');
+    _download_routes(thread_id, file) {
+        const path = files.output_path(file);
+        const artifact = value => `/agents/threads/${thread_id}/artifacts/download?path=${value.split('/').map(encodeURIComponent).join('/')}`;
+        const routes = [file.downloadUrl, path && artifact(path), path && artifact(`output/${path}`), uuid_pattern.test(file.id || '') && `/agents/threads/${thread_id}/files/${file.id}/download`];
+        return [...new Map(routes.filter(Boolean).map(route => [this._url(route), route])).values()];
     }
 
-    /** Id of the thread file with the same name as file; null if none or ambiguous. */
-    async _listed_file_id(thread_id, file) {
-        const name = (file.name || file.sandboxPath || file.id || '').replace(/\\/g, '/').split('/').pop();
-        const result = await this.request('GET', `/agents/threads/${thread_id}/files`);
-        const items = Array.isArray(result) ? result : result.items || [];
-        const matches = items.filter(item => uuid_pattern.test(item.id || '') && [item.name, item.fileName].includes(name));
-        if (matches.length > 1) throw new AworkError(`file list: ${matches.length} files named ${name}, not unique`);
-        return matches[0]?.id || null;
+    /** Download an agent output file; tries all routes of _download_routes and logs each attempt. */
+    async download_file(thread_id, file) {
+        const errors = [];
+        for (const route of this._download_routes(thread_id, file)) {
+            try {
+                const data = await this.request('GET', route, { raw: true });
+                log(`download ${file.name || file.sandboxPath}: ok via ${route}`);
+                return data;
+            } catch (error) {
+                log(`download ${file.name || file.sandboxPath}: ${route} failed (${error.message.slice(0, 200)})`);
+                errors.push(error.message.slice(0, 300));
+            }
+        }
+        throw new AworkError(errors.join('; ') || 'no download route (no downloadUrl, no output path, no file id)');
     }
 
     /** Signed-in user incl. id, firstName and lastName. */

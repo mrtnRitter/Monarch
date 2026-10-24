@@ -19,6 +19,11 @@ const settings = {
 const uri = path => ({ path, scheme: 'file', toString: () => `file://${path}` });
 const git_repository = { state: { HEAD: { name: 'main', upstream: { remote: 'origin', name: 'main' }, ahead: 0 }, remotes: [{ name: 'origin', fetchUrl: 'git@github.com:mrtnRitter/Monarch.git' }], workingTreeChanges: [], indexChanges: [] } };
 let file_size = 1;
+let clipboard = null;
+const terminal_input = [];
+const shown = [];
+const executed = [];
+const opened = [];
 const log_lines = [];
 let tab_listener = () => {};
 const open_tab = input => { vscode.window.tabGroups.activeTabGroup.activeTab = { input }; tab_listener(); };
@@ -29,7 +34,7 @@ const vscode = {
         fs: { createDirectory: async () => {}, stat: async target => { if (['/repo/README.md', '/repo/big.bin'].includes(target.path)) return { size: file_size }; throw new Error('missing'); }, writeFile: async () => {}, readFile: async () => Buffer.from('x') },
         asRelativePath: value => value.path.replace('/repo/', ''),
         applyEdit: async () => true,
-        openTextDocument: async () => ({ save: async () => true, getText: () => '', positionAt: () => ({}) }),
+        openTextDocument: async options => { opened.push(options); return { save: async () => true, getText: () => '', positionAt: () => ({}) }; },
         onDidChangeConfiguration: () => ({ dispose() {} }),
     },
     window: {
@@ -40,9 +45,14 @@ const vscode = {
         showErrorMessage: message => posted.push({ error: message }),
         showInformationMessage: () => {},
         activeTextEditor: null,
+        visibleTextEditors: [],
+        activeTerminal: null,
+        createTerminal: name => ({ name, show() {}, sendText: (text, execute) => terminal_input.push([name, text, execute]) }),
+        showTextDocument: async document => shown.push(document),
     },
-    commands: { registerCommand: (id, fn) => { registered[id] = fn; return { dispose() {} }; }, executeCommand: async () => {} },
-    env: { openExternal: async () => true },
+    commands: { registerCommand: (id, fn) => { registered[id] = fn; return { dispose() {} }; }, executeCommand: async id => { executed.push(id); } },
+    env: { openExternal: async () => true, clipboard: { writeText: async text => { clipboard = text; } } },
+    languages: { getLanguages: async () => ['python', 'plaintext', 'shellscript'] },
     extensions: { getExtension: id => (id === 'vscode.git' ? { isActive: true, exports: { getAPI: () => ({ getRepository: () => git_repository }) } } : undefined) },
     Uri: { parse: value => value, joinPath: (base, ...parts) => uri([base.path, ...parts].join('/')) },
     WorkspaceEdit: class { createFile() {} insert() {} replace() {} },
@@ -124,7 +134,9 @@ const settle = () => new Promise(resolve => setTimeout(resolve, 20));
     assert.equal(last('status').status.credits, 7);
     await on_message({ type: 'set_model', model: { provider: 'anthropic', name: 'opus', reasoning: 'low' } });
     await on_message({ type: 'send', text: 'Noch was' });
-    assert.deepEqual(bodies.filter(item => item.route === '/agents/threads/thread1/messages').pop().body, { content: 'Noch was\n\n[monarch context] "this repo" = the repo open in VS Code: repo · online: https://github.com/mrtnRitter/Monarch · branch: main', modelProvider: 'anthropic', modelName: 'opus', reasoningLevel: 'low' });
+    // context line with the first message only (unchanged afterwards), without open file
+    assert.equal(bodies.find(item => item.route === '/agents/threads').body.content, 'Hallo Welt\nzweite Zeile\n\n[monarch context] "this repo" = the repo open in VS Code: repo · online: https://github.com/mrtnRitter/Monarch · branch: main');
+    assert.deepEqual(bodies.filter(item => item.route === '/agents/threads/thread1/messages').pop().body, { content: 'Noch was', modelProvider: 'anthropic', modelName: 'opus', reasoningLevel: 'low' });
     // history list, new chat, reopen, remove
     let chats = last('chats').items;
     assert.deepEqual(chats.map(chat => [chat.thread_id, chat.title, chat.repo, chat.current]), [['thread1', 'Hallo Welt', 'repo', true]]);
@@ -186,6 +198,26 @@ const settle = () => new Promise(resolve => setTimeout(resolve, 20));
     assert.deepEqual(last('chats').items, []);
     assert.ok(!posted.some(message => message.error), JSON.stringify(posted.filter(message => message.error)));
     const errors = posted.filter(message => message.type === "error" && !message.transient); assert.deepEqual(errors, [], JSON.stringify(errors));
+    // code block actions and copy answer
+    await on_message({ type: 'code_action', action: 'copy', code: 'x = 1', language: 'py' });
+    assert.equal(clipboard, 'x = 1');
+    await on_message({ type: 'copy', text: '**Antwort**' });
+    assert.equal(clipboard, '**Antwort**');
+    await on_message({ type: 'code_action', action: 'new_file', code: 'x = 1', language: 'py' });
+    await on_message({ type: 'code_action', action: 'new_file', code: 'x', language: 'unknownlang' });
+    assert.deepEqual(opened.slice(-2), [{ language: 'python', content: 'x = 1' }, { language: 'plaintext', content: 'x' }]);
+    await on_message({ type: 'code_action', action: 'insert', code: 'x = 1', language: 'py' });
+    assert.deepEqual([last('error').text, last('error').transient], ['Open a file in the editor first, then insert.', true]);
+    const edits = [];
+    const editor = { document: { isClosed: false, uri: uri('/repo/a.py') }, selections: ['s1', 's2'], viewColumn: 1, edit: async fn => { fn({ replace: (selection, text) => edits.push([selection, text]) }); return true; } };
+    vscode.window.visibleTextEditors = [editor];
+    provider.last_editor = editor;
+    await on_message({ type: 'code_action', action: 'insert', code: 'y', language: '' });
+    assert.deepEqual(edits, [['s1', 'y'], ['s2', 'y']]);
+    await on_message({ type: 'code_action', action: 'terminal', code: 'ls -la\n', language: 'sh' });
+    assert.deepEqual(terminal_input, [['monarch', 'ls -la', false]]);
+    await on_message({ type: 'code_action', action: 'terminal', code: 'a\nb', language: 'sh' });
+    assert.deepEqual([clipboard, executed.at(-1), terminal_input.length], ['a\nb', 'workbench.action.terminal.paste', 1]);
     // restart in another repo: same shared list, no current chat there
     vscode.workspace.workspaceFolders = [{ uri: uri('/repo2') }];
     const fresh = new (require('../src/chat_view').ChatView)({ ...context, workspaceState: memento(new Map()) }, null, null);
