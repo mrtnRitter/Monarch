@@ -13,6 +13,7 @@ const image_types = [[[0x89, 0x50, 0x4e, 0x47], 'image/png'], [[0xff, 0xd8, 0xff
 const mime_types = { '.py': 'text/x-python', '.md': 'text/markdown', '.json': 'application/json', '.txt': 'text/plain', '.zip': 'application/zip' };
 const max_chats = 100;
 const max_attachments = 20;
+const remote_chats_ttl_ms = 30_000;
 const language_aliases = { py: 'python', js: 'javascript', ts: 'typescript', sh: 'shellscript', bash: 'shellscript', zsh: 'shellscript', shell: 'shellscript', console: 'shellscript', ps1: 'powershell', pwsh: 'powershell', yml: 'yaml', md: 'markdown', txt: 'plaintext', text: 'plaintext', cs: 'csharp', rb: 'ruby', rs: 'rust', kt: 'kotlin' };
 
 function _config() {
@@ -66,6 +67,7 @@ async function _git_repository(uri) {
 
 const _chats_key = agent => `monarch.chats.${agent.agentId}`;
 const _current_key = agent => `monarch.current.${agent.agentId}`;
+const _hidden_key = agent => `monarch.hidden.${agent.agentId}`;
 
 function _repo_name() {
     return _root()?.path.split('/').filter(Boolean).pop() || null;
@@ -150,7 +152,7 @@ const workspace_adapter = {
 
 class ChatView {
     constructor(context, client, oauth) {
-        Object.assign(this, { context, client, oauth, view: null, sessions: new Map(), attachments: [], avatars: new Map(), user_avatar: null, me: null, agent_list: null, models: new Map(), last_file: null, last_editor: null, sync_timer: null });
+        Object.assign(this, { context, client, oauth, view: null, sessions: new Map(), attachments: [], avatars: new Map(), user_avatar: null, me: null, agent_list: null, models: new Map(), last_file: null, last_editor: null, sync_timer: null, remote_chats: new Map() });
         // remember the last file so that "Current file" also works while a preview or other non-file tab is active
         const remember = uri => { if (uri && uri.scheme !== 'untitled') this.last_file = uri; };
         // remember the last text editor for "Insert at cursor" while the chat window has the focus (output panels excluded)
@@ -256,9 +258,37 @@ class ChatView {
         return session;
     }
 
-    _post_chats(agent) {
+    /** Chats of the agent for the history menu: monarch chats plus chats from awork (web app), without hidden ones. */
+    _history_items(agent) {
         const chats = this._chats(agent);
-        this._post({ type: 'chats', agent: agent.agentId, items: chats.items.map(({ thread_id, title, repo, updated }) => ({ thread_id, title, repo, updated, current: thread_id === chats.current })) });
+        const hidden = new Set(this.context.globalState.get(_hidden_key(agent)) || []);
+        const remote = new Map((this.remote_chats.get(agent.agentId)?.items || []).map(item => [item.thread_id, item]));
+        const local = chats.items.map(({ thread_id, title, repo, updated }) => ({ thread_id, title, repo, updated: Math.max(updated || 0, remote.get(thread_id)?.updated || 0), source: 'monarch' }));
+        const known = new Set(local.map(item => item.thread_id));
+        const merged = [...local, ...[...remote.values()].filter(item => !known.has(item.thread_id) && !hidden.has(item.thread_id))];
+        return { current: chats.current, items: merged.sort((a, b) => b.updated - a.updated).slice(0, max_chats) };
+    }
+
+    _post_chats(agent) {
+        const { current, items } = this._history_items(agent);
+        this._post({ type: 'chats', agent: agent.agentId, items: items.map(item => ({ ...item, current: item.thread_id === current })) });
+    }
+
+    /** Load the agent's chats from awork (cached for 30 s) and update the history menu; failures only go to the log. */
+    async _refresh_remote_chats(agent, force = false) {
+        const cached = this.remote_chats.get(agent.agentId);
+        if (cached && !force && Date.now() - cached.at < remote_chats_ttl_ms) return this._post_chats(agent);
+        try {
+            const threads = await this.client.threads();
+            const items = threads.filter(thread => thread.id && thread.agentId === agent.agentId && !thread.isArchived && !thread.isDeleted).map(thread => ({
+                thread_id: thread.id, title: thread.title || 'Untitled chat', repo: null, updated: Date.parse(thread.lastActivityOn || thread.updatedOn || thread.createdOn || '') || 0, source: 'awork',
+            }));
+            this.remote_chats.set(agent.agentId, { at: Date.now(), items });
+        } catch (error) {
+            log(`chats from awork not loaded: ${error.message}`);
+            this.remote_chats.set(agent.agentId, { at: Date.now(), items: cached?.items || [] });
+        }
+        this._post_chats(agent);
     }
 
     // --- avatars (cached until VS Code restarts) ---
@@ -332,6 +362,7 @@ class ChatView {
             new_chat: () => this.new_chat(),
             open_chat: () => this._open_chat(message.thread_id),
             remove_chat: () => this._remove_chat(message.thread_id),
+            load_chats: () => this._agent() && this._refresh_remote_chats(this._agent()),
             set_model: () => this._session().set_model(message.model),
             sign_in: () => vscode.commands.executeCommand('monarch.signIn'),
             attach: () => this._attach(message.kind),
@@ -366,6 +397,7 @@ class ChatView {
         const session = this._session(agent);
         this._post({ type: 'status', status: session.status(), agent: agent.agentId });
         this._post_chats(agent);
+        this._refresh_remote_chats(agent);
         this._post({ type: 'models', agent: agent.agentId, ...(await this._models(agent)) });
         await this._show_history(session, agent);
         session.refresh_credits();
@@ -410,9 +442,10 @@ class ChatView {
     async _open_chat(thread_id) {
         const agent = this._agent();
         const session = this._session(agent);
-        const item = this._chats(agent).items.find(entry => entry.thread_id === thread_id);
+        const item = this._history_items(agent).items.find(entry => entry.thread_id === thread_id);
         if (!item) throw new Notice('Chat not found in the history.');
-        session.load_state(item.state || { thread_id });
+        // chats from awork are taken into the monarch list when they are opened
+        session.load_state(this._chats(agent).items.find(entry => entry.thread_id === thread_id)?.state || { thread_id, title: item.title });
         await this._show_history(session, agent);
         session.refresh_credits();
     }
@@ -429,6 +462,8 @@ class ChatView {
         const agent = this._agent();
         const session = this._session(agent);
         if (session.state.thread_id === thread_id) await this.new_chat();
+        // hidden, so that the chat does not come back with the next list from awork
+        await this.context.globalState.update(_hidden_key(agent), [...new Set([...(this.context.globalState.get(_hidden_key(agent)) || []), thread_id])].slice(-500));
         await this._drop_chat(agent, thread_id);
     }
 
@@ -552,9 +587,21 @@ class ChatView {
         await vscode.commands.executeCommand('workbench.action.terminal.paste');
     }
 
+    /** Open a written file with the editor VS Code uses for its type (text, image, binary). */
     async _open_file(path) {
         const root = _root();
-        if (root) await vscode.window.showTextDocument(vscode.Uri.joinPath(root, ...path.split('/')));
+        if (!root) throw new Notice('No folder open.');
+        const uri = vscode.Uri.joinPath(root, ...path.split('/'));
+        try {
+            await vscode.workspace.fs.stat(uri);
+        } catch {
+            throw new Notice(`${path} not found in the repo.`);
+        }
+        try {
+            await vscode.commands.executeCommand('vscode.open', uri);
+        } catch (error) {
+            throw new Notice(`${path} could not be opened (${error.message}).`);
+        }
     }
 }
 

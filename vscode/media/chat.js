@@ -92,7 +92,7 @@
                 event.stopPropagation();
                 vscode.postMessage({ type: 'remove_chat', thread_id: chat.thread_id });
             });
-            return menu_item(chat.title, [chat.repo, format_date(chat.updated)].filter(Boolean).join(' · '), chat.current, () => {
+            return menu_item(chat.title, [chat.repo || (chat.source === 'awork' ? 'awork' : ''), format_date(chat.updated)].filter(Boolean).join(' · '), chat.current, () => {
                 close_menus();
                 if (!chat.current) vscode.postMessage({ type: 'open_chat', thread_id: chat.thread_id });
             }, remove);
@@ -243,6 +243,9 @@
             box.className = 'message error';
             box.textContent = item.text;
             if (item.transient) setTimeout(() => box.remove(), 5000);
+            const close = Object.assign(document.createElement('button'), { className: 'error-close', textContent: '✕', title: 'Close' });
+            close.addEventListener('click', () => box.remove());
+            box.appendChild(close);
             return append(box);
         }
         if (item.role === 'user') {
@@ -415,7 +418,11 @@
     });
     element('stop').addEventListener('click', () => vscode.postMessage({ type: 'stop' }));
     element('new_chat').addEventListener('click', () => vscode.postMessage({ type: 'new_chat' }));
-    element('history').addEventListener('click', event => { event.stopPropagation(); toggle_menu('history_menu', render_history); });
+    element('history').addEventListener('click', event => {
+        event.stopPropagation();
+        if (element('history_menu').classList.contains('hidden')) vscode.postMessage({ type: 'load_chats' });
+        toggle_menu('history_menu', render_history);
+    });
     element('model').addEventListener('click', event => { event.stopPropagation(); toggle_menu('model_menu', render_model_menu); });
     element('agent').addEventListener('change', event => vscode.postMessage({ type: 'select_agent', id: event.target.value }));
     for (const kind of ['current', 'files', 'folder']) element(`attach_${kind}`).addEventListener('click', () => vscode.postMessage({ type: 'attach', kind }));

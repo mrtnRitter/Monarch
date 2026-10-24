@@ -50,7 +50,7 @@ const vscode = {
         createTerminal: name => ({ name, show() {}, sendText: (text, execute) => terminal_input.push([name, text, execute]) }),
         showTextDocument: async document => shown.push(document),
     },
-    commands: { registerCommand: (id, fn) => { registered[id] = fn; return { dispose() {} }; }, executeCommand: async id => { executed.push(id); } },
+    commands: { registerCommand: (id, fn) => { registered[id] = fn; return { dispose() {} }; }, executeCommand: async (id, ...args) => { executed.push(id); if (id === 'monarch.signIn') return; return args; } },
     env: { openExternal: async () => true, clipboard: { writeText: async text => { clipboard = text; } } },
     languages: { getLanguages: async () => ['python', 'plaintext', 'shellscript'] },
     extensions: { getExtension: id => (id === 'vscode.git' ? { isActive: true, exports: { getAPI: () => ({ getRepository: () => git_repository }) } } : undefined) },
@@ -89,6 +89,10 @@ global.fetch = async (url, options) => {
     if (route === '/agents/threads/old1/messages' || route === '/agents/threads/old1') return missing();
     if (route === '/agents/threads/thread1') return reply({ id: 'thread1', usage: { creditsUsed: 7 } });
     if (route === '/agents/threads' && options.method === 'POST') return reply({ id: 'thread1', acceptedMessageId: 'u1' });
+    // chats from awork (web app): only for Mastazilla, archived ones are skipped
+    if (route === '/agents/threads' && options.method === 'GET') return reply([{ id: 'web1', title: 'Aus dem Web', agentId: 'master', lastActivityOn: '2026-10-20T10:00:00Z' }, { id: 'arch', title: 'Archiv', agentId: 'master', isArchived: true }]);
+    if (route === '/agents/threads/web1/messages') return reply([{ id: 'w1', role: 'user', content: 'Im Web gefragt', messageOrder: 1 }]);
+    if (route === '/agents/threads/web1') return reply({ id: 'web1', usage: { creditsUsed: 1 } });
     if (route === '/agents/threads/thread1/messages' && options.method === 'POST') return reply({ acceptedMessageId: 'u2' });
     if (route.endsWith('/status')) return reply({ status: 'completed', hasAgentResponse: true });
     if (route === '/agents/threads/thread1/messages') return reply(thread_messages);
@@ -139,7 +143,7 @@ const settle = () => new Promise(resolve => setTimeout(resolve, 20));
     assert.deepEqual(bodies.filter(item => item.route === '/agents/threads/thread1/messages').pop().body, { content: 'Noch was', modelProvider: 'anthropic', modelName: 'opus', reasoningLevel: 'low' });
     // history list, new chat, reopen, remove
     let chats = last('chats').items;
-    assert.deepEqual(chats.map(chat => [chat.thread_id, chat.title, chat.repo, chat.current]), [['thread1', 'Hallo Welt', 'repo', true]]);
+    assert.deepEqual(chats.map(chat => [chat.thread_id, chat.title, chat.repo, chat.current, chat.source]), [['thread1', 'Hallo Welt', 'repo', true, 'monarch'], ['web1', 'Aus dem Web', null, false, 'awork']]);
     assert.equal(global_state.get('monarch.chats.master')[0].thread_id, 'thread1');
     assert.equal(workspace_state.get('monarch.current.master'), 'thread1');
     await on_message({ type: 'new_chat' });
@@ -195,7 +199,19 @@ const settle = () => new Promise(resolve => setTimeout(resolve, 20));
     assert.equal(last('chats').items[0].current, true);
     assert.equal(last('status').status.model.reasoning, 'low');
     await on_message({ type: 'remove_chat', thread_id: 'thread1' });
+    assert.deepEqual(last('chats').items.map(chat => chat.thread_id), ['web1']);
+    // a chat from awork is opened and then belongs to the monarch list; removing hides it for good
+    await on_message({ type: 'open_chat', thread_id: 'web1' });
+    assert.deepEqual(last('history').items.map(item => item.text), ['Im Web gefragt']);
+    assert.equal(global_state.get('monarch.chats.master')[0].title, 'Aus dem Web');
+    await on_message({ type: 'remove_chat', thread_id: 'web1' });
+    await on_message({ type: 'load_chats' });
     assert.deepEqual(last('chats').items, []);
+    // file links open with the editor of their type; missing files give a transient hint
+    await on_message({ type: 'open_file', path: 'README.md' });
+    assert.equal(executed.at(-1), 'vscode.open');
+    await on_message({ type: 'open_file', path: 'gone.bin' });
+    assert.deepEqual([last('error').text, last('error').transient], ['gone.bin not found in the repo.', true]);
     assert.ok(!posted.some(message => message.error), JSON.stringify(posted.filter(message => message.error)));
     const errors = posted.filter(message => message.type === "error" && !message.transient); assert.deepEqual(errors, [], JSON.stringify(errors));
     // code block actions and copy answer
