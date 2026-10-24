@@ -89,10 +89,11 @@ global.fetch = async (url, options) => {
     if (route === '/agents/threads/old1/messages' || route === '/agents/threads/old1') return missing();
     if (route === '/agents/threads/thread1') return reply({ id: 'thread1', usage: { creditsUsed: 7 } });
     if (route === '/agents/threads' && options.method === 'POST') return reply({ id: 'thread1', acceptedMessageId: 'u1' });
-    // chats from awork (web app): only for Mastazilla, archived ones are skipped
-    if (route === '/agents/threads' && options.method === 'GET') return reply([{ id: 'web1', title: 'Aus dem Web', agentId: 'master', lastActivityOn: '2026-10-20T10:00:00Z' }, { id: 'arch', title: 'Archiv', agentId: 'master', isArchived: true }]);
-    if (route === '/agents/threads/web1/messages') return reply([{ id: 'w1', role: 'user', content: 'Im Web gefragt', messageOrder: 1 }]);
-    if (route === '/agents/threads/web1') return reply({ id: 'web1', usage: { creditsUsed: 1 } });
+    // chat started in the awork web app, taken over by link
+    if (route === '/agents/threads/0f0e0d0c-0b0a-4908-8706-050403020100/messages') return reply([{ id: 'w1', role: 'user', content: 'Im Web gefragt', messageOrder: 1 }]);
+    if (route === '/agents/threads/0f0e0d0c-0b0a-4908-8706-050403020100') return reply({ id: '0f0e0d0c-0b0a-4908-8706-050403020100', agentId: 'master', title: 'Aus dem Web', usage: { creditsUsed: 1 } });
+    if (route === '/agents/threads/1f0e0d0c-0b0a-4908-8706-050403020100') return reply({ id: '1f0e0d0c-0b0a-4908-8706-050403020100', agentId: 'code', agentNameSnapshot: 'CodeZilla' });
+    if (route === '/agents/threads/2f0e0d0c-0b0a-4908-8706-050403020100') return missing();
     if (route === '/agents/threads/thread1/messages' && options.method === 'POST') return reply({ acceptedMessageId: 'u2' });
     if (route.endsWith('/status')) return reply({ status: 'completed', hasAgentResponse: true });
     if (route === '/agents/threads/thread1/messages') return reply(thread_messages);
@@ -143,7 +144,7 @@ const settle = () => new Promise(resolve => setTimeout(resolve, 20));
     assert.deepEqual(bodies.filter(item => item.route === '/agents/threads/thread1/messages').pop().body, { content: 'Noch was', modelProvider: 'anthropic', modelName: 'opus', reasoningLevel: 'low' });
     // history list, new chat, reopen, remove
     let chats = last('chats').items;
-    assert.deepEqual(chats.map(chat => [chat.thread_id, chat.title, chat.repo, chat.current, chat.source]), [['thread1', 'Hallo Welt', 'repo', true, 'monarch'], ['web1', 'Aus dem Web', null, false, 'awork']]);
+    assert.deepEqual(chats.map(chat => [chat.thread_id, chat.title, chat.repo, chat.current]), [['thread1', 'Hallo Welt', 'repo', true]]);
     assert.equal(global_state.get('monarch.chats.master')[0].thread_id, 'thread1');
     assert.equal(workspace_state.get('monarch.current.master'), 'thread1');
     await on_message({ type: 'new_chat' });
@@ -199,14 +200,24 @@ const settle = () => new Promise(resolve => setTimeout(resolve, 20));
     assert.equal(last('chats').items[0].current, true);
     assert.equal(last('status').status.model.reasoning, 'low');
     await on_message({ type: 'remove_chat', thread_id: 'thread1' });
-    assert.deepEqual(last('chats').items.map(chat => chat.thread_id), ['web1']);
-    // a chat from awork is opened and then belongs to the monarch list; removing hides it for good
-    await on_message({ type: 'open_chat', thread_id: 'web1' });
-    assert.deepEqual(last('history').items.map(item => item.text), ['Im Web gefragt']);
-    assert.equal(global_state.get('monarch.chats.master')[0].title, 'Aus dem Web');
-    await on_message({ type: 'remove_chat', thread_id: 'web1' });
-    await on_message({ type: 'load_chats' });
     assert.deepEqual(last('chats').items, []);
+    // hidden workaround: take over a chat by its awork link; wrong agent, unknown chat and text without id give hints
+    const ask = answer => { vscode.window.showInputBox = async () => answer; };
+    for (const [answer, hint] of [['kein link', 'No chat id found in the link.'], ['https://x.awork.com/ai/thread/1f0e0d0c-0b0a-4908-8706-050403020100', 'This chat belongs to CodeZilla; select that agent first.'], ['2f0e0d0c-0b0a-4908-8706-050403020100', 'Chat not found or not readable with your login.']]) {
+        ask(answer);
+        await on_message({ type: 'import_chat' });
+        assert.deepEqual([last('error').text, last('error').transient], [hint, true]);
+    }
+    ask(undefined);
+    const before_cancel = posted.length;
+    await on_message({ type: 'import_chat' });
+    assert.equal(posted.length, before_cancel);
+    ask('https://magenta.awork.com/ai/thread/0F0E0D0C-0B0A-4908-8706-050403020100');
+    await on_message({ type: 'import_chat' });
+    assert.deepEqual(last('history').items.map(item => item.text), ['Im Web gefragt']);
+    assert.deepEqual(last('chats').items.map(chat => [chat.thread_id, chat.title, chat.current]), [['0f0e0d0c-0b0a-4908-8706-050403020100', 'Aus dem Web', true]]);
+    assert.ok(log_lines.some(line => line.endsWith('chat 0f0e0d0c-0b0a-4908-8706-050403020100 taken over from awork')));
+    await on_message({ type: 'remove_chat', thread_id: '0f0e0d0c-0b0a-4908-8706-050403020100' });
     // file links open with the editor of their type; missing files give a transient hint
     await on_message({ type: 'open_file', path: 'README.md' });
     assert.equal(executed.at(-1), 'vscode.open');

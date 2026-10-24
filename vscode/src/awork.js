@@ -210,22 +210,6 @@ class AworkClient {
         return (await this.request('POST', '/temporaryfiles', { body: form })).id;
     }
 
-    /**
-     * Chats of the signed-in user (own and shared), queried like the awork web app does; not documented.
-     * Falls back to the plain list if the filter is rejected.
-     */
-    async threads() {
-        const filter = encodeURIComponent('isArchived eq false and (createdBy eq me.id or contributors/any(c: c/userId eq me.id))');
-        let result;
-        try {
-            result = await this.request('GET', `/agents/threads?page=1&pageSize=1000&filterby=${filter}`);
-        } catch (error) {
-            if (error.status !== 400) throw error;
-            result = await this.request('GET', '/agents/threads?page=1&pageSize=1000');
-        }
-        return Array.isArray(result) ? result : result?.items || [];
-    }
-
     /** Files attached to a task (the transfer task of monarch-transfer). */
     async task_files(task_id) {
         const result = await this.request('GET', `/tasks/${task_id}/files`);

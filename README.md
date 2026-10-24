@@ -26,8 +26,8 @@ Requirements: VS Code 1.85+ with the built-in Git extension, an awork account in
 
 ```bash
 cd monarch/vscode
-python build_vsix.py                         # -> monarch-0.14.0.vsix
-code --install-extension monarch-0.14.0.vsix
+python build_vsix.py                         # -> monarch-0.14.1.vsix
+code --install-extension monarch-0.14.1.vsix
 ```
 
 Or in VS Code: Extensions view → `…` → **Install from VSIX…**. Optional local tests: `node test/test.js` and `node test/extension_smoke.js`. No API key is needed.
@@ -44,7 +44,7 @@ Or in VS Code: Extensions view → `…` → **Install from VSIX…**. Optional 
 
 Every user, also the agent owner, does this once:
 
-1. **Install** `monarch-0.14.0.vsix` (see *Installation*) and reload VS Code (Command Palette → **Developer: Reload Window**).
+1. **Install** `monarch-0.14.1.vsix` (see *Installation*) and reload VS Code (Command Palette → **Developer: Reload Window**).
 2. **Sign in:** Open **monarch** in the activity bar and click **Sign in** (or Command Palette → **monarch: Sign in**). The browser opens; log in to awork and select the workspace.
 3. **Create your file drop:** In awork create a **private task**, e.g. `Monarch Transfer`. Open it and copy its id from the address bar: `https://<workspace>.awork.com/tasks/<task id>/details`. Every user needs an own task; never use the task of a colleague.
 4. **Enter the task id:** VS Code settings (`Ctrl+,`), search for `monarch transfer` and paste the id into **Monarch: Transfer Task Id**. In `settings.json`: `"monarch.transferTaskId": "<task id>"`.
@@ -101,8 +101,8 @@ All settings are optional. The agent list comes from awork (see `monarch.agentFi
 | Element | Function |
 |---|---|
 | Agent circles | Agents according to `monarch.agentFilter`, with their profile pictures; click to select. If they do not fit into the panel, a dropdown is shown instead. |
-| History (clock) | Chats of the selected agent (max. 100), newest first: monarch chats from all repos with repo name, plus your chats with this agent from awork (also started in the web app; own and shared, marked `awork`); click to continue a chat, ✕ removes it from the list (the chat stays in awork and does not come back) |
-| New chat (blue +) | Start a new conversation with the selected agent |
+| History (clock) | Chats of the selected agent from all repos (max. 100), newest first, with repo name and date; click to continue a chat, ✕ removes it from the list (the chat stays in awork) |
+| New chat (blue +) | Start a new conversation with the selected agent. **Ctrl+click** (Mac: Cmd+click) takes over an existing chat instead (workaround, e.g. for chats started in the awork web app): paste its link (`https://<workspace>.awork.com/ai/thread/<id>`) or id; the chat must belong to the selected agent and be readable with your login. It opens and is added to the history. |
 | Credits | Credits of the current chat (agent + co-agents) against `maxCredits` |
 | Co-agents | Co-agents of the current job against `maxCoAgents`, incl. how many are working |
 | Model | Model and reasoning level for the next messages of this chat; **Agent default** uses the agent's settings. Saved with the chat; co-agents keep their own model. |
@@ -112,7 +112,7 @@ All settings are optional. The agent list comes from awork (see `monarch.agentFi
 | Enter / Shift+Enter | Send / new line |
 | Ctrl+C / Cmd+C | Copies the selected text of the chat (or of the input) |
 
-The labels of Credits, Co-agents and Stop come from `labels` of the selected agent. The history is stored locally in VS Code for all repos together and survives restarts; the current chat is remembered per repo. Histories of older versions (per repo) are taken over when the repo is opened the first time. Chats from awork are loaded when the history opens (at most every 30 s) and are taken into the local list once opened. This list uses a route of the awork web app that is not documented; if awork refuses it, only monarch chats are shown and the log says `chats from awork not loaded`.
+The labels of Credits, Co-agents and Stop come from `labels` of the selected agent. The history is stored locally in VS Code for all repos together and survives restarts; the current chat is remembered per repo. Histories of older versions (per repo) are taken over when the repo is opened the first time. It only contains chats started or taken over in monarch: awork does not let API clients list chats (the route of the web app and `/agents/management/threads` are refused for non-admins).
 
 A chat continued in the awork web app is updated in the chat window after `syncInterval` seconds. Files from answers that were not started in monarch are not written into the repo.
 
