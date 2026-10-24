@@ -23,7 +23,7 @@ test('period start crosses the year boundary and clamps reset day', () => {
 
 test('sums grouped rows for the requested user and passes the UTC period', async () => {
     const calls = [];
-    const client = { usage_rows: async args => {
+    const usage_client = { usage_rows: async args => {
         calls.push(args);
         return [
             { usageUserId: 'user-a', creditsUsed: 12 },
@@ -31,38 +31,68 @@ test('sums grouped rows for the requested user and passes the UTC period', async
             { usageUserId: 'user-a', creditsUsed: 8 }
         ];
     } };
-    const used = await month_credits(client, 'user-a', date('2026-07-17T15:43:00Z'), 10);
+    const used = await month_credits(usage_client, 'user-a', date('2026-07-17T15:43:00Z'), 10);
     assert.equal(used, 20);
     assert.deepEqual(calls, [{ from: '2026-07-10T00:00:00Z', to: '2026-07-17T00:00:00Z', group_by: 'user' }]);
 });
 
 test('falls back to createdBy rows after a grouped 400', async () => {
     const calls = [];
-    const client = { usage_rows: async args => {
+    const usage_client = { usage_rows: async args => {
         calls.push(args);
         if (args.group_by) throw Object.assign(new Error('bad group'), { status: 400 });
         return [{ createdBy: 'user-a', creditsUsed: 7 }, { createdBy: 'other', creditsUsed: 50 }];
     } };
-    assert.equal(await month_credits(client, 'user-a', date('2026-02-20T00:00:00Z'), 1), 7);
+    assert.equal(await month_credits(usage_client, 'user-a', date('2026-02-20T00:00:00Z'), 1), 7);
     assert.equal(calls.length, 2);
     assert.equal(calls[1].group_by, undefined);
 });
 
 test('falls back when grouped rows have no usageUserId', async () => {
     const calls = [];
-    const client = { usage_rows: async args => {
+    const usage_client = { usage_rows: async args => {
         calls.push(args);
         return args.group_by
             ? [{ creditsUsed: 90 }]
             : [{ createdBy: 'user-a', creditsUsed: 14 }, { createdBy: 'other', creditsUsed: 2 }];
     } };
-    assert.equal(await month_credits(client, 'user-a', date('2026-02-20T00:00:00Z'), 1), 14);
+    assert.equal(await month_credits(usage_client, 'user-a', date('2026-02-20T00:00:00Z'), 1), 14);
     assert.equal(calls.length, 2);
+});
+
+test('usage rows use the key client while me uses the OAuth client', async () => {
+    let me_calls = 0;
+    let usage_calls = 0;
+    const manager = new MonthCredits({
+        client: {
+            me: async () => { me_calls++; return { id: 'user-a' }; },
+            usage_rows: async () => { throw new Error('OAuth client must not read usage'); }
+        },
+        usage_client: {
+            usage_rows: async () => { usage_calls++; return [{ usageUserId: 'user-a', creditsUsed: 14 }]; }
+        },
+        settings: () => ({ quota: 1000, reset_day: 1 }),
+        now: () => date('2026-04-12T12:00:00Z')
+    });
+    assert.equal((await manager.refresh()).used, 14);
+    assert.equal(me_calls, 1);
+    assert.equal(usage_calls, 1);
+});
+
+test('401 stores the API-key rejection message', async () => {
+    const manager = new MonthCredits({
+        client: { me: async () => ({ id: 'user-a' }) },
+        usage_client: { usage_rows: async () => { throw Object.assign(new Error('denied'), { status: 401 }); } },
+        settings: () => ({ quota: 1000, reset_day: 1 }),
+        now: () => date('2026-04-12T12:00:00Z')
+    });
+    assert.equal((await manager.refresh()).error, 'API key rejected (401). Ctrl+click Month to enter it again.');
 });
 
 test('403 stores the admin-rights message', async () => {
     const manager = new MonthCredits({
-        client: { me: async () => ({ id: 'user-a' }), usage_rows: async () => { throw Object.assign(new Error('denied'), { status: 403 }); } },
+        client: { me: async () => ({ id: 'user-a' }) },
+        usage_client: { usage_rows: async () => { throw Object.assign(new Error('denied'), { status: 403 }); } },
         settings: () => ({ quota: 1000, reset_day: 1 }),
         now: () => date('2026-04-12T12:00:00Z')
     });
@@ -72,13 +102,21 @@ test('403 stores the admin-rights message', async () => {
     assert.equal(status.quota, 1000);
 });
 
+test('missing API key keeps its original message', async () => {
+    const manager = new MonthCredits({
+        client: { me: async () => ({ id: 'user-a' }) },
+        usage_client: { usage_rows: async () => { throw new Error('No API key set. Ctrl+click Month to enter it.'); } },
+        settings: () => ({ quota: 1000, reset_day: 1 }),
+        now: () => date('2026-04-12T12:00:00Z')
+    });
+    assert.equal((await manager.refresh()).error, 'No API key set. Ctrl+click Month to enter it.');
+});
+
 test('refresh throttles cached requests unless forced', async () => {
     let usage_calls = 0;
     const manager = new MonthCredits({
-        client: {
-            me: async () => ({ id: 'user-a' }),
-            usage_rows: async () => { usage_calls++; return [{ usageUserId: 'user-a', creditsUsed: 35 }]; }
-        },
+        client: { me: async () => ({ id: 'user-a' }) },
+        usage_client: { usage_rows: async () => { usage_calls++; return [{ usageUserId: 'user-a', creditsUsed: 35 }]; } },
         settings: () => ({ quota: 500, reset_day: 1 }),
         now: () => date('2026-04-12T12:00:00Z'),
         refresh_ms: 60_000
@@ -93,10 +131,8 @@ test('refresh throttles cached requests unless forced', async () => {
 test('reset forgets the user and cached status', async () => {
     let me_calls = 0;
     const manager = new MonthCredits({
-        client: {
-            me: async () => ({ id: `user-${++me_calls}` }),
-            usage_rows: async () => [{ usageUserId: 'user-1', creditsUsed: 22 }]
-        },
+        client: { me: async () => ({ id: `user-${++me_calls}` }) },
+        usage_client: { usage_rows: async () => [{ usageUserId: 'user-1', creditsUsed: 22 }] },
         settings: () => ({ quota: 300, reset_day: 1 }),
         now: () => date('2026-04-12T12:00:00Z')
     });

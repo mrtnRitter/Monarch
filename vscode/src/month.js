@@ -33,28 +33,28 @@ function _sum_credits(rows, matches) {
     }, 0);
 }
 
-async function month_credits(client, user_id, now = new Date(), reset_day = 1) {
+async function month_credits(usage_client, user_id, now = new Date(), reset_day = 1) {
     const from = _utc_day(period_start(now, reset_day));
     const to = _utc_day(new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate())));
     let rows;
     try {
-        rows = await client.usage_rows({ from, to, group_by: 'user' });
+        rows = await usage_client.usage_rows({ from, to, group_by: 'user' });
     } catch (error) {
         if (error.status !== 400) throw error;
-        rows = await client.usage_rows({ from, to });
+        rows = await usage_client.usage_rows({ from, to });
         return _sum_credits(Array.isArray(rows) ? rows : [], row => row.createdBy === user_id);
     }
     rows = Array.isArray(rows) ? rows : [];
     if (!rows.some(row => row.usageUserId !== undefined && row.usageUserId !== null)) {
-        rows = await client.usage_rows({ from, to });
+        rows = await usage_client.usage_rows({ from, to });
         return _sum_credits(Array.isArray(rows) ? rows : [], row => row.createdBy === user_id);
     }
     return _sum_credits(rows, row => row.usageUserId === user_id);
 }
 
 class MonthCredits {
-    constructor({ client, settings, now = () => new Date(), refresh_ms = 60_000 }) {
-        Object.assign(this, { client, settings, now, refresh_ms });
+    constructor({ client, usage_client = client, settings, now = () => new Date(), refresh_ms = 60_000 }) {
+        Object.assign(this, { client, usage_client, settings, now, refresh_ms });
         this._user_id = null;
         this._cached = { used: null, error: null, period_start: null };
         this._last_refresh = null;
@@ -87,12 +87,14 @@ class MonthCredits {
                 const start = period_start(now, settings.reset_day);
                 if (generation === this._generation) this._cached.period_start = start.toISOString().slice(0, 10);
                 if (!this._user_id) this._user_id = (await this.client.me()).id;
-                const used = await month_credits(this.client, this._user_id, now, settings.reset_day);
+                const used = await month_credits(this.usage_client, this._user_id, now, settings.reset_day);
                 if (generation === this._generation) this._cached = { used, error: null, period_start: start.toISOString().slice(0, 10) };
             } catch (error) {
-                const message = error && error.status === 403
-                    ? 'admin rights needed to read your credit usage'
-                    : String(error && error.message ? error.message : error).slice(0, 160);
+                const message = error && error.status === 401
+                    ? 'API key rejected (401). Ctrl+click Month to enter it again.'
+                    : error && error.status === 403
+                        ? 'admin rights needed to read your credit usage'
+                        : String(error && error.message ? error.message : error).slice(0, 160);
                 if (generation === this._generation) this._cached = { used: null, error: message, period_start: this._cached.period_start };
             } finally {
                 if (generation === this._generation) this._last_refresh = _now_ms(this.now);

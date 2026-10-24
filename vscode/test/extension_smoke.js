@@ -5,6 +5,8 @@ const Module = require('module');
 
 const registered = {};
 const posted = [];
+let input_box_value;
+const input_box_calls = [];
 let provider = null;
 let on_message = null;
 // 0.4 single chat (Mastazilla) and 0.5 list (CodeZilla) of this repo, plus a CodeZilla chat from another repo
@@ -43,6 +45,7 @@ const vscode = {
         createOutputChannel: () => ({ appendLine: line => log_lines.push(line), dispose() {} }),
         registerWebviewViewProvider: (id, value) => { provider = value; return { dispose() {} }; },
         showErrorMessage: message => posted.push({ error: message }),
+        showInputBox: async options => { input_box_calls.push(options); return input_box_value; },
         showInformationMessage: () => {},
         activeTextEditor: null,
         visibleTextEditors: [],
@@ -74,12 +77,14 @@ const context = {
 
 // fake awork API over fetch
 const bodies = [];
+const auth_calls = [];
 const png = Uint8Array.from([0x89, 0x50, 0x4e, 0x47, 1, 2]).buffer;
 global.fetch = async (url, options) => {
     const parsed = new URL(url);
     const route = parsed.pathname.replace('/api/v1', '');
     const reply = body => ({ ok: true, status: 200, text: async () => JSON.stringify(body), json: async () => body, arrayBuffer: async () => new ArrayBuffer(0) });
     const missing = () => ({ ok: false, status: 404, text: async () => 'not found' });
+    auth_calls.push({ route, authorization: options.headers.Authorization });
     if (options.body && typeof options.body === 'string') bodies.push({ route, body: JSON.parse(options.body) });
     if (route === '/agents') return reply([{ id: 'master', name: 'Mastazilla', hasImage: true, createdBy: 'other' }, { id: 'mini', name: 'minizilla', createdBy: 'user1' }, { id: 'code', name: 'CodeZilla', createdBy: 'user1' }, { id: 'foreign', name: 'Fremd', createdBy: 'other' }]);
     if (route === '/agents/defaults') return reply({ modelProvider: 'anthropic', modelName: 'opus', reasoningLevel: 'high', availableModels: { providers: [{ provider: 'anthropic', displayName: 'Anthropic', modelDetails: [{ id: 'opus', displayName: 'Claude Opus', supportedReasoningLevels: ['low', 'high'] }] }] } });
@@ -108,7 +113,7 @@ const settle = () => new Promise(resolve => setTimeout(resolve, 20));
 (async () => {
     const extension = require('../src/extension');
     extension.activate(context);
-    assert.deepEqual(Object.keys(registered).sort(), ['monarch.newChat', 'monarch.signIn', 'monarch.signOut', 'monarch.stop']);
+    assert.deepEqual(Object.keys(registered).sort(), ['monarch.newChat', 'monarch.setApiKey', 'monarch.signIn', 'monarch.signOut', 'monarch.stop']);
     const view = { webview: { options: null, html: '', cspSource: 'csp', asWebviewUri: value => value.path, postMessage: message => posted.push(message), onDidReceiveMessage: fn => { on_message = fn; } } };
     provider.resolveWebviewView(view);
     for (const id of ['agents', 'agent', 'month', 'credits', 'co_agents', 'history', 'history_menu', 'model', 'model_menu', 'stop', 'new_chat', 'splitter']) assert.match(view.webview.html, new RegExp(`id="${id}"`), id);
@@ -125,6 +130,29 @@ const settle = () => new Promise(resolve => setTimeout(resolve, 20));
     const month = last('month').month;
     assert.ok(month && ['used', 'quota', 'error', 'period_start'].every(key => Object.hasOwn(month, key)));
     assert.equal(typeof month.quota, 'number');
+    assert.equal(typeof registered['monarch.setApiKey'], 'function');
+
+    const month_message_count = () => posted.filter(message => message.type === 'month').length;
+    const before_escape = month_message_count();
+    input_box_value = undefined;
+    await on_message({ type: 'set_api_key' });
+    assert.equal(secrets.has('monarch.apiKey'), false);
+    assert.equal(month_message_count(), before_escape);
+    assert.deepEqual(input_box_calls.at(-1), {
+        title: 'awork API key',
+        prompt: 'Used only to read your monthly AI credit usage. Stored in VS Code secret storage. Leave empty to remove it.',
+        password: true,
+        ignoreFocusOut: true,
+    });
+
+    input_box_value = ' test-key ';
+    await on_message({ type: 'set_api_key' });
+    assert.equal(secrets.get('monarch.apiKey'), 'test-key');
+    assert.equal(last('month').month.used, 123);
+    assert.ok(auth_calls.some(call => call.route === '/me' && call.authorization === 'Bearer user'));
+    assert.ok(auth_calls.some(call => call.route === '/agents/management/threads' && call.authorization === 'Bearer test-key'));
+    assert.ok(auth_calls.filter(call => call.route === '/agents/management/threads').every(call => call.authorization === 'Bearer test-key'));
+    assert.ok(!JSON.stringify(posted).includes('test-key'));
     assert.equal(init.agents[1].avatar.image.slice(0, 22), 'data:image/png;base64,');
     assert.deepEqual(init.agents[0].avatar, { image: null, initials: 'CZ' });
     assert.ok(init.user.image.startsWith('data:image/png'));
@@ -271,5 +299,12 @@ const settle = () => new Promise(resolve => setTimeout(resolve, 20));
     const fresh = new (require('../src/chat_view').ChatView)({ ...context, workspaceState: memento(new Map()) }, null, null);
     assert.deepEqual(fresh._chats({ agentId: 'code', name: 'CodeZilla' }), { current: null, items: global_state.get('monarch.chats.code') });
     assert.deepEqual(global_state.get('monarch.chats.code').map(chat => chat.thread_id), ['other1', 'old05']);
+    vscode.window.showInputBox = async options => { input_box_calls.push(options); return input_box_value; };
+    input_box_value = '';
+    const before_delete = month_message_count();
+    await on_message({ type: 'set_api_key' });
+    assert.equal(secrets.has('monarch.apiKey'), false);
+    assert.ok(month_message_count() > before_delete);
+    assert.equal(last('month').month.error, 'No API key set. Ctrl+click Month to enter it.');
     console.log("extension smoke test passed");
 })().catch(error => { console.error(error); process.exit(1); });

@@ -152,9 +152,9 @@ const workspace_adapter = {
 };
 
 class ChatView {
-    constructor(context, client, oauth) {
-        Object.assign(this, { context, client, oauth, view: null, sessions: new Map(), attachments: [], avatars: new Map(), user_avatar: null, me: null, agent_list: null, models: new Map(), last_file: null, last_editor: null, sync_timer: null });
-        this.month = new MonthCredits({ client: this.client, settings: () => ({ quota: _config().get('monthlyCredits') || 0, reset_day: _config().get('creditResetDay') || 1 }) });
+    constructor(context, client, oauth, key_client = client, secrets = context.secrets) {
+        Object.assign(this, { context, client, oauth, key_client, secrets, view: null, sessions: new Map(), attachments: [], avatars: new Map(), user_avatar: null, me: null, agent_list: null, models: new Map(), last_file: null, last_editor: null, sync_timer: null });
+        this.month = new MonthCredits({ client: this.client, usage_client: this.key_client, settings: () => ({ quota: _config().get('monthlyCredits') || 0, reset_day: _config().get('creditResetDay') || 1 }) });
         // remember the last file so that "Current file" also works while a preview or other non-file tab is active
         const remember = uri => { if (uri && uri.scheme !== 'untitled') this.last_file = uri; };
         // remember the last text editor for "Insert at cursor" while the chat window has the focus (output panels excluded)
@@ -329,6 +329,20 @@ class ChatView {
         this._post({ type: 'month', month: await this.month.refresh(force) });
     }
 
+    async set_api_key() {
+        const value = await vscode.window.showInputBox({
+            title: 'awork API key',
+            prompt: 'Used only to read your monthly AI credit usage. Stored in VS Code secret storage. Leave empty to remove it.',
+            password: true,
+            ignoreFocusOut: true,
+        });
+        if (value === undefined) return;
+        if (value === '') await this.secrets.delete('monarch.apiKey');
+        else await this.secrets.store('monarch.apiKey', value.trim());
+        this.month.reset();
+        await this._refresh_month(true);
+    }
+
     async _on_message(message) {
         const handlers = {
             ready: () => this.refresh(),
@@ -343,6 +357,7 @@ class ChatView {
             open_chat: () => this._open_chat(message.thread_id),
             remove_chat: () => this._remove_chat(message.thread_id),
             import_chat: () => this._import_chat(),
+            set_api_key: () => this.set_api_key(),
             set_model: () => this._session().set_model(message.model),
             adjust: () => {
                 const session = this._session();

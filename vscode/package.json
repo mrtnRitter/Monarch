@@ -1,217 +1,221 @@
 {
-  "name": "monarch",
-  "displayName": "monarch",
-  "version": "0.15.1",
-  "publisher": "mrtnritter",
-  "description": "Chat with awork agents in VS Code. Relays work to co-agents (minizillas) without credits while waiting.",
-  "license": "UNLICENSED",
-  "repository": {
-    "type": "git",
-    "url": "https://github.com/mrtnRitter/Monarch"
-  },
-  "engines": {
-    "vscode": "^1.85.0"
-  },
-  "categories": [
-    "Other"
-  ],
-  "main": "./src/extension.js",
-  "extensionKind": [
-    "ui",
-    "workspace"
-  ],
-  "activationEvents": [],
-  "contributes": {
-    "viewsContainers": {
-      "activitybar": [
-        {
-          "id": "monarch",
-          "title": "monarch",
-          "icon": "media/monarch.svg"
-        }
-      ]
+    "name": "monarch",
+    "displayName": "monarch",
+    "version": "0.15.2",
+    "publisher": "mrtnritter",
+    "description": "Chat with awork agents in VS Code. Relays work to co-agents (minizillas) without credits while waiting.",
+    "license": "UNLICENSED",
+    "repository": {
+        "type": "git",
+        "url": "https://github.com/mrtnRitter/Monarch"
     },
-    "views": {
-      "monarch": [
-        {
-          "type": "webview",
-          "id": "monarch.chat",
-          "name": "Chat"
-        }
-      ]
+    "engines": {
+        "vscode": "^1.85.0"
     },
-    "commands": [
-      {
-        "command": "monarch.signIn",
-        "title": "monarch: Sign in"
-      },
-      {
-        "command": "monarch.signOut",
-        "title": "monarch: Sign out"
-      },
-      {
-        "command": "monarch.newChat",
-        "title": "monarch: New chat"
-      },
-      {
-        "command": "monarch.stop",
-        "title": "monarch: Stop agent and co-agents"
-      }
+    "categories": [
+        "Other"
     ],
-    "configuration": {
-      "title": "monarch",
-      "properties": {
-        "monarch.apiBaseUrl": {
-          "type": "string",
-          "default": "https://api.awork.com/api/v1",
-          "description": "awork API base URL."
-        },
-        "monarch.clientId": {
-          "type": "string",
-          "default": "monarch",
-          "description": "Client ID of the public awork client app used for sign-in."
-        },
-        "monarch.redirectPort": {
-          "type": "number",
-          "default": 8765,
-          "description": "Local port for the sign-in callback http://localhost:<port>/callback (must match the redirect URI of the client app)."
-        },
-        "monarch.agentFilter": {
-          "type": "string",
-          "enum": [
-            "own",
-            "all"
-          ],
-          "default": "own",
-          "enumDescriptions": [
-            "Agents you created plus agents listed in monarch.agents",
-            "All agents shared with you"
-          ],
-          "description": "Which awork agents appear in the chat window."
-        },
-        "monarch.agents": {
-          "type": "array",
-          "description": "Optional additions per agent. The agent list itself comes from awork. Match by agentId (or name).",
-          "items": {
-            "type": "object",
-            "required": [],
-            "properties": {
-              "name": {
-                "type": "string",
-                "description": "Agent name, used for matching if agentId is empty."
-              },
-              "agentId": {
-                "type": "string",
-                "description": "awork agent ID this entry applies to."
-              },
-              "coAgentId": {
-                "type": "string",
-                "description": "awork agent ID started by ORCA spawn. Empty = no co-agents."
-              },
-              "coAgentName": {
-                "type": "string",
-                "description": "Prefix of co-agent IDs, e.g. minizilla -> minizilla_1."
-              },
-              "labels": {
-                "type": "object",
-                "description": "UI names of the status items.",
-                "properties": {
-                  "month": {
-                    "type": "string"
-                  },
-                  "chat": {
-                    "type": "string"
-                  },
-                  "coAgents": {
-                    "type": "string"
-                  },
-                  "stop": {
-                    "type": "string"
-                  },
-                  "credits": {
-                    "type": "string",
-                    "description": "deprecated, same as chat"
-                  }
+    "main": "./src/extension.js",
+    "extensionKind": [
+        "ui",
+        "workspace"
+    ],
+    "activationEvents": [],
+    "contributes": {
+        "viewsContainers": {
+            "activitybar": [
+                {
+                    "id": "monarch",
+                    "title": "monarch",
+                    "icon": "media/monarch.svg"
                 }
-              }
-            }
-          },
-          "default": [
+            ]
+        },
+        "views": {
+            "monarch": [
+                {
+                    "type": "webview",
+                    "id": "monarch.chat",
+                    "name": "Chat"
+                }
+            ]
+        },
+        "commands": [
             {
-              "agentId": "09bddd40-df90-436a-aad5-f5c2a71f0a9c",
-              "name": "Mastazilla",
-              "coAgentId": "6708accf-622d-46be-9e17-7acf38dd018c",
-              "coAgentName": "minizilla",
-              "labels": {
-                "month": "Monat",
-                "chat": "Chat",
-                "coAgents": "Co-Agenten",
-                "stop": "/stopzilla"
-              }
+                "command": "monarch.signIn",
+                "title": "monarch: Sign in"
+            },
+            {
+                "command": "monarch.signOut",
+                "title": "monarch: Sign out"
+            },
+            {
+                "command": "monarch.newChat",
+                "title": "monarch: New chat"
+            },
+            {
+                "command": "monarch.stop",
+                "title": "monarch: Stop agent and co-agents"
+            },
+            {
+                "command": "monarch.setApiKey",
+                "title": "monarch: Set API key"
             }
-          ]
-        },
-        "monarch.maxCredits": {
-          "type": "number",
-          "default": 1000,
-          "description": "Credit cap per chat (agent + co-agents). Reaching it stops everything. 0 = no cap (also needed if credits cannot be read). Can be changed per chat with − / + in the chat window."
-        },
-        "monarch.maxCoAgents": {
-          "type": "number",
-          "default": 3,
-          "description": "Max. co-agents per job (until cancel/stopzilla). 0 = no cap. Can be changed per chat with − / + in the chat window."
-        },
-        "monarch.maxRounds": {
-          "type": "number",
-          "default": 20,
-          "description": "Max. messages to co-agents per job. 0 = no cap."
-        },
-        "monarch.relayTimeout": {
-          "type": "number",
-          "default": 900,
-          "description": "Seconds the relay waits before waking the agent with the current state. 0 = no limit."
-        },
-        "monarch.pollInterval": {
-          "type": "number",
-          "default": 3,
-          "description": "Seconds between status checks."
-        },
-        "monarch.maxFolderMB": {
-          "type": "number",
-          "default": 20,
-          "description": "Max. size of a folder or file attachment in MB."
-        },
-        "monarch.syncInterval": {
-          "type": "number",
-          "default": 4,
-          "minimum": 0,
-          "description": "Seconds between checks for messages written elsewhere (e.g. awork web app) while the chat window is visible; 0 = off."
-        },
-        "monarch.transferTaskId": {
-          "type": "string",
-          "default": "",
-          "description": "ID of the awork task used as file drop: agents upload their files there with the skill monarch-transfer, monarch fetches, checks and deletes them. Empty = files cannot reach the repo."
-        },
-        "monarch.creditStep": {
-          "type": "number",
-          "default": 100,
-          "minimum": 1,
-          "description": "Credits added or removed per click on − / + of the Chat item (this chat only)."
-        },
-        "monarch.monthlyCredits": {
-          "type": "number",
-          "default": 0,
-          "minimum": 0,
-          "description": "Your monthly awork AI credit quota (AI plan, see awork account settings → awork AI). 0 = show usage only."
-        },
-        "monarch.creditResetDay": {
-          "type": "number",
-          "default": 1,
-          "minimum": 1,
-          "maximum": 28,
-          "description": "Day of the month (UTC) on which your AI credits reset."
+        ],
+        "configuration": {
+            "title": "monarch",
+            "properties": {
+                "monarch.apiBaseUrl": {
+                    "type": "string",
+                    "default": "https://api.awork.com/api/v1",
+                    "description": "awork API base URL."
+                },
+                "monarch.clientId": {
+                    "type": "string",
+                    "default": "monarch",
+                    "description": "Client ID of the public awork client app used for sign-in."
+                },
+                "monarch.redirectPort": {
+                    "type": "number",
+                    "default": 8765,
+                    "description": "Local port for the sign-in callback http://localhost:<port>/callback (must match the redirect URI of the client app)."
+                },
+                "monarch.agentFilter": {
+                    "type": "string",
+                    "enum": [
+                        "own",
+                        "all"
+                    ],
+                    "default": "own",
+                    "enumDescriptions": [
+                        "Agents you created plus agents listed in monarch.agents",
+                        "All agents shared with you"
+                    ],
+                    "description": "Which awork agents appear in the chat window."
+                },
+                "monarch.agents": {
+                    "type": "array",
+                    "description": "Optional additions per agent. The agent list itself comes from awork. Match by agentId (or name).",
+                    "items": {
+                        "type": "object",
+                        "required": [],
+                        "properties": {
+                            "name": {
+                                "type": "string",
+                                "description": "Agent name, used for matching if agentId is empty."
+                            },
+                            "agentId": {
+                                "type": "string",
+                                "description": "awork agent ID this entry applies to."
+                            },
+                            "coAgentId": {
+                                "type": "string",
+                                "description": "awork agent ID started by ORCA spawn. Empty = no co-agents."
+                            },
+                            "coAgentName": {
+                                "type": "string",
+                                "description": "Prefix of co-agent IDs, e.g. minizilla -> minizilla_1."
+                            },
+                            "labels": {
+                                "type": "object",
+                                "description": "UI names of the status items.",
+                                "properties": {
+                                    "month": {
+                                        "type": "string"
+                                    },
+                                    "chat": {
+                                        "type": "string"
+                                    },
+                                    "coAgents": {
+                                        "type": "string"
+                                    },
+                                    "stop": {
+                                        "type": "string"
+                                    },
+                                    "credits": {
+                                        "type": "string",
+                                        "description": "deprecated, same as chat"
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    "default": [
+                        {
+                            "agentId": "09bddd40-df90-436a-aad5-f5c2a71f0a9c",
+                            "name": "Mastazilla",
+                            "coAgentId": "6708accf-622d-46be-9e17-7acf38dd018c",
+                            "coAgentName": "minizilla",
+                            "labels": {
+                                "month": "Monat",
+                                "chat": "Chat",
+                                "coAgents": "Co-Agenten",
+                                "stop": "/stopzilla"
+                            }
+                        }
+                    ]
+                },
+                "monarch.maxCredits": {
+                    "type": "number",
+                    "default": 1000,
+                    "description": "Credit cap per chat (agent + co-agents). Reaching it stops everything. 0 = no cap (also needed if credits cannot be read). Can be changed per chat with − / + in the chat window."
+                },
+                "monarch.maxCoAgents": {
+                    "type": "number",
+                    "default": 3,
+                    "description": "Max. co-agents per job (until cancel/stopzilla). 0 = no cap. Can be changed per chat with − / + in the chat window."
+                },
+                "monarch.maxRounds": {
+                    "type": "number",
+                    "default": 20,
+                    "description": "Max. messages to co-agents per job. 0 = no cap."
+                },
+                "monarch.relayTimeout": {
+                    "type": "number",
+                    "default": 900,
+                    "description": "Seconds the relay waits before waking the agent with the current state. 0 = no limit."
+                },
+                "monarch.pollInterval": {
+                    "type": "number",
+                    "default": 3,
+                    "description": "Seconds between status checks."
+                },
+                "monarch.maxFolderMB": {
+                    "type": "number",
+                    "default": 20,
+                    "description": "Max. size of a folder or file attachment in MB."
+                },
+                "monarch.syncInterval": {
+                    "type": "number",
+                    "default": 4,
+                    "minimum": 0,
+                    "description": "Seconds between checks for messages written elsewhere (e.g. awork web app) while the chat window is visible; 0 = off."
+                },
+                "monarch.transferTaskId": {
+                    "type": "string",
+                    "default": "",
+                    "description": "ID of the awork task used as file drop: agents upload their files there with the skill monarch-transfer, monarch fetches, checks and deletes them. Empty = files cannot reach the repo."
+                },
+                "monarch.creditStep": {
+                    "type": "number",
+                    "default": 100,
+                    "minimum": 1,
+                    "description": "Credits added or removed per click on − / + of the Chat item (this chat only)."
+                },
+                "monarch.monthlyCredits": {
+                    "type": "number",
+                    "default": 0,
+                    "minimum": 0,
+                    "description": "Your monthly awork AI credit quota (AI plan, see awork account settings → awork AI). 0 = show usage only. The quota cannot be read from the awork API."
+                },
+                "monarch.creditResetDay": {
+                    "type": "number",
+                    "default": 1,
+                    "minimum": 1,
+                    "maximum": 28,
+                    "description": "Day of the month (UTC) on which your AI credits reset."
+                }
+            }
         }
-      }
     }
-  }
 }

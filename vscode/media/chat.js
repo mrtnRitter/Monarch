@@ -318,7 +318,7 @@
         const value = month || { used: null, quota: 0, error: null, period_start: null };
         const badge = element('month');
         badge.className = `badge${value.quota > 0 && value.used !== null && value.used >= value.quota * 0.9 ? ' warn' : ''}`;
-        badge.title = value.error || `Your awork AI credits since ${value.period_start || '?'} (all AI use, also outside monarch)`;
+        badge.title = `${value.error || `Your awork AI credits since ${value.period_start || '?'} (all AI use, also outside monarch)`}\nCtrl+click: set API key`;
         badge.innerHTML = `<span class="label">${escape_html(state.labels.month)}</span> ${escape_html(String(value.used ?? '?'))} / ${escape_html(String(value.quota || '–'))}`;
     }
 
@@ -353,6 +353,10 @@
         if (!element('model_menu').classList.contains('hidden')) render_model_menu();
         update_working();
     }
+
+    element('month').addEventListener('click', event => {
+        if (event.ctrlKey || event.metaKey) vscode.postMessage({ type: 'set_api_key' });
+    });
 
     element('statusbar').addEventListener('click', event => {
         const button = event.target.closest('.adjust-btn');
