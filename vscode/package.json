@@ -1,7 +1,7 @@
 {
   "name": "monarch",
   "displayName": "monarch",
-  "version": "0.12.0",
+  "version": "0.13.0",
   "publisher": "mrtnritter",
   "description": "Chat with awork agents in VS Code. Relays work to co-agents (minizillas) without credits while waiting.",
   "license": "UNLICENSED",
@@ -178,6 +178,11 @@
           "default": 4,
           "minimum": 0,
           "description": "Seconds between checks for messages written elsewhere (e.g. awork web app) while the chat window is visible; 0 = off."
+        },
+        "monarch.transferTaskId": {
+          "type": "string",
+          "default": "",
+          "description": "ID of the awork task used as file drop: agents upload their files there with the skill monarch-transfer, monarch fetches, checks and deletes them. Empty = files cannot reach the repo."
         }
       }
     }

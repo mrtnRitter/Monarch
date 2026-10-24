@@ -210,6 +210,20 @@ class AworkClient {
         return (await this.request('POST', '/temporaryfiles', { body: form })).id;
     }
 
+    /** Files attached to a task (the transfer task of monarch-transfer). */
+    async task_files(task_id) {
+        const result = await this.request('GET', `/tasks/${task_id}/files`);
+        return Array.isArray(result) ? result : [];
+    }
+
+    download_task_file(task_id, file_id) {
+        return this.request('GET', `/tasks/${task_id}/files/${file_id}/download`, { raw: true });
+    }
+
+    delete_task_file(task_id, file_id) {
+        return this.request('DELETE', `/tasks/${task_id}/files/${file_id}`);
+    }
+
     /** Signed-in user incl. id, firstName and lastName. */
     me() {
         return this.request('GET', '/me');

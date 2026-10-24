@@ -189,7 +189,7 @@ class ChatView {
 
     _limits() {
         const config = _config();
-        return Object.fromEntries(['maxCredits', 'maxCoAgents', 'maxRounds', 'relayTimeout', 'pollInterval', 'syncInterval', 'maxFolderMB'].map(key => [key, config.get(key)]));
+        return Object.fromEntries(['maxCredits', 'maxCoAgents', 'maxRounds', 'relayTimeout', 'pollInterval', 'syncInterval', 'maxFolderMB', 'transferTaskId'].map(key => [key, config.get(key)]));
     }
 
     async _models(agent) {
@@ -444,8 +444,9 @@ class ChatView {
     /** Context line for the agent: open repo, online link, branch, kind of local changes. */
     async _context() {
         const root = _root();
-        if (!root) return context_line({ folder: null });
-        return context_line({ folder: _repo_name(), ...git_info(await _git_repository(root)) });
+        const transfer_task = (_config().get('transferTaskId') || '').trim() || null;
+        if (!root) return context_line({ folder: null, transfer_task });
+        return context_line({ folder: _repo_name(), transfer_task, ...git_info(await _git_repository(root)) });
     }
 
     async stop() {

@@ -26,8 +26,8 @@ Requirements: VS Code 1.85+, Python 3.11+ (only for building).
 
 ```bash
 cd monarch/vscode
-python build_vsix.py                         # -> monarch-0.12.0.vsix
-code --install-extension monarch-0.12.0.vsix
+python build_vsix.py                         # -> monarch-0.13.0.vsix
+code --install-extension monarch-0.13.0.vsix
 ```
 
 Or in VS Code: Extensions view → `…` → **Install from VSIX…**. Optional local tests: `node test/test.js` and `node test/extension_smoke.js`.
@@ -36,7 +36,8 @@ Or in VS Code: Extensions view → `…` → **Install from VSIX…**. Optional 
 
 1. **Client app for sign-in:** Settings → Integrations → add a client application of type **Public** with the name `monarch`. Redirect URI: `http://localhost:8080/callback` (port = `monarch.redirectPort`). If the client ID is not `monarch`, enter it in `monarch.clientId`.
 2. **Agents:** Create **minizilla** with `zillas/minizilla.md` and a low model preset (e.g. `fast`), **mastazilla** with `zillas/mastazilla.md` and a high model preset (e.g. `deep`). No secret is needed.
-3. **Skill for files:** Create a skill **monarch-transfer** from `skills/monarch-transfer/` (`SKILL.md` and `pack.py`) and attach it to every agent used with monarch (CodeZilla, mastazilla, minizilla). Without it, files cannot reach the repo (see *Files written into the repo*).
+3. **File drop:** Create a private task (e.g. `Monarch Transfer`) and enter its id in `monarch.transferTaskId` (the id is in the task link: `/tasks/<id>/details`). Every user needs an own task.
+4. **Skill for files:** Create a skill **monarch-transfer** from `skills/monarch-transfer/` (`SKILL.md` and `pack.py`), attach it to every agent used with monarch (CodeZilla, mastazilla, minizilla) and enable **awork access** for these agents. Without it, files cannot reach the repo (see *Files written into the repo*).
 
 ## Sharing with colleagues
 
@@ -69,7 +70,8 @@ All settings are optional. The agent list comes from awork (see `monarch.agentFi
 | `monarch.maxRounds` | `20` | Max. messages to co-agents per job; `0` = no cap |
 | `monarch.relayTimeout` | `900` | Seconds the relay waits before waking the agent with the current state; `0` = no limit |
 | `monarch.pollInterval` | `3` | Seconds between status checks |
-| `monarch.maxFolderMB` | `20` | Max. size of a folder or file attachment |
+| `monarch.maxFolderMB` | `20` | Max. size of a folder or file attachment (and of the files in one transfer bundle) |
+| `monarch.transferTaskId` | empty | Id of your private awork task used as file drop for monarch-transfer; empty = files cannot reach the repo |
 | `monarch.syncInterval` | `4` | Seconds between checks for new messages of the current chat written elsewhere (e.g. awork web app) while the chat window is visible; while the agent is working, a newer message of yours written elsewhere ends the wait; `0` = off |
 
 ## Usage
@@ -123,15 +125,13 @@ The agent prompts in `zillas/` contain the matching rule; copy them into the age
 
 ### Files written into the repo
 
-The agent saves its result files in `/workspace/output/` with their repo path (e.g. `/workspace/output/src/app.py` → `src/app.py`) and then runs the skill **monarch-transfer** for the files it created or changed, via a code mode tool call (results of sandbox shell calls are not stored in the chat). The skill prints each file packed and with its SHA-256 as `MONARCH-FILE` lines into its tool results; awork stores these results with the chat. monarch reads them, puts the parts together, checks the checksum and writes the files into the first open workspace folder; existing files are overwritten. Text files are written as undoable edits. Only paths inside the repo are written (no absolute paths, no `..`, nothing in `.git`), Python caches never. Written files appear as links in the chat; files that could not be taken over are shown as warning, e.g. `not received (checksum mismatch)` or `not received (transfer incomplete (2/3 parts))`.
+awork does not let API clients download files from the agent's output folder. Instead the agent saves its files in `/workspace/output/` with their repo path (e.g. `/workspace/output/src/app.py` → `src/app.py`), packs the files it created or changed with the skill **monarch-transfer** into one bundle (`monarch_<chat id>_<time>.json.gz`, every file with its SHA-256) and uploads it to the task of `monarch.transferTaskId`. The task id reaches the agent with the context line and co-agents with a `[monarch transfer]` line in their briefs.
 
-The skill sends about 30,000 chars per tool call (roughly 60–100 KB of source code, less for binary files); larger sets take several calls. The agent reads these results, so they cost credits.
-
-monarch does not download files: awork refuses its download route for API clients (`401 No permissions to access this endpoint`). Files the agent saved in `output/` but did not transfer are shown as `not transferred`.
+After each answer monarch reads the files of that task, takes the bundles of this chat (co-agents: of their chat), checks every checksum and writes the files into the first open workspace folder; existing files are overwritten. Text files are written as undoable edits. Only paths inside the repo are written (no absolute paths, no `..`, nothing in `.git`), Python caches never. A bundle whose files all arrived is deleted from the task; a bundle with errors stays there and is not taken again. Written files appear as links in the chat; problems are shown as warning, e.g. `not received (checksum mismatch)`, or `not transferred` for files the agent saved in `output/` but did not send.
 
 ### Log
 
-**Output → monarch** shows the run status reported by awork, every transferred file (`transfer <path>: ok` or the reason; `transfer: no MONARCH-FILE lines in N tool results (tool names)` if the agent sent none; `saved in output/ but not transferred`) and every reload by `syncInterval`.
+**Output → monarch** shows the run status reported by awork, every transferred file (`transfer <path>: ok (<bundle>)` or the reason, `transfer <bundle>: deleted` / `kept in the transfer task`, `transfer: no bundle of chat … in task …`, `saved in output/ but not sent`) and every reload by `syncInterval`.
 
 ### Co-agents (ORCA commands)
 

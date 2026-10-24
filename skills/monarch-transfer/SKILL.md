@@ -1,27 +1,19 @@
 ---
 name: monarch-transfer
-description: Send files from /workspace/output to monarch (VS Code) byte-exact. Required after saving files for Martin's repo when he works through monarch (messages with a [monarch context] line in the chat, or relay messages).
+description: Send files from /workspace/output to monarch (VS Code) byte-exact via an awork task. Required after saving files for Martin's repo when he works through monarch ([monarch context] line in the chat, or a [monarch transfer] line in a brief).
 ---
 
 # monarch-transfer
 
-monarch cannot download files from the output folder. It reads them from the stored results of your **code mode** tool calls. Results of shell or sandbox tools (e.g. `sandbox_execute`) are not stored in the chat; monarch never sees them. Never paste file contents into your answer.
+monarch cannot download files from the output folder. You pack them into one bundle and upload it to the awork transfer task; monarch fetches the bundle, checks every file and deletes the bundle. Never paste file contents into your answer. Requires awork access.
 
 1. Save every file for the repo in `/workspace/output/` with its repo path (e.g. `/workspace/output/src/app.py`).
-2. Call `code_mode_execute` with `maxResultChars: 40000` and this code. Put the files you created or changed in this answer into `files` (paths relative to `/workspace/output/`). Do not send unchanged files from earlier answers; monarch would overwrite Martin's local versions.
+2. Pack the files you created or changed in this answer (paths relative to `/workspace/output/`). Do not send unchanged files from earlier answers; monarch would overwrite Martin's local versions.
+   `python3 "$(find /workspace/skills -path '*monarch-transfer*' -name pack.py | head -n 1)" src/app.py README.md`
+   It prints `bundle: <path>` and the packed files. If it finds no pack.py, tell Martin that the skill files are missing.
+3. Upload the bundle with `code_mode_execute` to the task id from the `[monarch context]` line (`files: ... awork task <id>`) or from the `[monarch transfer]` line of your brief:
+   - `sandboxInputs`: `[{"name": "bundle", "path": "<path from step 2>", "format": "file"}]`
+   - code: `return await sandbox.uploadFile('bundle', { taskId: '<task id>' });`
+4. Only tell Martin that the files were sent after the upload succeeded. If there is no task id, no awork access or the upload fails, say so instead.
 
-   ```js
-   const files = ['src/app.py', 'README.md'];
-   const batch = 1;
-   const found = await sandbox.exec("find /workspace/skills -path '*monarch-transfer*' -name pack.py | head -n 1");
-   const script = found.stdout.trim();
-   if (!script) return 'monarch-transfer: pack.py not found in /workspace/skills';
-   const result = await sandbox.run({ executable: 'python3', args: [script, ...files, '--batch', String(batch)] });
-   return result.stdout || result.stderr;
-   ```
-
-3. The result must be the complete stdout, not truncated and not stored behind a data reference. If it is, repeat the call with `'--max-chars', '15000'` added to `args`.
-4. The last line is `MONARCH-BATCH k of m (...)`. If it ends with `next: run again with --batch k+1`, repeat the call with that `batch` until it ends with `done`.
-5. Only tell Martin that the files were sent after a result ended with `done`, and quote that last line. If pack.py was not found or the call failed, say so instead.
-
-monarch checks every file with its SHA-256 and reports files it could not take over as `not received (...)`. Send those files again.
+monarch reports files it could not take over as `not received (...)` or `not transferred`. Send those files again with a new bundle.

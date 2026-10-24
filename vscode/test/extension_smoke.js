@@ -135,7 +135,7 @@ const settle = () => new Promise(resolve => setTimeout(resolve, 20));
     await on_message({ type: 'set_model', model: { provider: 'anthropic', name: 'opus', reasoning: 'low' } });
     await on_message({ type: 'send', text: 'Noch was' });
     // context line with the first message only (unchanged afterwards), without open file
-    assert.equal(bodies.find(item => item.route === '/agents/threads').body.content, 'Hallo Welt\nzweite Zeile\n\n[monarch context] "this repo" = the repo open in VS Code: repo · online: https://github.com/mrtnRitter/Monarch · branch: main');
+    assert.equal(bodies.find(item => item.route === '/agents/threads').body.content, 'Hallo Welt\nzweite Zeile\n\n[monarch context] "this repo" = the repo open in VS Code: repo · online: https://github.com/mrtnRitter/Monarch · branch: main · files: no transfer task set (monarch.transferTaskId), files cannot reach the repo');
     assert.deepEqual(bodies.filter(item => item.route === '/agents/threads/thread1/messages').pop().body, { content: 'Noch was', modelProvider: 'anthropic', modelName: 'opus', reasoningLevel: 'low' });
     // history list, new chat, reopen, remove
     let chats = last('chats').items;

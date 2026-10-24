@@ -2,7 +2,7 @@
 /** One chat with an awork agent: messages, co-agent relay via ORCA commands, limits, credits and stop. */
 const files = require('./files');
 const { parse_commands } = require('./orca');
-const { collect_transfers } = require('./transfer');
+const { bundle_thread, unpack_bundle } = require('./bundle');
 const { strip_context } = require('./repo');
 const { log } = require('./log');
 
@@ -15,6 +15,7 @@ const status_pattern = /^\W*STATUS:\W*(\w+)/im;
 const max_attachments = 20;
 const attach_pattern = /^\s*ATTACH:\s*`?([^`\n]+?)`?\s*$/;
 const relay_prefix = '[monarch relay]';
+const max_done_bundles = 200;
 
 class StopRequested extends Error {}
 /** Hint about an action that is not possible right now; shown briefly instead of as an error. */
@@ -82,9 +83,9 @@ function _signature(messages) {
     return messages.map(message => `${message.id}:${(message.content || '').length}:${(message.toolCalls || []).length}:${message.isStreaming ? 1 : 0}`).join('|');
 }
 
-/** Chat state with defaults: thread, title, model override, last sent repo context, job (rounds, co-agents). */
+/** Chat state with defaults: thread, title, model override, last sent repo context, ids of processed bundles, job (rounds, co-agents). */
 function _new_state(state) {
-    return { thread_id: null, title: null, model: null, context: null, rounds: 0, next_index: 1, co_agents: {}, ...(state || {}) };
+    return { thread_id: null, title: null, model: null, context: null, bundles: [], rounds: 0, next_index: 1, co_agents: {}, ...(state || {}) };
 }
 
 class ChatSession {
@@ -104,7 +105,7 @@ class ChatSession {
             signal.addEventListener('abort', () => { clearTimeout(timer); reject(new StopRequested()); }, { once: true });
         }));
         this.state = _new_state(store.load());
-        Object.assign(this, { credits: null, credit_error: null, credits_at: 0, busy: false, stopping: false, controller: null, answers: new Map(), phase: null, phase_since: null, last_states: new Map(), empty_polls: new Map() });
+        Object.assign(this, { credits: null, credit_error: null, credits_at: 0, busy: false, stopping: false, controller: null, answers: new Map(), phase: null, phase_since: null, last_states: new Map(), empty_polls: new Map(), foreign_files: new Set() });
     }
 
     // --- state ---
@@ -296,51 +297,122 @@ class ChatSession {
         return this._build_relay([], this._co_agents(co_agent => co_agent.state === 'working'), results, false);
     }
 
-    /**
-     * Output files of a run, transferred in tool results (monarch-transfer): {files: [{path, data}], warnings}.
-     * Files the agent saved in output/ but did not transfer are reported; awork does not allow API clients to download them.
-     */
-    _collect_files(run) {
-        const found = [];
-        const warnings = [];
-        const seen = new Set();
-        const transfer = collect_transfers(run, (this.limits.maxFolderMB || 20) * 1024 * 1024);
-        if (!transfer.files.length && !transfer.failed.length) log(`transfer: no MONARCH-FILE lines in ${transfer.tools.length} tool results${transfer.tools.length ? ` (${transfer.tools.join(', ')})` : ''}`);
-        for (const { path: sent, data, reason } of [...transfer.files, ...transfer.failed]) {
-            const path = files.safe_rel_path(sent);
-            if (!path || files.is_junk(path)) {
-                warnings.push(`${sent} not written (unsafe path)`);
+    _transfer_task() {
+        return String(this.limits.transferTaskId || '').trim() || null;
+    }
+
+    /** Bundles of thread_id in the transfer task: [{id, name, data}], oldest first; files of other chats are skipped. */
+    async _bundles(task_id, thread_id, max_bytes) {
+        const done = new Set(this.state.bundles);
+        const bundles = [];
+        const items = (await this.client.task_files(task_id)).filter(item => !done.has(item.id) && !this.foreign_files.has(item.id));
+        for (const item of items.sort((a, b) => (a.name || '').localeCompare(b.name || ''))) {
+            const name = item.name || item.fileName || item.id;
+            const named = bundle_thread(name);
+            if (named && named !== thread_id) continue;
+            const data = await this.client.download_task_file(task_id, item.id);
+            // the upload may not keep the file name; then the thread inside the bundle decides
+            if (!named && (() => { try { return unpack_bundle(data, max_bytes).thread !== thread_id; } catch { return true; } })()) {
+                this.foreign_files.add(item.id);
                 continue;
             }
-            seen.add(path);
-            log(`transfer ${path}: ${data ? 'ok' : reason}`);
-            if (data) found.push({ path, data });
-            else warnings.push(`${path} not received (${reason})`);
+            bundles.push({ id: item.id, name, data });
         }
+        return bundles;
+    }
+
+    /**
+     * Output files of a run from the bundles in the transfer task (monarch-transfer): {files: [{path, data, bundle}], warnings, bundles}.
+     * Files the agent saved in output/ but did not send are reported; awork does not allow API clients to download them.
+     */
+    async _collect_files(thread_id, run) {
+        const found = new Map();
+        const warnings = [];
+        const bundles = [];
+        const task_id = this._transfer_task();
+        // base64 makes the unpacked JSON about a third larger than the files
+        const max_bytes = (this.limits.maxFolderMB || 20) * 1024 * 1024 * 2;
+        if (task_id && thread_id) {
+            let items = [];
+            try {
+                items = await this._bundles(task_id, String(thread_id).toLowerCase(), max_bytes);
+            } catch (error) {
+                log(`transfer: task ${task_id} not readable: ${error.message}`);
+                warnings.push(`transfer task not readable (${error.message.slice(0, 160)})`);
+            }
+            for (const { id, name, data } of items) {
+                const bundle = { id, name, ok: true };
+                bundles.push(bundle);
+                try {
+                    const unpacked = unpack_bundle(data, max_bytes);
+                    for (const { path: sent, reason } of unpacked.failed) {
+                        bundle.ok = false;
+                        log(`transfer ${sent}: ${reason} (${name})`);
+                        warnings.push(`${sent} not received (${reason})`);
+                    }
+                    for (const { path: sent, data: content } of unpacked.files) {
+                        const path = files.safe_rel_path(sent);
+                        if (!path || files.is_junk(path)) {
+                            bundle.ok = false;
+                            warnings.push(`${sent} not written (unsafe path)`);
+                            continue;
+                        }
+                        log(`transfer ${path}: ok (${name})`);
+                        found.set(path, { path, data: content, bundle });
+                    }
+                } catch (error) {
+                    bundle.ok = false;
+                    log(`transfer ${name}: ${error.message}`);
+                    warnings.push(`${name} not received (${error.message})`);
+                }
+            }
+        }
+        if (task_id && !bundles.length) log(`transfer: no bundle of chat ${thread_id} in task ${task_id}`);
         for (const file of run.flatMap(message => message.temporaryFiles || []).filter(file => files.output_path(file))) {
             const path = files.safe_rel_path(files.output_rel_path(file));
-            if (!path || files.is_junk(path) || seen.has(path)) continue;
-            seen.add(path);
-            log(`transfer ${path}: saved in output/ but not transferred`);
-            warnings.push(`${path} not transferred`);
+            if (!path || files.is_junk(path) || found.has(path) || warnings.some(warning => warning.startsWith(`${path} `))) continue;
+            log(`transfer ${path}: saved in output/ but not sent`);
+            warnings.push(`${path} not transferred${task_id ? '' : ' (set monarch.transferTaskId)'}`);
         }
-        return { files: found, warnings };
+        return { files: [...found.values()], warnings, bundles };
+    }
+
+    /** Remember processed bundles (never taken twice) and delete the complete ones from the transfer task. */
+    async _finish_bundles(bundles) {
+        if (!bundles.length) return;
+        for (const bundle of bundles) {
+            if (bundle.ok) {
+                try {
+                    await this.client.delete_task_file(this._transfer_task(), bundle.id);
+                    log(`transfer ${bundle.name}: deleted`);
+                } catch (error) {
+                    log(`transfer ${bundle.name}: not deleted: ${error.message}`);
+                }
+            } else {
+                log(`transfer ${bundle.name}: kept in the transfer task (not complete)`);
+            }
+        }
+        this.state.bundles = [...this.state.bundles, ...bundles.map(bundle => bundle.id)].slice(-max_done_bundles);
+        this._save();
     }
 
     async _write_repo_files(run) {
-        const { files: found, warnings } = this._collect_files(run);
+        const { files: found, warnings, bundles } = await this._collect_files(this.state.thread_id, run);
         const written = [];
         for (const file of found) {
             if (!this.workspace) {
+                file.bundle.ok = false;
                 warnings.push(`${file.path} not written (no folder open)`);
                 continue;
             }
             try {
                 written.push({ path: await this.workspace.write(file.path, file.data) });
             } catch (error) {
+                file.bundle.ok = false;
                 warnings.push(`${file.path} not written (${error.message})`);
             }
         }
+        await this._finish_bundles(bundles);
         return { files: written, warnings };
     }
 
@@ -378,6 +450,12 @@ class ChatSession {
         return { content: `${content}\n\nAttached files (relative to repo root): ${paths.join(', ')}`, attachments };
     }
 
+    /** Brief text plus the transfer task line, so that co-agents can send their files. */
+    _with_transfer(content) {
+        const task_id = this._transfer_task();
+        return task_id ? `${content}\n\n[monarch transfer] send result files with the skill monarch-transfer to awork task ${task_id}` : content;
+    }
+
     async _execute({ action, target, body }) {
         const result = (ok, line) => ({ ok, action, line });
         const co_agent = target ? this.state.co_agents[target] : null;
@@ -389,7 +467,7 @@ class ChatSession {
                 const { content, attachments } = await this._brief(body);
                 const id = `${this.agent.coAgentName || 'coagent'}_${this.state.next_index}`;
                 this.state.next_index += 1;
-                const thread = await this.client.create_thread(this.agent.coAgentId, content, `${id} – ${_first_line(content)}`, attachments);
+                const thread = await this.client.create_thread(this.agent.coAgentId, this._with_transfer(content), `${id} – ${_first_line(content)}`, attachments);
                 this.state.co_agents[id] = { thread_id: thread.id, message_id: await this._accepted_id(thread.id, thread), state: 'working', relayed: null };
                 this.state.rounds += 1;
                 return result(true, `spawn ${id}`);
@@ -401,7 +479,7 @@ class ChatSession {
                 const error = this._limit_error(false);
                 if (error) return result(false, `send ${target}: ${error}`);
                 const { content, attachments } = await this._brief(body);
-                const accepted = await this.client.send_message(co_agent.thread_id, content, attachments);
+                const accepted = await this.client.send_message(co_agent.thread_id, this._with_transfer(content), attachments);
                 Object.assign(co_agent, { message_id: await this._accepted_id(co_agent.thread_id, accepted), state: 'working' });
                 this.state.rounds += 1;
                 return result(true, `send ${target}`);
@@ -476,21 +554,24 @@ class ChatSession {
         const co_agent = this.state.co_agents[id];
         const { answer, run } = await this._answer_for(id);
         const text = answer_text(answer);
-        const collected = this._collect_files(run);
+        const collected = await this._collect_files(co_agent.thread_id, run);
         const warnings = [...collected.warnings];
         const attached = [];
         for (const file of collected.files) {
             if (attachments.length >= max_attachments) {
+                file.bundle.ok = false;
                 warnings.push(`${file.path} not attached (max. ${max_attachments} files per message)`);
             } else {
                 try {
                     attachments.push({ temporaryFileId: await this.client.upload_temporary_file(files.basename(file.path), file.data) });
                     attached.push(file.path);
                 } catch (error) {
+                    file.bundle.ok = false;
                     warnings.push(`${file.path} not attached (${error.message.slice(0, 160)})`);
                 }
             }
         }
+        await this._finish_bundles(collected.bundles);
         co_agent.relayed = co_agent.message_id;
         this.answers.delete(id);
         this.ui.info(`relay: ${id} ${co_agent.state}, ${attached.length} files`);
