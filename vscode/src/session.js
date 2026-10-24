@@ -297,10 +297,10 @@ class ChatSession {
     }
 
     /**
-     * Output files of a run: files transferred in tool results (monarch-transfer), then downloads of the
-     * message files and hidden artifact markers that were not transferred. Returns {files: [{path, data}], warnings}.
+     * Output files of a run, transferred in tool results (monarch-transfer): {files: [{path, data}], warnings}.
+     * Files the agent saved in output/ but did not transfer are reported; awork does not allow API clients to download them.
      */
-    async _collect_files(thread_id, run) {
+    _collect_files(run) {
         const found = [];
         const warnings = [];
         const seen = new Set();
@@ -317,24 +317,18 @@ class ChatSession {
             if (data) found.push({ path, data });
             else warnings.push(`${path} not received (${reason})`);
         }
-        for (const file of run.flatMap(message => [...(message.temporaryFiles || []), ...(_is_user(message) ? [] : files.marker_files(message.content))])) {
+        for (const file of run.flatMap(message => message.temporaryFiles || []).filter(file => files.output_path(file))) {
             const path = files.safe_rel_path(files.output_rel_path(file));
-            if (!path || files.is_junk(path) || files.is_junk(file.sandboxPath || file.id || '') || seen.has(path)) continue;
+            if (!path || files.is_junk(path) || seen.has(path)) continue;
             seen.add(path);
-            try {
-                found.push({ path, data: await this.client.download_file(thread_id, file) });
-                log(`download ${path}: ok`);
-            } catch (error) {
-                const meta = Object.fromEntries(['id', 'name', 'mimeType', 'sandboxPath', 'downloadUrl'].map(key => [key, file[key] ?? null]));
-                log(`download ${path}: failed, file ${JSON.stringify(meta)}: ${error.message}`);
-                warnings.push(`${path} not received (download failed: ${error.message.slice(0, 160)})`);
-            }
+            log(`transfer ${path}: saved in output/ but not transferred`);
+            warnings.push(`${path} not transferred`);
         }
         return { files: found, warnings };
     }
 
     async _write_repo_files(run) {
-        const { files: found, warnings } = await this._collect_files(this.state.thread_id, run);
+        const { files: found, warnings } = this._collect_files(run);
         const written = [];
         for (const file of found) {
             if (!this.workspace) {
@@ -482,7 +476,7 @@ class ChatSession {
         const co_agent = this.state.co_agents[id];
         const { answer, run } = await this._answer_for(id);
         const text = answer_text(answer);
-        const collected = await this._collect_files(co_agent.thread_id, run);
+        const collected = this._collect_files(run);
         const warnings = [...collected.warnings];
         const attached = [];
         for (const file of collected.files) {

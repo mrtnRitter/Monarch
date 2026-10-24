@@ -26,8 +26,8 @@ Requirements: VS Code 1.85+, Python 3.11+ (only for building).
 
 ```bash
 cd monarch/vscode
-python build_vsix.py                         # -> monarch-0.11.1.vsix
-code --install-extension monarch-0.11.1.vsix
+python build_vsix.py                         # -> monarch-0.12.0.vsix
+code --install-extension monarch-0.12.0.vsix
 ```
 
 Or in VS Code: Extensions view → `…` → **Install from VSIX…**. Optional local tests: `node test/test.js` and `node test/extension_smoke.js`.
@@ -89,6 +89,7 @@ All settings are optional. The agent list comes from awork (see `monarch.agentFi
 | **Current file** / **Files** / **Folder** | Attach repo files to the next message; **Current file** takes the file of the active editor tab (also Markdown preview, images, notebooks, diffs), otherwise the last active file; folders are sent as ZIP (without `.git`, `node_modules`, `__pycache__`, `.venv`, `*.pyc` and `files.exclude`); max. 20 attachments and `maxFolderMB` per file or folder |
 | Line above the input | Drag up/down to resize the input (min. 3 lines, max. 70 % of the panel); the height is kept |
 | Enter / Shift+Enter | Send / new line |
+| Ctrl+C / Cmd+C | Copies the selected text of the chat (or of the input) |
 
 The labels of Credits, Co-agents and Stop come from `labels` of the selected agent. The history is stored locally in VS Code for all repos together and survives restarts; the current chat is remembered per repo. Histories of older versions (per repo) are taken over when the repo is opened the first time. It only contains chats started with monarch; chats started in the awork web app are not listed.
 
@@ -126,11 +127,11 @@ The agent saves its result files in `/workspace/output/` with their repo path (e
 
 The skill sends about 30,000 chars per tool call (roughly 60–100 KB of source code, less for binary files); larger sets take several calls. The agent reads these results, so they cost credits.
 
-Files of the answer that were not transferred are still downloaded the classic way (download link, artifact route, file route by id), which awork currently refuses for API clients (`401 No permissions to access this endpoint`); they then show up as `not received (download failed: …)`.
+monarch does not download files: awork refuses its download route for API clients (`401 No permissions to access this endpoint`). Files the agent saved in `output/` but did not transfer are shown as `not transferred`.
 
 ### Log
 
-**Output → monarch** shows the run status reported by awork, every transferred file (`transfer <path>: ok` or the reason; `transfer: no MONARCH-FILE lines in N tool results (tool names)` if the agent sent none), every download attempt (route and result), for failed downloads the file data reported by awork (`id`, `name`, `mimeType`, `sandboxPath`, `downloadUrl`) and every reload by `syncInterval`.
+**Output → monarch** shows the run status reported by awork, every transferred file (`transfer <path>: ok` or the reason; `transfer: no MONARCH-FILE lines in N tool results (tool names)` if the agent sent none; `saved in output/ but not transferred`) and every reload by `syncInterval`.
 
 ### Co-agents (ORCA commands)
 

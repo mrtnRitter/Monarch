@@ -300,6 +300,16 @@
         if (action === 'copy') flash(button);
     });
 
+    // VS Code does not reliably pass Ctrl+C to the chat window; copy the selection through the extension instead
+    document.addEventListener('keydown', event => {
+        if (!(event.ctrlKey || event.metaKey) || event.altKey || event.shiftKey || event.key.toLowerCase() !== 'c') return;
+        const field = event.target.closest?.('textarea, input');
+        const text = field ? field.value.slice(field.selectionStart, field.selectionEnd) : window.getSelection().toString();
+        if (!text) return;
+        event.preventDefault();
+        vscode.postMessage({ type: 'copy', text });
+    });
+
     // --- status ---
     function show_status(status) {
         state.status = status;

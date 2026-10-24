@@ -2,10 +2,7 @@
 /** awork API client and OAuth 2.0 login (PKCE, local callback). No VS Code dependency. */
 const crypto = require('crypto');
 const http = require('http');
-const files = require('./files');
-const { log } = require('./log');
 
-const uuid_pattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const token_key = 'monarch.oauth';
 const scopes = 'full_access offline_access';
 const refresh_margin_ms = 60_000;
@@ -149,7 +146,7 @@ class AworkClient {
         if (/^https?:\/\//.test(route)) return route;
         const base = this.base_url().replace(/\/+$/, '');
         const base_path = new URL(base).pathname.replace(/\/+$/, '');
-        // downloadUrl may already contain the API base path
+        // routes may already contain the API base path
         return base + (base_path && route.startsWith(`${base_path}/`) ? route.slice(base_path.length) : route);
     }
 
@@ -211,33 +208,6 @@ class AworkClient {
         const form = new FormData();
         form.append('file', new Blob([data], { type: mime_type }), name);
         return (await this.request('POST', '/temporaryfiles', { body: form })).id;
-    }
-
-    /**
-     * Routes for an agent output file, each once: downloadUrl, the artifact route by output path
-     * (as given and with "output/" prefix, the expected form is not documented), then the file route if id is a uuid.
-     */
-    _download_routes(thread_id, file) {
-        const path = files.output_path(file);
-        const artifact = value => `/agents/threads/${thread_id}/artifacts/download?path=${value.split('/').map(encodeURIComponent).join('/')}`;
-        const routes = [file.downloadUrl, path && artifact(path), path && artifact(`output/${path}`), uuid_pattern.test(file.id || '') && `/agents/threads/${thread_id}/files/${file.id}/download`];
-        return [...new Map(routes.filter(Boolean).map(route => [this._url(route), route])).values()];
-    }
-
-    /** Download an agent output file; tries all routes of _download_routes and logs each attempt. */
-    async download_file(thread_id, file) {
-        const errors = [];
-        for (const route of this._download_routes(thread_id, file)) {
-            try {
-                const data = await this.request('GET', route, { raw: true });
-                log(`download ${file.name || file.sandboxPath}: ok via ${route}`);
-                return data;
-            } catch (error) {
-                log(`download ${file.name || file.sandboxPath}: ${route} failed (${error.message.slice(0, 200)})`);
-                errors.push(error.message.slice(0, 300));
-            }
-        }
-        throw new AworkError(errors.join('; ') || 'no download route (no downloadUrl, no output path, no file id)');
     }
 
     /** Signed-in user incl. id, firstName and lastName. */

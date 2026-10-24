@@ -2,7 +2,6 @@
 /** Agent text cleanup and path safety for output files shared by the chat and the relay. */
 
 const comment_pattern = /<!--[\s\S]*?-->/g;
-const marker_pattern = /<!--\s*awork-artifacts\s*(\[[\s\S]*?\])\s*-->/g;
 const output_pattern = /^\/workspace\/output\/(.+)$/;
 
 /** Remove hidden HTML comments from agent text. */
@@ -39,15 +38,4 @@ function output_rel_path(file) {
     return output_path(file) || file.name || '';
 }
 
-/** Output files listed in hidden "awork-artifacts" markers of an answer: [{name, sandboxPath}], only below /workspace/output/. */
-function marker_files(text) {
-    return [...(text || '').matchAll(marker_pattern)].flatMap(([, json]) => {
-        try {
-            return JSON.parse(json);
-        } catch {
-            return [];
-        }
-    }).map(item => item?.path).filter(path => typeof path === 'string' && output_pattern.test(path)).map(path => ({ name: basename(path), sandboxPath: path }));
-}
-
-module.exports = { clean_text, safe_rel_path, is_junk, output_path, output_rel_path, marker_files, basename };
+module.exports = { clean_text, safe_rel_path, is_junk, output_path, output_rel_path, basename };
