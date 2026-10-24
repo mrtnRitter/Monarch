@@ -14,7 +14,7 @@ const memento = map => ({ get: key => map.get(key), update: async (key, value) =
 const settings = {
     apiBaseUrl: 'https://api.awork.com/api/v1', clientId: 'monarch', redirectPort: 18766,
     agents: [{ agentId: 'master', name: 'Mastazilla', coAgentId: 'mini', coAgentName: 'minizilla', labels: { credits: 'Credits', coAgents: 'Minizillas', stop: '/stopzilla' } }],
-    maxCredits: 0, maxCoAgents: 3, maxRounds: 20, relayTimeout: 0, pollInterval: 0, maxFolderMB: 20, syncInterval: 4,
+    maxCredits: 0, maxCoAgents: 3, creditStep: 100, monthlyCredits: 3500, creditResetDay: 1, maxRounds: 20, relayTimeout: 0, pollInterval: 0, maxFolderMB: 20, syncInterval: 4,
 };
 const uri = path => ({ path, scheme: 'file', toString: () => `file://${path}` });
 const git_repository = { state: { HEAD: { name: 'main', upstream: { remote: 'origin', name: 'main' }, ahead: 0 }, remotes: [{ name: 'origin', fetchUrl: 'git@github.com:mrtnRitter/Monarch.git' }], workingTreeChanges: [], indexChanges: [] } };
@@ -84,6 +84,7 @@ global.fetch = async (url, options) => {
     if (route === '/agents') return reply([{ id: 'master', name: 'Mastazilla', hasImage: true, createdBy: 'other' }, { id: 'mini', name: 'minizilla', createdBy: 'user1' }, { id: 'code', name: 'CodeZilla', createdBy: 'user1' }, { id: 'foreign', name: 'Fremd', createdBy: 'other' }]);
     if (route === '/agents/defaults') return reply({ modelProvider: 'anthropic', modelName: 'opus', reasoningLevel: 'high', availableModels: { providers: [{ provider: 'anthropic', displayName: 'Anthropic', modelDetails: [{ id: 'opus', displayName: 'Claude Opus', supportedReasoningLevels: ['low', 'high'] }] }] } });
     if (route === '/me') return reply({ id: 'user1', firstName: 'Martin', lastName: 'Ritter' });
+    if (route === '/agents/management/threads') return reply([{ usageUserId: 'user1', creditsUsed: 123 }]);
     if (route === '/files/images/users/user1' || route === '/files/images/agents/master') return { ok: true, status: 200, arrayBuffer: async () => png };
     if (route.startsWith('/files/images/')) return missing();
     if (route === '/agents/threads/old1/messages' || route === '/agents/threads/old1') return missing();
@@ -110,7 +111,8 @@ const settle = () => new Promise(resolve => setTimeout(resolve, 20));
     assert.deepEqual(Object.keys(registered).sort(), ['monarch.newChat', 'monarch.signIn', 'monarch.signOut', 'monarch.stop']);
     const view = { webview: { options: null, html: '', cspSource: 'csp', asWebviewUri: value => value.path, postMessage: message => posted.push(message), onDidReceiveMessage: fn => { on_message = fn; } } };
     provider.resolveWebviewView(view);
-    for (const id of ['agents', 'agent', 'history', 'history_menu', 'model', 'model_menu', 'stop', 'new_chat', 'splitter']) assert.match(view.webview.html, new RegExp(`id="${id}"`), id);
+    for (const id of ['agents', 'agent', 'month', 'credits', 'co_agents', 'history', 'history_menu', 'model', 'model_menu', 'stop', 'new_chat', 'splitter']) assert.match(view.webview.html, new RegExp(`id="${id}"`), id);
+    assert.ok(view.webview.html.indexOf('id="month"') < view.webview.html.indexOf('id="credits"'));
     assert.match(view.webview.html, /id="new_chat" class="icon-btn primary"[^>]*><svg/);
     assert.match(view.webview.html, /id="history" class="icon-btn"[^>]*><svg/);
     await on_message({ type: 'ready' });
@@ -119,6 +121,10 @@ const settle = () => new Promise(resolve => setTimeout(resolve, 20));
     const init = last('init');
     assert.deepEqual(init.agents.map(agent => agent.name), ['CodeZilla', 'Mastazilla']);
     assert.equal(init.current, 'code');
+    await settle();
+    const month = last('month').month;
+    assert.ok(month && ['used', 'quota', 'error', 'period_start'].every(key => Object.hasOwn(month, key)));
+    assert.equal(typeof month.quota, 'number');
     assert.equal(init.agents[1].avatar.image.slice(0, 22), 'data:image/png;base64,');
     assert.deepEqual(init.agents[0].avatar, { image: null, initials: 'CZ' });
     assert.ok(init.user.image.startsWith('data:image/png'));
@@ -129,6 +135,21 @@ const settle = () => new Promise(resolve => setTimeout(resolve, 20));
     await settle();
     assert.equal(last('init').labels.coAgents, 'Minizillas');
     assert.equal(last('models').default.name, 'opus');
+    const session = provider.sessions.get('master');
+    settings.maxCredits = 500;
+    settings.creditStep = 100;
+    let adjust_called = false;
+    const adjust_credits = session.adjust_credits.bind(session);
+    session.adjust_credits = direction => { adjust_called = true; return adjust_credits(direction); };
+    const previous_limit = settings.maxCredits;
+    await on_message({ type: 'adjust', item: 'credits', direction: 1 });
+    assert.equal(adjust_called, true);
+    assert.equal(last('status').status.max_credits, previous_limit + 100);
+    session.adjust_credits = () => false;
+    await on_message({ type: 'adjust', item: 'credits', direction: -1 });
+    assert.deepEqual([last('error').text, last('error').transient], ['This limit cannot be changed further.', true]);
+    session.adjust_credits = adjust_credits;
+    settings.maxCredits = 0;
     // the 0.4 chat was taken over, but no longer exists in awork -> removed
     assert.ok(posted.some(message => message.type === 'history' && message.items.some(item => item.role === 'error')));
     assert.deepEqual(global_state.get('monarch.chats.master'), []);

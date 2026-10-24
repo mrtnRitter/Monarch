@@ -224,6 +224,14 @@ class AworkClient {
         return this.request('DELETE', `/tasks/${task_id}/files/${file_id}`);
     }
 
+    /** Usage rows of a period (GET /agents/management/threads, admin only). from/to: 'YYYY-MM-DDT00:00:00Z' (UTC days, both included); group_by optional. */
+    async usage_rows({ from, to, group_by = null }) {
+        const params = [`usageFrom=${encodeURIComponent(from)}`, `usageTo=${encodeURIComponent(to)}`];
+        if (group_by !== null && group_by !== undefined) params.push(`usageGroupBy=${encodeURIComponent(group_by)}`);
+        const rows = await this.request('GET', `/agents/management/threads?${params.join('&')}`);
+        return Array.isArray(rows) ? rows : [];
+    }
+
     /** Signed-in user incl. id, firstName and lastName. */
     me() {
         return this.request('GET', '/me');

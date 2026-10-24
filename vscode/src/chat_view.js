@@ -3,12 +3,13 @@
 const vscode = require('vscode');
 const crypto = require('crypto');
 const { ChatSession, Notice } = require('./session');
+const { MonthCredits } = require('./month');
 const { log } = require('./log');
 const { create_zip } = require('./zip');
 const { context_line, git_info } = require('./repo');
 
 const fixed_excludes = ['**/.git/**', '**/node_modules/**', '**/__pycache__/**', '**/.venv/**', '**/*.pyc'];
-const default_labels = { credits: 'Credits', coAgents: 'Co-agents', stop: 'Stop' };
+const default_labels = { month: 'Monat', chat: 'Chat', coAgents: 'Co-Agenten', stop: 'Stop' };
 const image_types = [[[0x89, 0x50, 0x4e, 0x47], 'image/png'], [[0xff, 0xd8, 0xff], 'image/jpeg'], [[0x47, 0x49, 0x46], 'image/gif'], [[0x52, 0x49, 0x46, 0x46], 'image/webp']];
 const mime_types = { '.py': 'text/x-python', '.md': 'text/markdown', '.json': 'application/json', '.txt': 'text/plain', '.zip': 'application/zip' };
 const max_chats = 100;
@@ -99,7 +100,8 @@ function merge_agents(aworks, overrides, { filter = 'all', me_id = null } = {}) 
     const wanted = agent => filter !== 'own' || (me_id && agent.createdBy === me_id) || Boolean(find_override(agent));
     const merged = aworks.filter(agent => agent.id && !agent.isArchived && wanted(agent)).map(agent => {
         const override = override_of(agent);
-        return { agentId: agent.id, name: agent.name || 'Agent', has_image: Boolean(agent.hasImage), coAgentId: override.coAgentId || '', coAgentName: override.coAgentName || 'coagent', labels: { ...default_labels, ...(override.labels || {}) } };
+        const labels = override.labels || {};
+        return { agentId: agent.id, name: agent.name || 'Agent', has_image: Boolean(agent.hasImage), coAgentId: override.coAgentId || '', coAgentName: override.coAgentName || 'coagent', labels: { ...default_labels, ...labels, chat: labels.chat || labels.credits || default_labels.chat } };
     });
     const co_agent_ids = new Set(merged.map(agent => agent.coAgentId).filter(Boolean));
     return merged.filter(agent => !co_agent_ids.has(agent.agentId)).sort((a, b) => a.name.localeCompare(b.name));
@@ -152,6 +154,7 @@ const workspace_adapter = {
 class ChatView {
     constructor(context, client, oauth) {
         Object.assign(this, { context, client, oauth, view: null, sessions: new Map(), attachments: [], avatars: new Map(), user_avatar: null, me: null, agent_list: null, models: new Map(), last_file: null, last_editor: null, sync_timer: null });
+        this.month = new MonthCredits({ client: this.client, settings: () => ({ quota: _config().get('monthlyCredits') || 0, reset_day: _config().get('creditResetDay') || 1 }) });
         // remember the last file so that "Current file" also works while a preview or other non-file tab is active
         const remember = uri => { if (uri && uri.scheme !== 'untitled') this.last_file = uri; };
         // remember the last text editor for "Insert at cursor" while the chat window has the focus (output panels excluded)
@@ -170,6 +173,8 @@ class ChatView {
         Object.assign(this, { agent_list: null, user_avatar: null, me: null });
         this.models.clear();
         this.sessions.clear();
+        this.month.reset();
+        this._post({ type: 'month', month: null });
     }
 
     // --- agents ---
@@ -190,7 +195,7 @@ class ChatView {
 
     _limits() {
         const config = _config();
-        return Object.fromEntries(['maxCredits', 'maxCoAgents', 'maxRounds', 'relayTimeout', 'pollInterval', 'syncInterval', 'maxFolderMB', 'transferTaskId'].map(key => [key, config.get(key)]));
+        return Object.fromEntries(['maxCredits', 'maxCoAgents', 'creditStep', 'maxRounds', 'relayTimeout', 'pollInterval', 'syncInterval', 'maxFolderMB', 'transferTaskId'].map(key => [key, config.get(key)]));
     }
 
     async _models(agent) {
@@ -248,7 +253,7 @@ class ChatView {
             const ui = {
                 message: item => this._post({ type: 'message', item, agent: agent.agentId }),
                 info: text => this._post({ type: 'message', item: { role: 'info', text }, agent: agent.agentId }),
-                status: status => this._post({ type: 'status', status, agent: agent.agentId }),
+                status: status => { this._post({ type: 'status', status, agent: agent.agentId }); this._refresh_month().catch(() => {}); },
             };
             this.sessions.set(agent.agentId, new ChatSession({ client: this.client, agent, limits: this._limits(), store: this._store(agent), workspace: workspace_adapter, ui }));
         }
@@ -298,7 +303,7 @@ class ChatView {
 <div class="menu-wrap"><button id="history" class="icon-btn" title="Chat history"><svg viewBox="0 0 16 16" width="21" height="21" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 8a5.5 5.5 0 1 0 1.6-3.9"/><path d="M2.5 2.4v2.7h2.7"/><path d="M8 5v3.2l2.2 1.4"/></svg></button><div id="history_menu" class="menu right hidden"></div></div>
 <button id="new_chat" class="icon-btn primary" title="New chat"><svg viewBox="0 0 16 16" width="21" height="21" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M8 3.5v9M3.5 8h9"/></svg></button>
 </div>
-<div class="statusbar"><span id="credits" class="badge"></span><span id="co_agents" class="badge"></span><span class="spacer"></span>
+<div class="statusbar" id="statusbar"><span id="month" class="badge"></span><span id="credits" class="badge"></span><span id="co_agents" class="badge"></span><span class="spacer"></span>
 <div class="menu-wrap"><button id="model" class="picker-btn" title="Model for this chat"></button><div id="model_menu" class="menu right hidden"></div></div>
 <button id="stop" class="stop-btn"></button></div>
 <div class="messages" id="messages"></div>
@@ -320,6 +325,10 @@ class ChatView {
         if (this.view) this.view.webview.postMessage(message);
     }
 
+    async _refresh_month(force = false) {
+        this._post({ type: 'month', month: await this.month.refresh(force) });
+    }
+
     async _on_message(message) {
         const handlers = {
             ready: () => this.refresh(),
@@ -335,6 +344,11 @@ class ChatView {
             remove_chat: () => this._remove_chat(message.thread_id),
             import_chat: () => this._import_chat(),
             set_model: () => this._session().set_model(message.model),
+            adjust: () => {
+                const session = this._session();
+                const changed = message.item === 'credits' ? session.adjust_credits(message.direction) : message.item === 'co_agents' ? session.adjust_co_agents(message.direction) : false;
+                if (!changed) throw new Notice('This limit cannot be changed further.');
+            },
             sign_in: () => vscode.commands.executeCommand('monarch.signIn'),
             attach: () => this._attach(message.kind),
             remove_attachment: () => {
@@ -352,6 +366,8 @@ class ChatView {
     /** Re-render agents, sign-in state, history, models and status. */
     async refresh({ reload_agents = false } = {}) {
         const signed_in = await this.oauth.is_logged_in();
+        if (signed_in) this._refresh_month(true).catch(() => {});
+        else { this.month.reset(); this._post({ type: 'month', month: null }); }
         let agents = [];
         if (signed_in) {
             try {
@@ -371,6 +387,7 @@ class ChatView {
         this._post({ type: 'models', agent: agent.agentId, ...(await this._models(agent)) });
         await this._show_history(session, agent);
         session.refresh_credits();
+        this._refresh_month(true).catch(() => {});
     }
 
     // --- sync with chats continued elsewhere (awork web app) ---
@@ -391,6 +408,7 @@ class ChatView {
         log(`sync: chat ${session.state.thread_id} changed elsewhere, reloading`);
         await this._show_history(session, agent);
         session.refresh_credits();
+        this._refresh_month(true).catch(() => {});
     }
 
     async _show_history(session, agent) {
@@ -417,6 +435,7 @@ class ChatView {
         session.load_state(item.state || { thread_id });
         await this._show_history(session, agent);
         session.refresh_credits();
+        this._refresh_month(true).catch(() => {});
     }
 
     /**
@@ -444,6 +463,7 @@ class ChatView {
         log(`chat ${thread_id} taken over from awork`);
         await this._show_history(session, agent);
         session.refresh_credits();
+        this._refresh_month(true).catch(() => {});
     }
 
     async _drop_chat(agent, thread_id) {

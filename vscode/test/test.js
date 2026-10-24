@@ -181,7 +181,15 @@ class FakeAwork {
     }
 }
 
-function make_session(fake, reply, limits = {}) {
+function make_store(initial_state) {
+    let saved = initial_state ? JSON.parse(JSON.stringify(initial_state)) : undefined;
+    return {
+        load: () => saved ? JSON.parse(JSON.stringify(saved)) : undefined,
+        save: state => { saved = JSON.parse(JSON.stringify(state)); },
+    };
+}
+
+function make_session(fake, reply, limits = {}, store = make_store()) {
     fake.reply = reply;
     const written = {};
     const events = [];
@@ -189,7 +197,7 @@ function make_session(fake, reply, limits = {}) {
         client: fake,
         agent: { name: 'Mastazilla', agentId: 'master', coAgentId: 'mini', coAgentName: 'minizilla' },
         limits: { maxCredits: 0, maxCoAgents: 3, maxRounds: 20, relayTimeout: 0, pollInterval: 0, ...limits },
-        store: { load: () => undefined, save: () => {} },
+        store,
         workspace: {
             write: async (path, data) => { written[path] = Buffer.from(data).toString('utf8'); return path; },
             read: async path => { if (!(path in (fake.repo || {}))) throw new Error('missing'); return Buffer.from(fake.repo[path]); },
@@ -197,7 +205,7 @@ function make_session(fake, reply, limits = {}) {
         ui: { message: item => events.push(item), info: text => events.push({ role: 'info', text }), status: () => {} },
         sleep: async () => {},
     });
-    return { session, written, events };
+    return { session, written, events, store };
 }
 
 const mini_answer = (status, with_file = false) => ({ content: `STATUS: ${status}\nNOTES: x`, files: with_file ? [out('hello.py')] : [], bundles: with_file ? [{ 'hello.py': 'print("a")\n' }] : [] });
@@ -538,7 +546,9 @@ test('agents and models: merge with overrides, hide co-agents, parse model catal
     const agents = merge_agents([
         { id: 'm', name: 'Mastazilla', hasImage: true }, { id: 'mini', name: 'minizilla' }, { id: 'c', name: 'CodeZilla' }, { id: 'old', name: 'Alt', isArchived: true },
     ], [{ agentId: 'm', coAgentId: 'mini', coAgentName: 'minizilla', labels: { coAgents: 'Minizillas' } }, { name: 'CodeZilla', labels: { stop: 'Halt' } }]);
-    assert.deepEqual(agents.map(agent => [agent.name, agent.coAgentId, agent.labels.coAgents, agent.labels.stop, agent.has_image]), [['CodeZilla', '', 'Co-agents', 'Halt', false], ['Mastazilla', 'mini', 'Minizillas', 'Stop', true]]);
+    assert.deepEqual(agents.map(agent => [agent.name, agent.coAgentId, agent.labels.coAgents, agent.labels.stop, agent.has_image]), [['CodeZilla', '', 'Co-Agenten', 'Halt', false], ['Mastazilla', 'mini', 'Minizillas', 'Stop', true]]);
+    const credit_agent = merge_agents([{ id: 'credit', name: 'CreditZilla' }], [{ name: 'CreditZilla', labels: { credits: 'X' } }])[0];
+    assert.equal(credit_agent.labels.chat, 'X');
     const visible = [{ id: 'mine', name: 'Meiner', createdBy: 'me' }, { id: 'other', name: 'Fremd', createdBy: 'x' }, { id: 'm', name: 'Mastazilla', createdBy: 'x' }, { id: 'n', name: 'Named', createdBy: 'x' }];
     const overrides = [{ agentId: 'm', labels: {} }, { name: 'Named' }];
     assert.deepEqual(merge_agents(visible, overrides, { filter: 'own', me_id: 'me' }).map(agent => agent.name), ['Mastazilla', 'Meiner', 'Named']);
@@ -561,6 +571,109 @@ function load_chat_view() {
         Module._load = original;
     }
 }
+
+
+test('session: adjustable limits use effective values and persist per chat', () => {
+    const fake = new FakeAwork();
+    const limits = { maxCredits: 250, maxCoAgents: 2, creditStep: 50 };
+    const { session, store } = make_session(fake, () => ({ content: 'ok' }), limits);
+    assert.equal(session.max_credits(), 250);
+    assert.equal(session.max_co_agents(), 2);
+    assert.equal(session.adjust_credits(1), true);
+    assert.equal(session.adjust_co_agents(1), true);
+    assert.equal(session.max_credits(), 300);
+    assert.equal(session.max_co_agents(), 3);
+    assert.equal(store.load().extra_credits, 50);
+    assert.equal(store.load().extra_co_agents, 1);
+
+    const restored = make_session(fake, () => ({ content: 'ok' }), limits, store).session;
+    assert.equal(restored.max_credits(), 300);
+    assert.equal(restored.max_co_agents(), 3);
+    const old_state = make_session(fake, () => ({ content: 'ok' }), limits, make_store({ thread_id: 'old' })).session;
+    assert.equal(old_state.state.extra_credits, 0);
+    assert.equal(old_state.state.extra_co_agents, 0);
+    restored.new_chat();
+    assert.equal(restored.max_credits(), 250);
+    assert.equal(restored.max_co_agents(), 2);
+});
+
+test('session: adjustments honor usage, active co-agents, minimums and no-limit settings', () => {
+    const fake = new FakeAwork();
+    const { session } = make_session(fake, () => ({ content: 'ok' }), { maxCredits: 250, maxCoAgents: 4, creditStep: 100 });
+    session.busy = true;
+    assert.equal(session.adjust_credits(-1), true);
+    assert.equal(session.max_credits(), 150);
+    assert.equal(session.state.extra_credits, -100);
+    session.credits = 60;
+    assert.equal(session.adjust_credits(-1), false);
+    session.credits = 0;
+    assert.equal(session.adjust_credits(-1), true);
+    assert.equal(session.max_credits(), 50);
+    assert.equal(session.adjust_credits(-1), false);
+    assert.equal(session.adjust_credits(1), true);
+
+    session.state.co_agents = {
+        active_a: { state: 'working' }, active_b: { state: 'finished' }, cancelled: { state: 'cancelled' },
+    };
+    assert.equal(session.adjust_co_agents(-1), true);
+    assert.equal(session.max_co_agents(), 3);
+    assert.equal(session.adjust_co_agents(-1), true);
+    assert.equal(session.max_co_agents(), 2);
+    assert.equal(session.adjust_co_agents(-1), false);
+    session.state.co_agents = {};
+    assert.equal(session.adjust_co_agents(-1), true);
+    assert.equal(session.max_co_agents(), 1);
+    assert.equal(session.adjust_co_agents(-1), false);
+
+    const no_limits = make_session(fake, () => ({ content: 'ok' }), { maxCredits: 0, maxCoAgents: 0 }).session;
+    assert.equal(no_limits.adjust_credits(1), false);
+    assert.equal(no_limits.adjust_co_agents(1), false);
+    assert.equal(no_limits.state.extra_credits, 0);
+    assert.equal(no_limits.state.extra_co_agents, 0);
+});
+
+test('session: status exposes adjustment controls and effective limits', () => {
+    const fake = new FakeAwork();
+    const { session } = make_session(fake, () => ({ content: 'ok' }), { maxCredits: 300, maxCoAgents: 3 });
+    session.credits = 100;
+    session.state.co_agents = { active: { state: 'working' }, cancelled: { state: 'cancelled' } };
+    assert.deepEqual(
+        (({ max_credits, credit_step, can_less_credits, can_more_credits, max_co_agents, can_less_co_agents, can_more_co_agents }) => ({
+            max_credits, credit_step, can_less_credits, can_more_credits, max_co_agents, can_less_co_agents, can_more_co_agents,
+        }))(session.status()),
+        { max_credits: 300, credit_step: 100, can_less_credits: true, can_more_credits: true, max_co_agents: 3, can_less_co_agents: true, can_more_co_agents: true },
+    );
+    session.limits.creditStep = 0;
+    assert.equal(session.status().credit_step, 100);
+    const no_limits = make_session(fake, () => ({ content: 'ok' }), { maxCredits: 0, maxCoAgents: 0 }).session.status();
+    assert.equal(no_limits.can_less_credits, false);
+    assert.equal(no_limits.can_more_credits, false);
+    assert.equal(no_limits.can_less_co_agents, false);
+    assert.equal(no_limits.can_more_co_agents, false);
+});
+
+test('session: increased co-agent limit permits another spawn', async () => {
+    const fake = new FakeAwork();
+    const { session } = make_session(fake, () => ({ content: 'ok' }), { maxCoAgents: 1 });
+    session.state.co_agents.existing = { state: 'working', thread_id: 'existing' };
+    const command = { action: 'spawn', target: null, body: 'Do a task.' };
+    assert.equal((await session._execute(command)).ok, false);
+    assert.equal(session.adjust_co_agents(1), true);
+    assert.equal((await session._execute(command)).ok, true);
+    assert.equal(session.status().co_agents, 2);
+});
+
+test('session: budget and relay status use the effective credit limit', async () => {
+    const fake = new FakeAwork();
+    const { session } = make_session(fake, () => ({ content: 'ok' }), { maxCredits: 100, creditStep: 100 });
+    session.state.thread_id = 'budget-thread';
+    fake.thread = async id => ({ id, usage: { creditsUsed: 150 } });
+    assert.equal(session.adjust_credits(1), true);
+    await session._check_budget(true);
+    assert.equal(session.credits, 150);
+    assert.equal(session._limit_error(false), null);
+    assert.match(session._status_text([], false), /credits: 150\/200/);
+});
 
 (async () => {
     let failed = 0;

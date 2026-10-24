@@ -85,7 +85,7 @@ function _signature(messages) {
 
 /** Chat state with defaults: thread, title, model override, last sent repo context, ids of processed bundles, job (rounds, co-agents). */
 function _new_state(state) {
-    return { thread_id: null, title: null, model: null, context: null, bundles: [], rounds: 0, next_index: 1, co_agents: {}, ...(state || {}) };
+    return { thread_id: null, title: null, model: null, context: null, bundles: [], rounds: 0, next_index: 1, co_agents: {}, extra_credits: 0, extra_co_agents: 0, ...(state || {}) };
 }
 
 class ChatSession {
@@ -113,12 +113,60 @@ class ChatSession {
         return Object.entries(this.state.co_agents).filter(([, co_agent]) => filter(co_agent)).map(([id]) => id);
     }
 
+    max_credits() {
+        return this.limits.maxCredits ? this.limits.maxCredits + this.state.extra_credits : 0;
+    }
+
+    max_co_agents() {
+        return this.limits.maxCoAgents ? this.limits.maxCoAgents + this.state.extra_co_agents : 0;
+    }
+
+    _credit_step() {
+        return this.limits.creditStep > 0 ? this.limits.creditStep : 100;
+    }
+
+    _can_less_credits() {
+        const limit = this.max_credits();
+        const next = limit - this._credit_step();
+        return limit > 0 && next >= 1 && next > (this.credits ?? 0);
+    }
+
+    _can_less_co_agents() {
+        const limit = this.max_co_agents();
+        const alive = this._co_agents(co_agent => co_agent.state !== 'cancelled').length;
+        return limit > 0 && limit - 1 >= Math.max(1, alive);
+    }
+
+    adjust_credits(direction) {
+        const limit = this.max_credits();
+        if (!limit || ![1, -1].includes(direction)) return false;
+        if (direction === -1 && !this._can_less_credits()) return false;
+        this.state.extra_credits += direction * this._credit_step();
+        this._save();
+        this._emit();
+        return true;
+    }
+
+    adjust_co_agents(direction) {
+        const limit = this.max_co_agents();
+        if (!limit || ![1, -1].includes(direction)) return false;
+        if (direction === -1 && !this._can_less_co_agents()) return false;
+        this.state.extra_co_agents += direction;
+        this._save();
+        this._emit();
+        return true;
+    }
+
     status() {
+        const max_credits = this.max_credits();
+        const max_co_agents = this.max_co_agents();
         return {
-            credits: this.credits, max_credits: this.limits.maxCredits,
+            credits: this.credits, max_credits, credit_step: this._credit_step(),
+            can_less_credits: this._can_less_credits(), can_more_credits: max_credits > 0,
             co_agents: this._co_agents(co_agent => co_agent.state !== 'cancelled').length,
             working: this._co_agents(co_agent => co_agent.state === 'working').length,
-            max_co_agents: this.limits.maxCoAgents, busy: this.busy, thread_id: this.state.thread_id,
+            max_co_agents, can_less_co_agents: this._can_less_co_agents(), can_more_co_agents: max_co_agents > 0,
+            busy: this.busy, thread_id: this.state.thread_id,
             phase: this.phase, phase_since: this.phase_since, model: this.state.model,
         };
     }
@@ -153,7 +201,7 @@ class ChatSession {
     }
 
     async _check_budget(strict) {
-        const limit = this.limits.maxCredits;
+        const limit = this.max_credits();
         const used = await this.refresh_credits();
         if (!limit) return;
         if (used === null) {
@@ -418,12 +466,14 @@ class ChatSession {
 
     // --- ORCA commands ---
     _limit_error(new_co_agent) {
-        const { maxRounds, maxCoAgents, maxCredits } = this.limits;
+        const { maxRounds } = this.limits;
+        const max_co_agents = this.max_co_agents();
+        const max_credits = this.max_credits();
         if (!this.agent.coAgentId) return `no coAgentId configured for ${this.agent.name}`;
         if (maxRounds && this.state.rounds >= maxRounds) return `maxRounds reached (${this.state.rounds}/${maxRounds})`;
         const alive = this._co_agents(co_agent => co_agent.state !== 'cancelled').length;
-        if (new_co_agent && maxCoAgents && alive >= maxCoAgents) return `maxCoAgents reached (${alive}/${maxCoAgents}), cancel one first`;
-        if (maxCredits && this.credits !== null && this.credits >= maxCredits) return `maxCredits reached (${this.credits}/${maxCredits})`;
+        if (new_co_agent && max_co_agents && alive >= max_co_agents) return `maxCoAgents reached (${alive}/${max_co_agents}), cancel one first`;
+        if (max_credits && this.credits !== null && this.credits >= max_credits) return `maxCredits reached (${this.credits}/${max_credits})`;
         return null;
     }
 
@@ -581,9 +631,10 @@ class ChatSession {
     }
 
     _status_text(pending, timed_out) {
-        const { maxRounds, maxCredits } = this.limits;
+        const { maxRounds } = this.limits;
+        const max_credits = this.max_credits();
         const lines = ['status:', ...Object.entries(this.state.co_agents).map(([id, co_agent]) => `- ${id}: ${co_agent.state}`)];
-        lines.push(`rounds: ${this.state.rounds}/${maxRounds || 'no cap'}`, `credits: ${this.credits ?? 'unknown'}/${maxCredits || 'no cap'}`);
+        lines.push(`rounds: ${this.state.rounds}/${maxRounds || 'no cap'}`, `credits: ${this.credits ?? 'unknown'}/${max_credits || 'no cap'}`);
         if (pending.length) lines.push(`still working: ${pending.join(', ')}${timed_out ? ' (relayTimeout reached)' : ''}`);
         return lines.join('\n');
     }

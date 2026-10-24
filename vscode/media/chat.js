@@ -5,7 +5,7 @@
     const element = id => document.getElementById(id);
     const level_names = { minimal: 'Minimal', low: 'Low', medium: 'Medium', high: 'High', xhigh: 'Extra high', max: 'Maximum', maximum: 'Maximum' };
     const state = {
-        agents: [], agent: null, agent_name: null, labels: { credits: 'Credits', coAgents: 'Co-agents', stop: 'Stop' },
+        agents: [], agent: null, agent_name: null, labels: { month: 'Monat', chat: 'Chat', coAgents: 'Co-Agenten', stop: 'Stop' },
         user: null, signed_in: false, status: null, steps: null, chats: [], models: { default: {}, models: [] },
     };
 
@@ -314,17 +314,51 @@
     });
 
     // --- status ---
+    function show_month(month) {
+        const value = month || { used: null, quota: 0, error: null, period_start: null };
+        const badge = element('month');
+        badge.className = `badge${value.quota > 0 && value.used !== null && value.used >= value.quota * 0.9 ? ' warn' : ''}`;
+        badge.title = value.error || `Your awork AI credits since ${value.period_start || '?'} (all AI use, also outside monarch)`;
+        badge.innerHTML = `<span class="label">${escape_html(state.labels.month)}</span> ${escape_html(String(value.used ?? '?'))} / ${escape_html(String(value.quota || '–'))}`;
+    }
+
+    function adjustment_button(item, direction, enabled, title) {
+        const sign = direction < 0 ? '−' : '+';
+        return `<button class="adjust-btn" type="button" data-item="${item}" data-direction="${direction}" title="${escape_html(title)}" ${enabled ? '' : 'disabled'}>${sign}</button>`;
+    }
+
+    function adjust_controls(item, max, can_less, can_more, step) {
+        if (!(max > 0)) return { less: '', more: '' };
+        const less_title = item === 'credits' ? `−${step} credits for this chat` : '−1 co-agent slot';
+        const more_title = item === 'credits' ? `+${step} credits for this chat` : '+1 co-agent slot';
+        return {
+            less: adjustment_button(item, -1, can_less, less_title),
+            more: adjustment_button(item, 1, can_more, more_title),
+        };
+    }
+
     function show_status(status) {
         state.status = status;
-        const credits_full = status.max_credits && status.credits !== null && status.credits >= status.max_credits * 0.9;
-        element('credits').className = `badge${credits_full ? ' warn' : ''}`;
-        element('credits').innerHTML = `<span class="label">${escape_html(state.labels.credits)}</span>${status.credits ?? '?'} / ${status.max_credits || '∞'}`;
-        element('co_agents').innerHTML = `<span class="label">${escape_html(state.labels.coAgents)}</span>${status.co_agents} / ${status.max_co_agents || '∞'}${status.working ? ` · ${status.working} working` : ''}`;
+        const credits_full = status.max_credits > 0 && status.credits !== null && status.credits >= status.max_credits * 0.9;
+        const credit_controls = adjust_controls('credits', status.max_credits, status.can_less_credits, status.can_more_credits, status.credit_step);
+        const credits = element('credits');
+        credits.className = `badge adjustable${credits_full ? ' warn' : ''}`;
+        credits.innerHTML = `${credit_controls.less}<span class="badge-content"><span class="label">${escape_html(state.labels.chat)}</span> ${escape_html(String(status.credits ?? '?'))} / ${escape_html(String(status.max_credits || '∞'))}</span>${credit_controls.more}`;
+        const co_controls = adjust_controls('co_agents', status.max_co_agents, status.can_less_co_agents, status.can_more_co_agents);
+        const co_agents = element('co_agents');
+        co_agents.className = 'badge adjustable';
+        co_agents.innerHTML = `${co_controls.less}<span class="badge-content"><span class="label">${escape_html(state.labels.coAgents)}</span> ${escape_html(String(status.co_agents))} / ${escape_html(String(status.max_co_agents || '∞'))}${status.working ? ` · ${escape_html(String(status.working))} working` : ''}</span>${co_controls.more}`;
         element('send').disabled = status.busy;
         element('model').textContent = `${model_label()} ▾`;
         if (!element('model_menu').classList.contains('hidden')) render_model_menu();
         update_working();
     }
+
+    element('statusbar').addEventListener('click', event => {
+        const button = event.target.closest('.adjust-btn');
+        if (!button || button.disabled) return;
+        vscode.postMessage({ type: 'adjust', item: button.dataset.item, direction: Number(button.dataset.direction) });
+    });
 
     function update_working() {
         const status = state.status;
@@ -344,8 +378,9 @@
     window.addEventListener('message', ({ data }) => {
         if (data.agent && data.agent !== state.agent) return;
         if (data.type === 'init') {
-            Object.assign(state, { agents: data.agents, agent: data.current, agent_name: data.current_name, labels: data.labels, user: data.user, signed_in: data.signed_in, steps: null, chats: [], models: { default: {}, models: [] }, status: null });
-            element('stop').textContent = data.labels.stop;
+            const labels = data.labels || {};
+            Object.assign(state, { agents: data.agents, agent: data.current, agent_name: data.current_name, labels: { ...state.labels, ...labels, chat: labels.chat || labels.credits || state.labels.chat }, user: data.user, signed_in: data.signed_in, steps: null, chats: [], models: { default: {}, models: [] }, status: null });
+            element('stop').textContent = state.labels.stop;
             element('model').textContent = 'Model ▾';
             render_agents();
             set_enabled(Boolean(data.current));
@@ -360,6 +395,8 @@
             add_message(data.item);
         } else if (data.type === 'status') {
             show_status(data.status);
+        } else if (data.type === 'month') {
+            show_month(data.month);
         } else if (data.type === 'chats') {
             state.chats = data.items;
             if (!element('history_menu').classList.contains('hidden')) render_history();
