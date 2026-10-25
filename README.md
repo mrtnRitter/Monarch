@@ -2,6 +2,24 @@
 
 VS Code chat window for awork agents. You talk to an agent (e.g. **mastazilla**); the agent delegates work to co-agents (e.g. **minizilla**) with ORCA commands. monarch runs these commands, waits for the co-agents without the agent running (no agent credits while waiting) and passes their answers back.
 
+## ORCA spawn dependencies
+
+A spawn brief may contain one or more `AFTER:` lines. monarch reserves its `minizilla_N` ID immediately and reports `ok: spawn minizilla_N (waiting for ...)` while it waits. It starts the spawn only after every dependency has answered successfully. `AFTER: minizilla_N` names an existing minizilla, while `AFTER: spawn_K` names the K-th `### ORCA: spawn` block in the same mastazilla answer (counting from 1). A dependency answer with `STATUS: question` or `STATUS: blocked`, or a cancelled dependency, prevents the spawn and returns control to mastazilla; the relay timeout also returns control while work is still pending.
+
+`ATTACH: spawn_K` resolves to the files staged by that spawn, when the dependent spawn starts. For example:
+
+```text
+### ORCA: spawn
+Create the shared plan and save it as plan.md.
+
+### ORCA: spawn
+AFTER: spawn_1
+ATTACH: spawn_1
+Review the shared plan and save the review.
+```
+
+Multiple `AFTER:` lines are allowed; all listed minizillas must finish before launch. A waiting spawn can also be cancelled with `### ORCA: cancel minizilla_N`.
+
 ## Repository layout
 
 ```

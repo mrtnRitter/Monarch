@@ -39,4 +39,27 @@ function parse_commands(text) {
     return { text: lines.slice(0, headers[0].index).join('\n').trim(), commands };
 }
 
-module.exports = { parse_commands };
+/** Parse dependency and spawned-attachment lines from a spawn brief. */
+function parse_spawn_body(body) {
+    const after = [];
+    const invalid_after = [];
+    const lines = (body || '').split('\n');
+    const remaining = lines.filter(line => {
+        if (!/^\s*AFTER\s*:/i.test(line)) return true;
+        const match = line.match(/^\s*AFTER:\s*(minizilla_\d+|spawn_\d+)\s*$/i);
+        if (match) after.push(match[1].toLowerCase());
+        else invalid_after.push(line.trim());
+        return false;
+    });
+    const attachments = remaining
+        .map(line => line.match(/^\s*ATTACH:\s*`?(spawn_\d+)`?\s*$/i)?.[1]?.toLowerCase())
+        .filter(Boolean);
+    return {
+        body: remaining.join('\n').trim(),
+        after: [...new Set(after)],
+        attachment_spawns: [...new Set(attachments)],
+        invalid_after,
+    };
+}
+
+module.exports = { parse_commands, parse_spawn_body };

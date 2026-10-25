@@ -1,7 +1,7 @@
 'use strict';
 /** One chat with an awork agent: messages, co-agent relay via ORCA commands, limits, credits and stop. */
 const files = require('./files');
-const { parse_commands } = require('./orca');
+const { parse_commands, parse_spawn_body } = require('./orca');
 const { strip_context } = require('./repo');
 const { log } = require('./log');
 
@@ -108,7 +108,7 @@ class ChatSession {
             signal.addEventListener('abort', () => { clearTimeout(timer); reject(new StopRequested()); }, { once: true });
         }));
         this.state = _new_state(store.load());
-        Object.assign(this, { credits: null, credit_error: null, credits_at: 0, busy: false, stopping: false, controller: null, answers: new Map(), phase: null, phase_since: null, last_states: new Map(), empty_polls: new Map(), staged_data: new Map() });
+        Object.assign(this, { credits: null, credit_error: null, credits_at: 0, busy: false, stopping: false, controller: null, answers: new Map(), staged_outputs: new Map(), phase: null, phase_since: null, last_states: new Map(), empty_polls: new Map(), staged_data: new Map() });
     }
 
     // --- state ---
@@ -338,14 +338,20 @@ class ChatSession {
         questions.forEach(question => this.ui.message(question));
         if (!commands.length) return null;
         const results = [];
-        for (const command of commands) results.push(await this._execute(command));
+        const spawn_context = { ids: new Map(), count: commands.filter(command => command.action === 'spawn').length };
+        let spawn_index = 0;
+        for (const command of commands) {
+            const item = command.action === 'spawn' ? { ...command, spawn_index: ++spawn_index, spawn_context } : command;
+            results.push(await this._execute(item));
+        }
+        this._resolve_spawn_refs(results, spawn_context);
         results.forEach(result => this.ui.info(`${result.ok ? 'ok' : 'refused'}: ${result.line}`));
         this._save();
         this._emit();
         const waits = results.some(result => result.ok && ['spawn', 'send', 'wait'].includes(result.action));
         const relay = waits ? await this._relay_wait(results) : null;
         if (relay || results.every(result => result.ok)) return relay;
-        return this._build_relay([], this._co_agents(co_agent => co_agent.state === 'working'), results, false);
+        return this._build_relay([], this._co_agents(co_agent => ['working', 'waiting'].includes(co_agent.state)), results, false);
     }
 
     /**
@@ -471,30 +477,60 @@ class ChatSession {
         return { content: `${content}\n\nAttached files (relative to repo root): ${paths.join(', ')}`, attachments };
     }
 
-    async _execute({ action, target, body }) {
+    async _execute({ action, target, body, spawn_index, spawn_context }) {
         const result = (ok, line) => ({ ok, action, line });
         const co_agent = target ? this.state.co_agents[target] : null;
         try {
             if (action === 'spawn') {
-                if (!body) return result(false, 'spawn: empty brief');
+                const parsed = parse_spawn_body(body);
+                if (parsed.invalid_after.length) return result(false, `spawn: invalid ${parsed.invalid_after.join(', ')}`);
+                if (!parsed.body) return result(false, 'spawn: empty brief');
                 const error = this._limit_error(true);
                 if (error) return result(false, `spawn: ${error}`);
-                const { content, attachments } = await this._brief(body);
+                for (const reference of [...parsed.after, ...parsed.attachment_spawns]) {
+                    const spawn_match = reference.match(/^spawn_(\d+)$/i);
+                    if (spawn_match && (!spawn_context || Number(spawn_match[1]) < 1 || Number(spawn_match[1]) > spawn_context.count)) {
+                        return result(false, `spawn: unknown ${reference} in this response`);
+                    }
+                    if (parsed.after.includes(reference) && !spawn_match && !this.state.co_agents[reference]) {
+                        return result(false, `spawn: unknown dependency ${reference}`);
+                    }
+                }
                 const id = `${this.agent.coAgentName || 'coagent'}_${this.state.next_index}`;
+                const deferred = parsed.after.length > 0 || parsed.attachment_spawns.length > 0;
+                if (deferred) {
+                    this.state.next_index += 1;
+                    this.state.co_agents[id] = {
+                        thread_id: null, message_id: null, state: 'waiting', relayed: null,
+                        pending_spawn: {
+                            body: parsed.body,
+                            after: parsed.after,
+                            attachment_spawns: parsed.attachment_spawns,
+                            unresolved_refs: true,
+                        },
+                    };
+                    this.state.rounds += 1;
+                    spawn_context?.ids.set(spawn_index, id);
+                    return { ...result(true, `spawn ${id}`), pending_id: id };
+                }
+                const { content, attachments } = await this._brief(parsed.body);
                 this.state.next_index += 1;
                 const thread = await this.client.create_thread(this.agent.coAgentId, content, `${id} – ${_first_line(content)}`, attachments);
                 this.state.co_agents[id] = { thread_id: thread.id, message_id: await this._accepted_id(thread.id, thread), state: 'working', relayed: null };
+                spawn_context?.ids.set(spawn_index, id);
                 this.state.rounds += 1;
                 return result(true, `spawn ${id}`);
             }
             if (['send', 'cancel'].includes(action) && !co_agent) return result(false, `${action}: unknown co-agent "${target || ''}", known: ${Object.keys(this.state.co_agents).join(', ') || 'none'}`);
             if (action === 'send') {
                 if (co_agent.state === 'cancelled') return result(false, `send ${target}: cancelled, spawn a new one`);
+                if (co_agent.state === 'waiting') return result(false, `send ${target}: waiting for dependencies, cancel or wait`);
                 if (!body) return result(false, `send ${target}: empty message`);
                 const error = this._limit_error(false);
                 if (error) return result(false, `send ${target}: ${error}`);
                 const { content, attachments } = await this._brief(body);
                 const accepted = await this.client.send_message(co_agent.thread_id, content, attachments);
+                this.staged_outputs.delete(target);
                 Object.assign(co_agent, { message_id: await this._accepted_id(co_agent.thread_id, accepted), state: 'working' });
                 this.state.rounds += 1;
                 return result(true, `send ${target}`);
@@ -502,9 +538,10 @@ class ChatSession {
             if (action === 'cancel') {
                 if (co_agent.state === 'working') await this.client.cancel(co_agent.thread_id).catch(() => {});
                 Object.assign(co_agent, { state: 'cancelled', relayed: co_agent.message_id });
+                delete co_agent.pending_spawn;
                 return result(true, `cancel ${target}`);
             }
-            if (action === 'wait') return this._co_agents(item => item.state === 'working').length ? result(true, 'wait') : result(false, 'wait: no co-agent is working');
+            if (action === 'wait') return this._co_agents(item => item.state === 'working' || item.state === 'waiting').length ? result(true, 'wait') : result(false, 'wait: no co-agent is working');
             if (action === 'commit') {
                 const { ok, line } = await this._commit();
                 return result(ok, line);
@@ -517,10 +554,113 @@ class ChatSession {
         }
     }
 
+    _resolve_spawn_refs(results, spawn_context) {
+        const spawn_ids = Object.fromEntries(spawn_context.ids);
+        for (const [id, co_agent] of Object.entries(this.state.co_agents)) {
+            const pending = co_agent.pending_spawn;
+            if (co_agent.state !== 'waiting' || !pending?.unresolved_refs) continue;
+            const result = results.find(item => item.pending_id === id);
+            let missing = null;
+            const resolve = reference => {
+                const match = reference.match(/^spawn_(\d+)$/i);
+                if (!match) return reference;
+                const resolved = spawn_ids[Number(match[1])];
+                if (!resolved || resolved === id) missing = reference;
+                return resolved;
+            };
+            pending.dependencies = [...new Set(pending.after.map(resolve))];
+            pending.attachment_ids = Object.fromEntries(pending.attachment_spawns.map(reference => {
+                const resolved = resolve(reference);
+                return [reference, resolved];
+            }));
+            delete pending.unresolved_refs;
+            if (missing) {
+                Object.assign(co_agent, { state: 'cancelled', relayed: co_agent.message_id });
+                delete co_agent.pending_spawn;
+                if (result) Object.assign(result, { ok: false, line: `spawn ${id}: not started, unresolved ${missing}` });
+                continue;
+            }
+            if (result) {
+                const waiting_for = pending.dependencies;
+                result.line = waiting_for.length ? `spawn ${id} (waiting for ${waiting_for.join(', ')})` : `spawn ${id}`;
+                delete result.pending_id;
+            }
+        }
+    }
+
+    async _launch_spawn(id, pending) {
+        const body = pending.body.split('\n').map(line => {
+            const match = line.match(/^(\s*ATTACH:\s*`?)spawn_(\d+)(`?\s*)$/i);
+            if (!match) return line;
+            const target = pending.attachment_ids?.[`spawn_${match[2]}`];
+            if (!target) throw new Error(`unresolved spawn_${match[2]} attachment`);
+            return `${match[1]}${target}${match[3]}`;
+        }).join('\n');
+        const { content, attachments } = await this._brief(body);
+        const thread = await this.client.create_thread(this.agent.coAgentId, content, `${id} – ${_first_line(content)}`, attachments);
+        const co_agent = this.state.co_agents[id];
+        Object.assign(co_agent, { thread_id: thread.id, message_id: await this._accepted_id(thread.id, thread), state: 'working', relayed: null });
+        delete co_agent.pending_spawn;
+    }
+
+    async _advance_waiting_spawns() {
+        const failures = [];
+        for (const id of this._co_agents(co_agent => co_agent.state === 'waiting')) {
+            const co_agent = this.state.co_agents[id];
+            const pending = co_agent.pending_spawn;
+            if (!pending) continue;
+            let waiting = false;
+            let failed = null;
+            for (const dependency_id of pending.dependencies || []) {
+                const dependency = this.state.co_agents[dependency_id];
+                if (!dependency || dependency.state === 'cancelled') {
+                    failed = `${dependency_id} was cancelled`;
+                    break;
+                }
+                if (dependency.state === 'working' || dependency.state === 'waiting') {
+                    waiting = true;
+                    continue;
+                }
+                if (dependency.state !== 'answered') {
+                    failed = `${dependency_id} did not complete successfully`;
+                    break;
+                }
+                if (await this._is_urgent(dependency_id)) {
+                    failed = `${dependency_id} answered with STATUS: question or STATUS: blocked`;
+                    break;
+                }
+            }
+            if (failed) {
+                Object.assign(co_agent, { state: 'cancelled', relayed: co_agent.message_id });
+                delete co_agent.pending_spawn;
+                failures.push({ ok: false, action: 'spawn', line: `spawn ${id}: not started, ${failed}` });
+                continue;
+            }
+            if (waiting) continue;
+            try {
+                for (const dependency_id of pending.dependencies || []) await this._stage_outputs(dependency_id);
+                for (const dependency_id of Object.values(pending.attachment_ids || {})) {
+                    if (this.state.co_agents[dependency_id]?.state === 'answered') await this._stage_outputs(dependency_id);
+                }
+                await this._launch_spawn(id, pending);
+                this._save();
+            } catch (error) {
+                Object.assign(co_agent, { state: 'failed', relayed: co_agent.message_id });
+                delete co_agent.pending_spawn;
+                failures.push({ ok: false, action: 'spawn', line: `spawn ${id}: not started (${error.message.slice(0, 160)})` });
+            }
+        }
+        if (failures.length) this._save();
+        return failures;
+    }
+
     async _stop_co_agents() {
         const working = Object.values(this.state.co_agents).filter(co_agent => co_agent.state === 'working');
         await Promise.all(working.map(co_agent => this.client.cancel(co_agent.thread_id).catch(() => {})));
-        Object.values(this.state.co_agents).forEach(co_agent => Object.assign(co_agent, { state: 'cancelled', relayed: co_agent.message_id }));
+        Object.values(this.state.co_agents).forEach(co_agent => {
+            Object.assign(co_agent, { state: 'cancelled', relayed: co_agent.message_id });
+            delete co_agent.pending_spawn;
+        });
         this.state.rounds = 0;
         return working.length;
     }
@@ -558,15 +698,33 @@ class ChatSession {
         this._set_phase('relay');
         for (;;) {
             await this._refresh_co_agents();
-            const fresh = this._co_agents(co_agent => !['working', 'cancelled'].includes(co_agent.state) && co_agent.relayed !== co_agent.message_id);
-            const pending = this._co_agents(co_agent => co_agent.state === 'working');
+            const failures = await this._advance_waiting_spawns();
+            if (failures.length) results.push(...failures);
+            const fresh = this._co_agents(co_agent => !['working', 'waiting', 'cancelled'].includes(co_agent.state) && co_agent.relayed !== co_agent.message_id);
+            const pending = this._co_agents(co_agent => ['working', 'waiting'].includes(co_agent.state));
             const timed_out = deadline !== null && Date.now() >= deadline;
-            if (!fresh.length && !pending.length) return null;
+            if (!fresh.length && !pending.length) {
+                if (failures.length) return this._build_relay(fresh, pending, results, timed_out);
+                return null;
+            }
             let urgent = false;
             for (const id of fresh) urgent = urgent || await this._is_urgent(id);
-            if ((fresh.length && (!pending.length || urgent)) || (timed_out && pending.length)) return this._build_relay(fresh, pending, results, timed_out);
+            if (failures.length || (fresh.length && (!pending.length || urgent)) || (timed_out && pending.length)) return this._build_relay(fresh, pending, results, timed_out);
             await this._tick();
         }
+    }
+
+    async _stage_outputs(id, run = null) {
+        if (this.staged_outputs.has(id)) return this.staged_outputs.get(id);
+        if (!run) ({ run } = await this._answer_for(id));
+        const output = await this._download_files(run);
+        for (const file of output.files) {
+            this.state.staged[file.path] = { from: id, url: file.url };
+            this.staged_data.set(file.path, file.data);
+        }
+        this.staged_outputs.set(id, output);
+        this._save();
+        return output;
     }
 
     /** Relay part of one co-agent answer; its output files are downloaded and staged (written into the repo only by commit). */
@@ -574,11 +732,7 @@ class ChatSession {
         const co_agent = this.state.co_agents[id];
         const { answer, run } = await this._answer_for(id);
         const text = answer_text(answer);
-        const { files: found, warnings } = await this._download_files(run);
-        for (const file of found) {
-            this.state.staged[file.path] = { from: id, url: file.url };
-            this.staged_data.set(file.path, file.data);
-        }
+        const { files: found, warnings } = await this._stage_outputs(id, run);
         warnings.forEach(warning => this.ui.message({ role: 'warning', text: `${id}: ${warning}` }));
         co_agent.relayed = co_agent.message_id;
         this.answers.delete(id);
@@ -593,7 +747,7 @@ class ChatSession {
         const max_credits = this.max_credits();
         const lines = ['status:', ...Object.entries(this.state.co_agents).map(([id, co_agent]) => `- ${id}: ${co_agent.state}`)];
         lines.push(`rounds: ${this.state.rounds}/${maxRounds || 'no cap'}`, `credits: ${this.credits ?? 'unknown'}/${max_credits || 'no cap'}`);
-        if (pending.length) lines.push(`still working: ${pending.join(', ')}${timed_out ? ' (relayTimeout reached)' : ''}`);
+        if (pending.length) lines.push(`${pending.some(id => this.state.co_agents[id].state === 'waiting') ? 'still pending' : 'still working'}: ${pending.join(', ')}${timed_out ? ' (relayTimeout reached)' : ''}`);
         return lines.join('\n');
     }
 
@@ -639,6 +793,7 @@ class ChatSession {
         if (this.busy) throw new Notice('Stop the agent first.');
         this.state = _new_state();
         this.staged_data.clear();
+        this.staged_outputs.clear();
         this.credits = 0;
         this._save();
         this._emit();
@@ -650,6 +805,7 @@ class ChatSession {
         this.state = _new_state(state);
         this.answers.clear();
         this.staged_data.clear();
+        this.staged_outputs.clear();
         this.credits = null;
         this._save();
         this._emit();
