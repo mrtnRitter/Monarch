@@ -22,7 +22,7 @@ function safe_rel_path(path) {
     return parts.length && !parts.includes('..') && !parts.includes('.git') ? parts.join('/') : null;
 }
 
-/** True for Python caches that are never transferred. */
+/** True for Python caches that are never written. */
 function is_junk(path) {
     const parts = (path || '').replace(/\\/g, '/').split('/');
     return parts.includes('__pycache__') || parts[parts.length - 1].endsWith('.pyc');

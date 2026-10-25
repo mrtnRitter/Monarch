@@ -210,18 +210,9 @@ class AworkClient {
         return (await this.request('POST', '/temporaryfiles', { body: form })).id;
     }
 
-    /** Files attached to a task (the transfer task of monarch-transfer). */
-    async task_files(task_id) {
-        const result = await this.request('GET', `/tasks/${task_id}/files`);
-        return Array.isArray(result) ? result : [];
-    }
-
-    download_task_file(task_id, file_id) {
-        return this.request('GET', `/tasks/${task_id}/files/${file_id}/download`, { raw: true });
-    }
-
-    delete_task_file(task_id, file_id) {
-        return this.request('DELETE', `/tasks/${task_id}/files/${file_id}`);
+    /** Download an agent output file by its downloadUrl (relative to the API base URL). */
+    download(download_url) {
+        return this.request('GET', download_url, { raw: true });
     }
 
     /** Usage rows of a period (GET /agents/management/threads, admin only). from/to: 'YYYY-MM-DDT00:00:00Z' (UTC days, both included); group_by optional. */

@@ -12,12 +12,10 @@ monarch/
 │   ├── media/              # chat window (webview), styles adapted from vscode-acp (MIT)
 │   ├── test/               # local tests (node, no network)
 │   └── build_vsix.py       # builds monarch-<version>.vsix
-├── zillas/
+└── zillas/
 │   ├── codezilla.md        # system prompt for CodeZilla
 │   ├── mastazilla.md       # system prompt for mastazilla
 │   └── minizilla.md        # system prompt for minizilla
-└── skills/
-    └── monarch-transfer/   # skill: sends output files to monarch (SKILL.md, pack.py)
 ```
 
 ## Installation
@@ -26,8 +24,8 @@ Requirements: VS Code 1.85+ with the built-in Git extension, an awork account in
 
 ```bash
 cd monarch/vscode
-python build_vsix.py                         # -> monarch-0.15.3.vsix
-code --install-extension monarch-0.15.3.vsix
+python build_vsix.py                         # -> monarch-0.16.0.vsix
+code --install-extension monarch-0.16.0.vsix
 ```
 
 Or in VS Code: Extensions view → `…` → **Install from VSIX…**. Optional local tests: `node test/test.js`, `node test/test_month.js` and `node test/extension_smoke.js`. No API key is needed for chat; an API key is needed only for Month.
@@ -36,29 +34,25 @@ Or in VS Code: Extensions view → `…` → **Install from VSIX…**. Optional 
 
 1. **Client app for sign-in:** Settings → Integrations → add a client application of type **Public** with the name `monarch`. Redirect URI: `http://localhost:8765/callback` (port = `monarch.redirectPort`). If the client ID is not `monarch`, every user enters it in `monarch.clientId`.
 2. **Agents:** Create **minizilla** with `zillas/minizilla.md` and a low model preset (e.g. `fast`), **mastazilla** with `zillas/mastazilla.md` and a high model preset (e.g. `deep`); CodeZilla uses `zillas/codezilla.md`. After a change of a file in `zillas/`, copy it into the agent again.
-3. **Skill for files:** Create a skill **monarch-transfer** from `skills/monarch-transfer/` (`SKILL.md` and `pack.py`) and attach it to **every** agent used with monarch (CodeZilla, mastazilla, minizilla).
-4. **awork access:** Enable awork access for these agents; they need it to upload their files to the file drop of each user.
-5. **Sharing:** Share the agents with the colleagues who use monarch.
+3. **Sharing:** Share the agents with the colleagues who use monarch.
 
 ## Setup per user (step by step)
 
 Every user, also the agent owner, does this once:
 
-1. **Install** `monarch-0.15.3.vsix` (see *Installation*) and reload VS Code (Command Palette → **Developer: Reload Window**).
+1. **Install** `monarch-0.16.0.vsix` (see *Installation*) and reload VS Code (Command Palette → **Developer: Reload Window**).
 2. **Sign in:** Open **monarch** in the activity bar and click **Sign in** (or Command Palette → **monarch: Sign in**). The browser opens; log in to awork and select the workspace.
-3. **Create your file drop:** In awork create a **private task**, e.g. `Monarch Transfer`. Open it and copy its id from the address bar: `https://<workspace>.awork.com/tasks/<task id>/details`. Every user needs an own task; never use the task of a colleague.
-4. **Enter the task id:** VS Code settings (`Ctrl+,`), search for `monarch transfer` and paste the id into **Monarch: Transfer Task Id**. In `settings.json`: `"monarch.transferTaskId": "<task id>"`.
-5. **Check the agents:** The agent circles at the top show the agents. If an agent shared with you is missing, set **Monarch: Agent Filter** (`monarch.agentFilter`) to `all`.
-6. **Reload** the window, start a **new chat** (blue **+**) and send: `Create output/transfer_test.txt with three lines and transfer it with monarch-transfer.`
-7. **Check:** `transfer_test.txt` appears as link in the answer and in the repo. **Output → monarch** shows `transfer transfer_test.txt: ok (…)` and `… deleted`. Then delete the test file.
+3. **Check the agents:** The agent circles at the top show the agents. If an agent shared with you is missing, set **Monarch: Agent Filter** (`monarch.agentFilter`) to `all`.
+4. **Test files:** Start a **new chat** (blue **+**) and send: `Create output/download_test.txt with three lines.`
+5. **Check:** `download_test.txt` appears as link in the answer and in the repo; **Output → monarch** shows `download download_test.txt: ok`. Then delete the test file.
 
 | Problem | Cause and fix |
 |---|---|
-| `not transferred (set monarch.transferTaskId)` | Step 4 is missing |
-| `transfer task not readable (…)` | Wrong task id or not your task (step 3/4) |
-| `not transferred` | The agent did not send the file: ask it to transfer the file with monarch-transfer; check skill and awork access of the agent (owner setup 3/4) |
-| `not received (checksum mismatch)` | The bundle was damaged; it stays in the task. Ask the agent to send the file again |
-| No agents | Sign in again; check sharing (owner setup 5) and `monarch.agentFilter` |
+| `not downloaded (HTTP 403)` | awork refused the download of this file (seen for `package.json`). Get the file another way; note name and time to report the pattern |
+| `not downloaded (HTTP 401)` | Sign-in expired or the download is not allowed for your login: sign in again |
+| `not downloaded (no download link)` | awork listed the file without download link; ask the agent to save it again |
+| `not written (…)` | The file could not be written (e.g. no folder open, file locked) |
+| No agents | Sign in again; check sharing (owner setup 3) and `monarch.agentFilter` |
 
 Credits and limits apply per chat.
 
@@ -92,8 +86,7 @@ All settings are optional. The agent list comes from awork (see `monarch.agentFi
 | `monarch.maxRounds` | `20` | Max. messages to co-agents per job; `0` = no cap |
 | `monarch.relayTimeout` | `900` | Seconds the relay waits before waking the agent with the current state; `0` = no limit |
 | `monarch.pollInterval` | `3` | Seconds between status checks |
-| `monarch.maxFolderMB` | `20` | Max. size of a folder or file attachment (and of the files in one transfer bundle) |
-| `monarch.transferTaskId` | empty | Id of your private awork task used as file drop for monarch-transfer; empty = files cannot reach the repo |
+| `monarch.maxFolderMB` | `20` | Max. size of a folder or file attachment |
 | `monarch.syncInterval` | `4` | Seconds between checks for new messages of the current chat written elsewhere (e.g. awork web app) while the chat window is visible; while the agent is working, a newer message of yours written elsewhere ends the wait; `0` = off |
 
 ## Usage
@@ -132,6 +125,7 @@ If credits cannot be read and `maxCredits` is not `0`, the chat does not accept 
 | Questions | Questions with answer options from the agent as a card; click an option to send it as your answer, or type your own answer |
 | Steps | Relay and command events as collapsible group (`relay · 3 events`) |
 | While running | Spinner with elapsed time: `<agent> is working …` or `waiting for <co-agents> …` |
+| Warnings | Yellow box in the middle, e.g. a co-agent file that could not be downloaded; stays until closed with ✕ |
 | Errors | Red box in the middle; hints about actions that are not possible right now (e.g. `Stop the agent first.`, attachments) disappear after 5 s; ✕ closes any error box |
 
 Profile pictures are loaded once per VS Code session; without a picture, initials are shown.
@@ -148,13 +142,13 @@ The agent prompts in `zillas/` contain the matching rule; copy them into the age
 
 ### Files written into the repo
 
-awork does not let API clients download files from the agent's output folder. Instead the agent saves its files in `/workspace/output/` with their repo path (e.g. `/workspace/output/src/app.py` → `src/app.py`), packs the files it created or changed with the skill **monarch-transfer** into one bundle (`monarch_<chat id>_<time>.json.gz`, every file with its SHA-256) and uploads it to the task of `monarch.transferTaskId`. The task id reaches the agent with the context line and co-agents with a `[monarch transfer]` line in their briefs.
+The agent saves its files in `/workspace/output/` with their repo path (e.g. `/workspace/output/src/app.py` → `src/app.py`). awork lists every file created or changed in a run at the agent's answer, with a download link. After each answer monarch downloads these files and writes them into the first open workspace folder; existing files are overwritten. Text files are written as undoable edits. Only paths inside the repo are written (no absolute paths, no `..`, nothing in `.git`), Python caches never. Written files appear as links in the chat; a click opens the file in the editor (images and binary files with the matching viewer). Files that could not be downloaded or written are shown as warning below the answer, e.g. `package.json not downloaded (HTTP 403)`.
 
-After each answer monarch reads the files of that task, takes the bundles of this chat (co-agents: of their chat), checks every checksum and writes the files into the first open workspace folder; existing files are overwritten. Text files are written as undoable edits. Only paths inside the repo are written (no absolute paths, no `..`, nothing in `.git`), Python caches never. A bundle whose files all arrived is deleted from the task; a bundle with errors stays there and is not taken again. Written files appear as links in the chat; a click opens the file in the editor (images and binary files with the matching viewer); problems are shown as warning, e.g. `not received (checksum mismatch)`, or `not transferred` for files the agent saved in `output/` but did not send.
+Co-agent files are not written directly: monarch downloads them when the co-agent answers and keeps them staged outside the repo (latest version per path) until the agent sends `### ORCA: commit`. Failed downloads of co-agent files are shown as yellow warning box and reported to the agent. A new chat discards staged files.
 
 ### Log
 
-**Output → monarch** shows the run status reported by awork, every transferred file (`transfer <path>: ok (<bundle>)` or the reason, `transfer <bundle>: deleted` / `kept in the transfer task`, `transfer: no bundle of chat … in task …`, `saved in output/ but not sent`) and every reload by `syncInterval`.
+**Output → monarch** shows the run status reported by awork, every download (`download <path>: ok` or the error), every `commit` and every reload by `syncInterval`.
 
 ### Co-agents (ORCA commands)
 
@@ -166,9 +160,10 @@ An agent with `coAgentId` controls co-agents with blocks at the end of its answe
 | `### ORCA: send <id>` + message | Message to a co-agent |
 | `### ORCA: cancel <id>` | Stop one co-agent |
 | `### ORCA: wait` | Keep waiting |
+| `### ORCA: commit` | Write all staged co-agent files into the repo; failed ones stay staged |
 | `### ORCA: stopzilla` | Stop all co-agents, close the job |
 
-monarch wakes the agent with a `[monarch relay]` message when all working co-agents have answered, when one answers with `STATUS: question`/`blocked`, or after `relayTimeout`. Downloaded output files of the co-agents are attached to that message. A line `ATTACH: <repo path>` in a brief or message attaches that file from the local repo (max. 20, `maxFolderMB` each). Commands beyond the limits are refused and reported to the agent.
+monarch wakes the agent with a `[monarch relay]` message when all working co-agents have answered, when one answers with `STATUS: question`/`blocked`, or after `relayTimeout`. It lists the staged files of each co-agent (`files (staged, not in the repo yet): …`) and download warnings; no files are attached. A line `ATTACH: <repo path>` in a brief or message attaches that file (staged version first, else from the local repo, `maxFolderMB` each); `ATTACH: <co-agent id>` attaches all staged files of that co-agent; max. 20 files per message. Commands beyond the limits are refused and reported to the agent.
 
 ## Commands
 

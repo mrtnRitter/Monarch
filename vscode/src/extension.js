@@ -1,11 +1,8 @@
 'use strict';
 /** monarch VS Code extension: chat window for awork agents with co-agent relay. */
-const os = require('os');
-const path = require('path');
 const vscode = require('vscode');
 const { AworkClient, AworkError, OAuth } = require('./awork');
 const { ChatView } = require('./chat_view');
-const { run_probe } = require('./probe');
 const { set_log } = require('./log');
 
 function _config() {
@@ -31,7 +28,6 @@ function activate(context) {
             return key;
         },
     });
-    let probe_channel = null;
     const view = new ChatView(context, client, oauth, key_client, context.secrets);
     const run = action => async () => {
         try {
@@ -56,14 +52,6 @@ function activate(context) {
         })),
         vscode.commands.registerCommand('monarch.newChat', run(() => view.new_chat())),
         vscode.commands.registerCommand('monarch.stop', run(() => view.stop())),
-        vscode.commands.registerCommand('monarch.probeDownload', run(async () => {
-            const thread_id = (await vscode.window.showInputBox({ prompt: 'monarch probe: thread ID', value: 'd3dda243-668e-4098-8bdf-4344927bceeb' }) || '').trim();
-            if (!thread_id) return;
-            probe_channel ||= vscode.window.createOutputChannel('monarch probe');
-            probe_channel.show(true);
-            const { ok, total } = await run_probe(client, thread_id, path.join(os.tmpdir(), 'monarch-probe', thread_id), line => probe_channel.appendLine(line));
-            vscode.window.showInformationMessage(`monarch probe: ${ok}/${total} downloads ok`);
-        })),
         vscode.workspace.onDidChangeConfiguration(event => {
             if (event.affectsConfiguration('monarch.agents') || event.affectsConfiguration('monarch.agentFilter')) view.refresh({ reload_agents: true });
         }),

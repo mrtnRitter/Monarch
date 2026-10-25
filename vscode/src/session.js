@@ -2,7 +2,6 @@
 /** One chat with an awork agent: messages, co-agent relay via ORCA commands, limits, credits and stop. */
 const files = require('./files');
 const { parse_commands } = require('./orca');
-const { bundle_thread, unpack_bundle } = require('./bundle');
 const { strip_context } = require('./repo');
 const { log } = require('./log');
 
@@ -15,7 +14,6 @@ const status_pattern = /^\W*STATUS:\W*(\w+)/im;
 const max_attachments = 20;
 const attach_pattern = /^\s*ATTACH:\s*`?([^`\n]+?)`?\s*$/;
 const relay_prefix = '[monarch relay]';
-const max_done_bundles = 200;
 
 class StopRequested extends Error {}
 /** Hint about an action that is not possible right now; shown briefly instead of as an error. */
@@ -25,6 +23,11 @@ class Superseded extends StopRequested {}
 
 function _is_user(message) {
     return (message.role || '').toLowerCase() === 'user';
+}
+
+/** Short reason of a failed request: HTTP status or the start of the error text. */
+function _reason(error) {
+    return error.status ? `HTTP ${error.status}` : error.message.slice(0, 120);
 }
 
 function _first_line(text) {
@@ -83,9 +86,9 @@ function _signature(messages) {
     return messages.map(message => `${message.id}:${(message.content || '').length}:${(message.toolCalls || []).length}:${message.isStreaming ? 1 : 0}`).join('|');
 }
 
-/** Chat state with defaults: thread, title, model override, last sent repo context, ids of processed bundles, job (rounds, co-agents). */
+/** Chat state with defaults: thread, title, model override, last sent repo context, staged co-agent files {path: {from, url}}, job (rounds, co-agents). */
 function _new_state(state) {
-    return { thread_id: null, title: null, model: null, context: null, bundles: [], rounds: 0, next_index: 1, co_agents: {}, extra_credits: 0, extra_co_agents: 0, ...(state || {}) };
+    return { thread_id: null, title: null, model: null, context: null, staged: {}, rounds: 0, next_index: 1, co_agents: {}, extra_credits: 0, extra_co_agents: 0, ...(state || {}) };
 }
 
 class ChatSession {
@@ -105,7 +108,7 @@ class ChatSession {
             signal.addEventListener('abort', () => { clearTimeout(timer); reject(new StopRequested()); }, { once: true });
         }));
         this.state = _new_state(store.load());
-        Object.assign(this, { credits: null, credit_error: null, credits_at: 0, busy: false, stopping: false, controller: null, answers: new Map(), phase: null, phase_since: null, last_states: new Map(), empty_polls: new Map(), foreign_files: new Set() });
+        Object.assign(this, { credits: null, credit_error: null, credits_at: 0, busy: false, stopping: false, controller: null, answers: new Map(), phase: null, phase_since: null, last_states: new Map(), empty_polls: new Map(), staged_data: new Map() });
     }
 
     // --- state ---
@@ -345,123 +348,83 @@ class ChatSession {
         return this._build_relay([], this._co_agents(co_agent => co_agent.state === 'working'), results, false);
     }
 
-    _transfer_task() {
-        return String(this.limits.transferTaskId || '').trim() || null;
-    }
-
-    /** Bundles of thread_id in the transfer task: [{id, name, data}], oldest first; files of other chats are skipped. */
-    async _bundles(task_id, thread_id, max_bytes) {
-        const done = new Set(this.state.bundles);
-        const bundles = [];
-        const items = (await this.client.task_files(task_id)).filter(item => !done.has(item.id) && !this.foreign_files.has(item.id));
-        for (const item of items.sort((a, b) => (a.name || '').localeCompare(b.name || ''))) {
-            const name = item.name || item.fileName || item.id;
-            const named = bundle_thread(name);
-            if (named && named !== thread_id) continue;
-            const data = await this.client.download_task_file(task_id, item.id);
-            // the upload may not keep the file name; then the thread inside the bundle decides
-            if (!named && (() => { try { return unpack_bundle(data, max_bytes).thread !== thread_id; } catch { return true; } })()) {
-                this.foreign_files.add(item.id);
-                continue;
-            }
-            bundles.push({ id: item.id, name, data });
-        }
-        return bundles;
-    }
-
     /**
-     * Output files of a run from the bundles in the transfer task (monarch-transfer): {files: [{path, data, bundle}], warnings, bundles}.
-     * Files the agent saved in output/ but did not send are reported; awork does not allow API clients to download them.
+     * Download the output files of a run (temporaryFiles below /workspace/output/): {files: [{path, data, url}], warnings}.
+     * Per path the last one wins; Python caches are skipped.
      */
-    async _collect_files(thread_id, run) {
+    async _download_files(run) {
         const found = new Map();
         const warnings = [];
-        const bundles = [];
-        const task_id = this._transfer_task();
-        // base64 makes the unpacked JSON about a third larger than the files
-        const max_bytes = (this.limits.maxFolderMB || 20) * 1024 * 1024 * 2;
-        if (task_id && thread_id) {
-            let items = [];
-            try {
-                items = await this._bundles(task_id, String(thread_id).toLowerCase(), max_bytes);
-            } catch (error) {
-                log(`transfer: task ${task_id} not readable: ${error.message}`);
-                warnings.push(`transfer task not readable (${error.message.slice(0, 160)})`);
-            }
-            for (const { id, name, data } of items) {
-                const bundle = { id, name, ok: true };
-                bundles.push(bundle);
-                try {
-                    const unpacked = unpack_bundle(data, max_bytes);
-                    for (const { path: sent, reason } of unpacked.failed) {
-                        bundle.ok = false;
-                        log(`transfer ${sent}: ${reason} (${name})`);
-                        warnings.push(`${sent} not received (${reason})`);
-                    }
-                    for (const { path: sent, data: content } of unpacked.files) {
-                        const path = files.safe_rel_path(sent);
-                        if (!path || files.is_junk(path)) {
-                            bundle.ok = false;
-                            warnings.push(`${sent} not written (unsafe path)`);
-                            continue;
-                        }
-                        log(`transfer ${path}: ok (${name})`);
-                        found.set(path, { path, data: content, bundle });
-                    }
-                } catch (error) {
-                    bundle.ok = false;
-                    log(`transfer ${name}: ${error.message}`);
-                    warnings.push(`${name} not received (${error.message})`);
-                }
-            }
-        }
-        if (task_id && !bundles.length) log(`transfer: no bundle of chat ${thread_id} in task ${task_id}`);
         for (const file of run.flatMap(message => message.temporaryFiles || []).filter(file => files.output_path(file))) {
-            const path = files.safe_rel_path(files.output_rel_path(file));
-            if (!path || files.is_junk(path) || found.has(path) || warnings.some(warning => warning.startsWith(`${path} `))) continue;
-            log(`transfer ${path}: saved in output/ but not sent`);
-            warnings.push(`${path} not transferred${task_id ? '' : ' (set monarch.transferTaskId)'}`);
+            const sent = files.output_path(file);
+            const path = files.safe_rel_path(sent);
+            if (path && files.is_junk(path)) continue;
+            if (!path) { warnings.push(`${sent} not written (unsafe path)`); continue; }
+            if (!file.downloadUrl) { warnings.push(`${path} not downloaded (no download link)`); continue; }
+            try {
+                found.set(path, { path, data: await this.client.download(file.downloadUrl), url: file.downloadUrl });
+                log(`download ${path}: ok`);
+            } catch (error) {
+                log(`download ${path}: ${error.message}`);
+                warnings.push(`${path} not downloaded (${_reason(error)})`);
+            }
         }
-        return { files: [...found.values()], warnings, bundles };
+        return { files: [...found.values()], warnings };
     }
 
-    /** Remember processed bundles (never taken twice) and delete the complete ones from the transfer task. */
-    async _finish_bundles(bundles) {
-        if (!bundles.length) return;
-        for (const bundle of bundles) {
-            if (bundle.ok) {
-                try {
-                    await this.client.delete_task_file(this._transfer_task(), bundle.id);
-                    log(`transfer ${bundle.name}: deleted`);
-                } catch (error) {
-                    log(`transfer ${bundle.name}: not deleted: ${error.message}`);
-                }
-            } else {
-                log(`transfer ${bundle.name}: kept in the transfer task (not complete)`);
-            }
+    /** Write one file into the repo; returns an error text or null. */
+    async _write(path, data) {
+        if (!this.workspace) return 'no folder open';
+        try {
+            await this.workspace.write(path, data);
+            return null;
+        } catch (error) {
+            return error.message;
         }
-        this.state.bundles = [...this.state.bundles, ...bundles.map(bundle => bundle.id)].slice(-max_done_bundles);
-        this._save();
     }
 
     async _write_repo_files(run) {
-        const { files: found, warnings, bundles } = await this._collect_files(this.state.thread_id, run);
+        const { files: found, warnings } = await this._download_files(run);
         const written = [];
         for (const file of found) {
-            if (!this.workspace) {
-                file.bundle.ok = false;
-                warnings.push(`${file.path} not written (no folder open)`);
+            const error = await this._write(file.path, file.data);
+            if (error) warnings.push(`${file.path} not written (${error})`);
+            else written.push({ path: file.path });
+        }
+        return { files: written, warnings };
+    }
+
+    /** Content of a staged co-agent file; downloaded again if it is not in memory (e.g. after a reload). */
+    async _staged_file(path) {
+        if (!this.staged_data.has(path)) this.staged_data.set(path, await this.client.download(this.state.staged[path].url));
+        return this.staged_data.get(path);
+    }
+
+    /** Write all staged co-agent files into the repo; failed ones stay staged. Returns a command result. */
+    async _commit() {
+        const paths = Object.keys(this.state.staged);
+        if (!paths.length) return { ok: false, line: 'commit: no staged files' };
+        const written = [];
+        const failed = [];
+        for (const path of paths) {
+            let error;
+            try {
+                error = await this._write(path, await this._staged_file(path));
+            } catch (download_error) {
+                error = `not downloaded (${_reason(download_error)})`;
+            }
+            if (error) {
+                failed.push(`${path} (${error})`);
+                this.ui.message({ role: 'warning', text: `commit: ${path} not written (${error})` });
                 continue;
             }
-            try {
-                written.push({ path: await this.workspace.write(file.path, file.data) });
-            } catch (error) {
-                file.bundle.ok = false;
-                warnings.push(`${file.path} not written (${error.message})`);
-            }
+            written.push(path);
+            delete this.state.staged[path];
+            this.staged_data.delete(path);
         }
-        await this._finish_bundles(bundles);
-        return { files: written, warnings };
+        log(`commit: written ${written.join(', ') || 'none'}${failed.length ? `; failed ${failed.join(', ')}` : ''}`);
+        const line = `commit: ${written.length} files written${written.length ? ` (${written.join(', ')})` : ''}${failed.length ? `, not written: ${failed.join(', ')}` : ''}`;
+        return { ok: !failed.length, line };
     }
 
     // --- ORCA commands ---
@@ -477,33 +440,35 @@ class ChatSession {
         return null;
     }
 
-    /** Turn "ATTACH: <repo path>" lines of a brief into attachments read from the local repo. */
+    /**
+     * Turn "ATTACH: <repo path>" lines of a brief into attachments: staged co-agent files first, else the local repo.
+     * "ATTACH: <co-agent id>" attaches all staged files of that co-agent.
+     */
     async _brief(body) {
         const lines = body.split('\n');
-        const paths = lines.map(line => attach_pattern.exec(line)?.[1].trim()).filter(Boolean);
-        if (!paths.length) return { content: body, attachments: [] };
+        const entries = lines.map(line => attach_pattern.exec(line)?.[1].trim()).filter(Boolean);
+        if (!entries.length) return { content: body, attachments: [] };
+        const expanded = entries.map(entry => (this.state.co_agents[entry] ? Object.keys(this.state.staged).filter(path => this.state.staged[path].from === entry) : [entry]));
+        const empty = entries.filter((entry, index) => !expanded[index].length);
+        if (empty.length) throw new Error(`no staged files of ${empty.join(', ')}`);
+        const paths = [...new Set(expanded.flat())];
         if (paths.length > max_attachments) throw new Error(`max. ${max_attachments} files per message`);
         const unsafe = paths.filter(path => !files.safe_rel_path(path) || files.is_junk(path));
         if (unsafe.length) throw new Error(`unsafe attachment path ${unsafe.join(', ')}`);
-        if (!this.workspace?.read) throw new Error('no folder open for attachments');
         const attachments = [];
         for (const path of paths.map(files.safe_rel_path)) {
             let data;
             try {
-                data = await this.workspace.read(path);
+                if (this.state.staged[path]) data = await this._staged_file(path);
+                else if (!this.workspace?.read) throw new Error('no folder open');
+                else data = await this.workspace.read(path);
             } catch (error) {
-                throw new Error(`attachment ${path} not readable (${error.message})`);
+                throw new Error(`attachment ${path} not readable (${error.status ? _reason(error) : error.message})`);
             }
             attachments.push({ temporaryFileId: await this.client.upload_temporary_file(files.basename(path), data) });
         }
         const content = lines.filter(line => !attach_pattern.test(line)).join('\n').trim();
         return { content: `${content}\n\nAttached files (relative to repo root): ${paths.join(', ')}`, attachments };
-    }
-
-    /** Brief text plus the transfer task line, so that co-agents can send their files. */
-    _with_transfer(content) {
-        const task_id = this._transfer_task();
-        return task_id ? `${content}\n\n[monarch transfer] send result files with the skill monarch-transfer to awork task ${task_id}` : content;
     }
 
     async _execute({ action, target, body }) {
@@ -517,7 +482,7 @@ class ChatSession {
                 const { content, attachments } = await this._brief(body);
                 const id = `${this.agent.coAgentName || 'coagent'}_${this.state.next_index}`;
                 this.state.next_index += 1;
-                const thread = await this.client.create_thread(this.agent.coAgentId, this._with_transfer(content), `${id} – ${_first_line(content)}`, attachments);
+                const thread = await this.client.create_thread(this.agent.coAgentId, content, `${id} – ${_first_line(content)}`, attachments);
                 this.state.co_agents[id] = { thread_id: thread.id, message_id: await this._accepted_id(thread.id, thread), state: 'working', relayed: null };
                 this.state.rounds += 1;
                 return result(true, `spawn ${id}`);
@@ -529,7 +494,7 @@ class ChatSession {
                 const error = this._limit_error(false);
                 if (error) return result(false, `send ${target}: ${error}`);
                 const { content, attachments } = await this._brief(body);
-                const accepted = await this.client.send_message(co_agent.thread_id, this._with_transfer(content), attachments);
+                const accepted = await this.client.send_message(co_agent.thread_id, content, attachments);
                 Object.assign(co_agent, { message_id: await this._accepted_id(co_agent.thread_id, accepted), state: 'working' });
                 this.state.rounds += 1;
                 return result(true, `send ${target}`);
@@ -540,6 +505,10 @@ class ChatSession {
                 return result(true, `cancel ${target}`);
             }
             if (action === 'wait') return this._co_agents(item => item.state === 'working').length ? result(true, 'wait') : result(false, 'wait: no co-agent is working');
+            if (action === 'commit') {
+                const { ok, line } = await this._commit();
+                return result(ok, line);
+            }
             if (action === 'stopzilla') return result(true, `stopzilla: ${await this._stop_co_agents()} co-agents stopped, job closed`);
             return result(false, `unknown command "${action}"`);
         } catch (error) {
@@ -600,33 +569,22 @@ class ChatSession {
         }
     }
 
-    async _forward(id, attachments) {
+    /** Relay part of one co-agent answer; its output files are downloaded and staged (written into the repo only by commit). */
+    async _forward(id) {
         const co_agent = this.state.co_agents[id];
         const { answer, run } = await this._answer_for(id);
         const text = answer_text(answer);
-        const collected = await this._collect_files(co_agent.thread_id, run);
-        const warnings = [...collected.warnings];
-        const attached = [];
-        for (const file of collected.files) {
-            if (attachments.length >= max_attachments) {
-                file.bundle.ok = false;
-                warnings.push(`${file.path} not attached (max. ${max_attachments} files per message)`);
-            } else {
-                try {
-                    attachments.push({ temporaryFileId: await this.client.upload_temporary_file(files.basename(file.path), file.data) });
-                    attached.push(file.path);
-                } catch (error) {
-                    file.bundle.ok = false;
-                    warnings.push(`${file.path} not attached (${error.message.slice(0, 160)})`);
-                }
-            }
+        const { files: found, warnings } = await this._download_files(run);
+        for (const file of found) {
+            this.state.staged[file.path] = { from: id, url: file.url };
+            this.staged_data.set(file.path, file.data);
         }
-        await this._finish_bundles(collected.bundles);
+        warnings.forEach(warning => this.ui.message({ role: 'warning', text: `${id}: ${warning}` }));
         co_agent.relayed = co_agent.message_id;
         this.answers.delete(id);
-        this.ui.info(`relay: ${id} ${co_agent.state}, ${attached.length} files`);
+        this.ui.info(`relay: ${id} ${co_agent.state}, ${found.length} files staged`);
         const lines = [`## ${id} (${co_agent.state})`, text || '(no answer text)'];
-        if (attached.length) lines.push(`attached: ${attached.join(', ')}`);
+        if (found.length) lines.push(`files (staged, not in the repo yet): ${found.map(file => file.path).join(', ')}`);
         return [...lines, ...warnings.map(warning => `warning: ${warning}`)].join('\n');
     }
 
@@ -640,14 +598,13 @@ class ChatSession {
     }
 
     async _build_relay(fresh, pending, results, timed_out) {
-        const attachments = [];
         const parts = [`${relay_prefix} co-agent update`];
         if (results.length) parts.push(['commands:', ...results.map(result => `- ${result.ok ? 'ok' : 'refused'}: ${result.line}`)].join('\n'));
-        for (const id of fresh) parts.push(await this._forward(id, attachments));
+        for (const id of fresh) parts.push(await this._forward(id));
         parts.push(this._status_text(pending, timed_out));
         this._save();
         this._emit();
-        return { content: parts.join('\n\n'), attachments };
+        return { content: parts.join('\n\n'), attachments: [] };
     }
 
     // --- model ---
@@ -681,6 +638,7 @@ class ChatSession {
     new_chat() {
         if (this.busy) throw new Notice('Stop the agent first.');
         this.state = _new_state();
+        this.staged_data.clear();
         this.credits = 0;
         this._save();
         this._emit();
@@ -691,6 +649,7 @@ class ChatSession {
         if (this.busy) throw new Notice('Stop the agent first.');
         this.state = _new_state(state);
         this.answers.clear();
+        this.staged_data.clear();
         this.credits = null;
         this._save();
         this._emit();

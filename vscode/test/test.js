@@ -8,7 +8,6 @@ const { parse_commands } = require('../src/orca');
 const { create_zip } = require('../src/zip');
 const { AworkClient, OAuth } = require('../src/awork');
 const { ChatSession } = require('../src/session');
-const { bundle_thread, unpack_bundle } = require('../src/bundle');
 const repo = require('../src/repo');
 const { render_markdown } = require('../media/markdown');
 
@@ -94,31 +93,10 @@ test('client: base path, model options in the message body', async () => {
     assert.equal(seen[2].url, 'https://api.awork.com/api/v1/agents/defaults?type=custom-agent&agentId=a1');
 });
 
-// --- bundles (format of skills/monarch-transfer/pack.py) ---
-const sha = data => require('crypto').createHash('sha256').update(data).digest('hex');
-const make_bundle = (thread, entries, extra = {}) => zlib.gzipSync(JSON.stringify({ format: 'monarch-bundle', version: 1, thread, files: Object.entries(entries).map(([path, text]) => ({ path, sha256: sha(Buffer.from(text)), data: Buffer.from(text).toString('base64') })), ...extra }));
-const bundle_name = thread => `monarch_${thread}_20261024T123456789Z.json.gz`;
-
-test('bundles: name pattern, unpack, checksum, size limit, wrong format', () => {
-    const id = '27add872-f429-49cd-a3f2-536b907e4f0b';
-    assert.equal(bundle_thread(bundle_name(id.toUpperCase())), id);
-    for (const name of ['bundle', 'monarch_x_1.json.gz', `monarch_${id}.json.gz`]) assert.equal(bundle_thread(name), null, name);
-    const binary = Buffer.from([0, 255, 43, 47, 10, 13]);
-    const bundle = JSON.parse(zlib.gunzipSync(make_bundle(id, { 'src/ü x.txt': 'Grüße ✓', 'b.md': 'B' })).toString());
-    bundle.files.push({ path: 'bin.dat', sha256: sha(binary), data: binary.toString('base64') }, { path: 'bad.txt', sha256: '0'.repeat(64), data: 'eA==' });
-    const unpacked = unpack_bundle(zlib.gzipSync(JSON.stringify(bundle)), 1e6);
-    assert.equal(unpacked.thread, id);
-    assert.deepEqual(unpacked.files.map(file => [file.path, file.data.toString('latin1')]), [['src/ü x.txt', Buffer.from('Grüße ✓').toString('latin1')], ['b.md', 'B'], ['bin.dat', binary.toString('latin1')]]);
-    assert.deepEqual(unpacked.failed, [{ path: 'bad.txt', reason: 'checksum mismatch' }]);
-    assert.throws(() => unpack_bundle(make_bundle(id, { a: 'x'.repeat(5000) }), 100), /larger than 100 bytes/);
-    assert.throws(() => unpack_bundle(Buffer.from('nope'), 1e6), /not readable/);
-    assert.throws(() => unpack_bundle(zlib.gzipSync('{"format":"other"}'), 1e6), /not a monarch bundle/);
-});
-
 // --- session with fake awork ---
 class FakeAwork {
     constructor() {
-        Object.assign(this, { threads: {}, uploads: [], cancelled: [], next: 1, usage_error: null });
+        Object.assign(this, { threads: {}, uploads: [], cancelled: [], next: 1, usage_error: null, outputs: {}, blocked: new Set(), downloads: [] });
     }
     _thread(agent_id) {
         const id = `t${this.next++}`;
@@ -146,7 +124,7 @@ class FakeAwork {
         if (thread.pending?.id === message_id) {
             if (++thread.pending.polls < (thread.delay || 1)) return { status: 'running' };
             const reply = this.reply(thread_id, thread.messages.at(-1));
-            this.task = [...(this.task || []), ...(reply.bundles || []).map(entries => ({ id: `file${this.next++}`, name: 'bundle', data: make_bundle(thread_id, entries) }))];
+            Object.assign(this.outputs, reply.contents || {});
             thread.messages.push({ id: `a${this.next++}`, role: 'agent', content: reply.content, temporaryFiles: reply.files || [], toolCalls: reply.toolCalls || null, messageOrder: thread.messages.length });
             thread.pending = null;
         }
@@ -162,18 +140,12 @@ class FakeAwork {
         this.uploads.push({ name, data: Buffer.from(data).toString('utf8') });
         return `tmp${this.uploads.length}`;
     }
-    // transfer task: bundles that replies upload (reply.bundles), downloads and deletions
-    async task_files(task_id) {
-        if (task_id !== 'task1') throw new Error('404 task not found');
-        return (this.task || []).map(({ id, name }) => ({ id, name }));
-    }
-    async download_task_file(task_id, file_id) {
-        this.task_downloads = (this.task_downloads || 0) + 1;
-        return this.task.find(file => file.id === file_id).data;
-    }
-    async delete_task_file(task_id, file_id) {
-        if (this.delete_error) throw new Error(this.delete_error);
-        this.task = this.task.filter(file => file.id !== file_id);
+    // output files of the replies (reply.contents), by the path in the downloadUrl
+    async download(download_url) {
+        const path = new URL(download_url, 'https://api.test').searchParams.get('path');
+        this.downloads.push(path);
+        if (this.blocked.has(path) || !(path in this.outputs)) throw Object.assign(new Error(`403 ${path}`), { status: 403 });
+        return Buffer.from(this.outputs[path]);
     }
     async thread(thread_id) {
         if (this.usage_error) throw new Error(this.usage_error);
@@ -208,97 +180,112 @@ function make_session(fake, reply, limits = {}, store = make_store()) {
     return { session, written, events, store };
 }
 
-const mini_answer = (status, with_file = false) => ({ content: `STATUS: ${status}\nNOTES: x`, files: with_file ? [out('hello.py')] : [], bundles: with_file ? [{ 'hello.py': 'print("a")\n' }] : [] });
+const mini_answer = (status, with_file = false) => ({ content: `STATUS: ${status}\nNOTES: x`, files: with_file ? [out('hello.py')] : [], contents: with_file ? { 'hello.py': 'print("a")\n' } : {} });
 
-test('session: bundles of this chat are written and deleted, others ignored, failures kept, never taken twice', async () => {
+test('session: output files are downloaded and written, failures warned, uploads and caches skipped', async () => {
     const fake = new FakeAwork();
+    fake.blocked.add('package.json');
     const lines = [];
     require('../src/log').set_log(line => lines.push(line));
-    let turn = 0;
-    const other = '11111111-2222-3333-4444-555555555555';
-    fake.task = [{ id: 'foreign', name: bundle_name(other), data: make_bundle(other, { 'x.txt': 'X' }) }, { id: 'unnamed', name: 'bundle', data: make_bundle('t99', { 'y.txt': 'Y' }) }];
-    const { session, written, events } = make_session(fake, () => {
-        turn += 1;
-        if (turn === 1) return { content: 'Fertig.', files: [out('src/a.py'), out('c.txt')], bundles: [{ 'src/a.py': 'A = 1\n', '../evil.py': 'bad' }] };
-        return { content: 'Nochmal.', files: [out('d.txt')] };
-    }, { transferTaskId: 'task1' });
+    const { session, written, events } = make_session(fake, () => ({
+        content: 'Fertig.',
+        files: [out('src/a.py'), out('package.json'), out('__pycache__/x.pyc'), { id: '/workspace/output/../evil.py', name: 'evil.py' }, { id: '/workspace/output/nolink.txt', name: 'nolink.txt' }, { name: 'up.txt', sandboxPath: 'context/uploads/up.txt' }],
+        contents: { 'src/a.py': 'A = 1\n', '__pycache__/x.pyc': 'junk' },
+    }));
     try {
         await session.send('go');
-        assert.deepEqual(written, { 'src/a.py': 'A = 1\n' });
-        assert.deepEqual(events.find(item => item.role === 'agent').warnings, ['../evil.py not written (unsafe path)', 'c.txt not transferred']);
-        // incomplete bundle (unsafe path) stays, foreign bundles stay, the unnamed foreign one is only downloaded once
-        assert.deepEqual([fake.task.length, ...['foreign', 'unnamed'].map(id => fake.task.some(file => file.id === id))], [3, true, true]);
-        const downloads = fake.task_downloads;
-        await session.send('again');
-        assert.equal(fake.task_downloads, downloads);
-        assert.deepEqual(events.filter(item => item.role === 'agent').at(-1).warnings, ['d.txt not transferred']);
     } finally {
         require('../src/log').set_log(null);
     }
-    assert.ok(lines.some(line => line.endsWith('transfer src/a.py: ok (bundle)')), lines.join('\n'));
-    assert.ok(lines.some(line => line.endsWith('transfer bundle: kept in the transfer task (not complete)')), lines.join('\n'));
+    assert.deepEqual(written, { 'src/a.py': 'A = 1\n' });
+    const answer = events.find(item => item.role === 'agent');
+    assert.deepEqual(answer.files, [{ path: 'src/a.py' }]);
+    assert.deepEqual(answer.warnings, ['package.json not downloaded (HTTP 403)', '../evil.py not written (unsafe path)', 'nolink.txt not downloaded (no download link)']);
+    assert.deepEqual(fake.downloads, ['src/a.py', 'package.json']);
+    assert.ok(lines.some(line => line.endsWith('download src/a.py: ok')), lines.join('\n'));
 });
 
-test('session: complete bundle deleted, delete error does not reapply it, checksum error kept', async () => {
+test('session: write error is warned', async () => {
     const fake = new FakeAwork();
-    const { session, written, events } = make_session(fake, () => ({ content: 'ok', bundles: [{ 'a.txt': 'A' }] }), { transferTaskId: 'task1' });
-    await session.send('one');
-    assert.deepEqual([written, fake.task], [{ 'a.txt': 'A' }, []]);
-    fake.delete_error = '403 no right';
-    delete written['a.txt'];
-    await session.send('two');
-    assert.equal(fake.task.length, 1);
-    delete written['a.txt'];
-    fake.reply = () => ({ content: 'ok' });
-    await session.send('three');
-    assert.deepEqual(written, {});
-    const bad = JSON.parse(zlib.gunzipSync(make_bundle(session.state.thread_id, { 'b.txt': 'B' })));
-    bad.files[0].sha256 = '0'.repeat(64);
-    fake.delete_error = null;
-    fake.task.push({ id: 'bad', name: 'bundle', data: zlib.gzipSync(JSON.stringify(bad)) });
-    await session.send('four');
-    assert.deepEqual(events.filter(item => item.role === 'agent').at(-1).warnings, ['b.txt not received (checksum mismatch)']);
-    assert.ok(fake.task.some(file => file.id === 'bad'));
-});
-
-test('session: without transfer task files are reported, task not touched', async () => {
-    const fake = new FakeAwork();
-    fake.task_files = async () => { throw new Error('must not be called'); };
-    const { session, events } = make_session(fake, () => ({ content: 'ok', files: [out('c.txt'), { name: 'up.txt', sandboxPath: 'context/uploads/up.txt' }] }));
+    const { session, events } = make_session(fake, () => ({ content: 'ok', files: [out('a.txt')], contents: { 'a.txt': 'A' } }));
+    session.workspace.write = async () => { throw new Error('read-only'); };
     await session.send('go');
-    assert.deepEqual(events.find(item => item.role === 'agent').warnings, ['c.txt not transferred (set monarch.transferTaskId)']);
+    assert.deepEqual(events.find(item => item.role === 'agent').warnings, ['a.txt not written (read-only)']);
 });
 
-test('relay: spawn two, attach repo files, forward bundled files, write bundled final file', async () => {
+test('relay: mini files staged, attached by co-agent id, committed after review, own files written directly', async () => {
     const fake = new FakeAwork();
     fake.repo = { 'docs/brief.txt': 'input\n' };
+    fake.blocked.add('blocked.txt');
     let master_turn = 0;
     const { session, written, events } = make_session(fake, (thread_id, message) => {
-        if (fake.threads[thread_id].agent_id === 'mini') return mini_answer('done', message.content.includes('A'));
+        if (fake.threads[thread_id].agent_id === 'mini') {
+            if (message.content.startsWith('Review')) return { content: 'VERDICT: pass', files: [out('hello.py')], contents: { 'hello.py': 'print("b")\n' } };
+            return message.content.includes('A') ? { ...mini_answer('done', true), files: [out('hello.py'), out('blocked.txt')] } : mini_answer('done');
+        }
         master_turn += 1;
         if (master_turn === 1) return { content: 'Los gehts.\n### ORCA: spawn\nTask A\nATTACH: docs/brief.txt\n### ORCA: spawn\nTask B' };
-        assert.ok(message.content.startsWith('[monarch relay]'));
-        assert.match(message.content, /## minizilla_1 \(answered\)/);
-        assert.match(message.content, /## minizilla_2 \(answered\)/);
-        assert.match(message.content, /attached: hello\.py/);
-        assert.match(message.content, /ok: spawn minizilla_1/);
-        assert.equal(message.attachments.length, 1);
-        return { content: 'Fertig.\n### ORCA: stopzilla', files: [out('src/final.py'), out('notes.md'), out('__pycache__/x.pyc')], bundles: [{ 'src/final.py': 'X = 1\n' }] };
-    }, { transferTaskId: 'task1' });
+        if (master_turn === 2) {
+            assert.ok(message.content.startsWith('[monarch relay]'));
+            assert.match(message.content, /## minizilla_1 \(answered\)/);
+            assert.match(message.content, /## minizilla_2 \(answered\)/);
+            assert.match(message.content, /files \(staged, not in the repo yet\): hello\.py/);
+            assert.match(message.content, /warning: blocked\.txt not downloaded \(HTTP 403\)/);
+            assert.match(message.content, /ok: spawn minizilla_1/);
+            assert.equal(message.attachments.length, 0);
+            assert.deepEqual(written, {});
+            return { content: '### ORCA: spawn\nReview\nATTACH: minizilla_1' };
+        }
+        assert.match(message.content, /## minizilla_3 \(answered\)/);
+        return { content: 'Fertig.\n### ORCA: commit\n### ORCA: stopzilla', files: [out('notes.md')], contents: { 'notes.md': 'N' } };
+    });
     await session.send('Bau was');
-    assert.equal(master_turn, 2);
-    assert.deepEqual(fake.task, []);
-    assert.deepEqual(written, { 'src/final.py': 'X = 1\n' });
-    const last_answer = events.filter(item => item.role === 'agent').at(-1);
-    assert.deepEqual(last_answer.files, [{ path: 'src/final.py' }]);
-    assert.deepEqual(last_answer.warnings, ['notes.md not transferred']);
+    assert.equal(master_turn, 3);
+    // reviewer version wins, own file of the agent written directly
+    assert.deepEqual(written, { 'hello.py': 'print("b")\n', 'notes.md': 'N' });
+    assert.deepEqual(session.state.staged, {});
     const mini_threads = Object.values(fake.threads).filter(thread => thread.agent_id === 'mini');
-    assert.equal(mini_threads[0].messages[0].attachments.length, 1);
-    assert.equal(mini_threads[0].messages[0].content, 'Task A\n\nAttached files (relative to repo root): docs/brief.txt\n\n[monarch transfer] send result files with the skill monarch-transfer to awork task task1');
+    assert.equal(mini_threads[0].messages[0].content, 'Task A\n\nAttached files (relative to repo root): docs/brief.txt');
+    assert.equal(mini_threads[2].messages[0].content, 'Review\n\nAttached files (relative to repo root): hello.py');
     assert.ok(fake.uploads.some(item => item.name === 'brief.txt' && item.data === 'input\n'));
     assert.ok(fake.uploads.some(item => item.name === 'hello.py' && item.data === 'print("a")\n'));
+    assert.ok(events.some(item => item.role === 'warning' && item.text === 'minizilla_1: blocked.txt not downloaded (HTTP 403)'));
+    assert.ok(events.some(item => item.role === 'info' && /^ok: commit: 1 files written \(hello\.py\)$/.test(item.text)), JSON.stringify(events));
     assert.equal(session.status().co_agents, 0);
-    assert.equal(session.state.rounds, 0);
+});
+
+test('relay: staged files survive a reload (downloaded again), commit errors keep them staged', async () => {
+    const fake = new FakeAwork();
+    const store = make_store({ thread_id: null, staged: { 'a.py': { from: 'minizilla_1', url: '/agents/threads/x/artifacts/download?path=a.py' } }, co_agents: { minizilla_1: { thread_id: 'old', state: 'answered', message_id: 'm', relayed: 'm' } }, next_index: 2 });
+    fake.outputs['a.py'] = 'A';
+    let turn = 0;
+    const { session, written } = make_session(fake, (thread_id, message) => {
+        if (fake.threads[thread_id].agent_id === 'mini') return mini_answer('done');
+        turn += 1;
+        return { content: turn === 1 ? '### ORCA: commit' : 'ok' };
+    }, {}, store);
+    session.workspace.write = async () => { throw new Error('locked'); };
+    await session.send('commit');
+    assert.deepEqual(Object.keys(session.state.staged), ['a.py']);
+    session.workspace.write = async (path, data) => { written[path] = Buffer.from(data).toString('utf8'); return path; };
+    turn = 0;
+    await session.send('again');
+    assert.deepEqual(written, { 'a.py': 'A' });
+    assert.deepEqual(fake.downloads, ['a.py']);
+    assert.deepEqual(session.state.staged, {});
+});
+
+test('relay: ATTACH of a co-agent without staged files is refused', async () => {
+    const fake = new FakeAwork();
+    let turn = 0;
+    const { session, events } = make_session(fake, (thread_id, message) => {
+        turn += 1;
+        if (turn === 1) return { content: '### ORCA: spawn\nReview\nATTACH: minizilla_9' };
+        return { content: 'ok' };
+    });
+    session.state.co_agents.minizilla_9 = { thread_id: 'x', state: 'answered', message_id: 'm', relayed: 'm' };
+    await session.send('go');
+    assert.ok(events.some(item => item.role === 'info' && item.text === 'refused: spawn: no staged files of minizilla_9'), JSON.stringify(events));
 });
 
 test('relay: question wakes the agent early, others keep working', async () => {
@@ -447,8 +434,8 @@ test('repo: context line for online, not online, no git, no folder; strip for di
     assert.deepEqual(repo.git_info(null), { git: false });
     assert.deepEqual(repo.git_info(undefined), { git: null });
     const online = repo.context_line({ folder: 'r', ...repo.git_info({ state }) });
-    assert.equal(online, '[monarch context] "this repo" = the repo open in VS Code: r · online: https://github.com/o/r · branch: dev · local state differs from online (uncommitted changes, commits not pushed); ask for attachments if needed · files: no transfer task set (monarch.transferTaskId), files cannot reach the repo');
-    assert.match(repo.context_line({ folder: 'r', git: false, transfer_task: 'T1' }), / · files: send with the skill monarch-transfer to awork task T1$/);
+    assert.equal(online, '[monarch context] "this repo" = the repo open in VS Code: r · online: https://github.com/o/r · branch: dev · local state differs from online (uncommitted changes, commits not pushed); ask for attachments if needed · files: save them in /workspace/output/ with their repo path, monarch downloads them');
+    assert.match(repo.context_line({ folder: 'r', git: false }), / · files: save them in \/workspace\/output\/ with their repo path, monarch downloads them$/);
     assert.equal(repo.context_line({ folder: 'r', ...repo.git_info({ state: { ...state, workingTreeChanges: [1, 2, 3, 4] } }) }), online);
     assert.match(repo.context_line({ folder: 'r', git: true, remote: 'https://github.com/o/r', branch: 'new', ahead: null }), /branch not pushed/);
     assert.match(repo.context_line({ folder: 'r', git: true, remote: null }), /not online \(no remote\); tell the user to push it first/);

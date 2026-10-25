@@ -238,9 +238,10 @@
     function add_message(item) {
         if (item.role === 'info') return add_step(item.text);
         if (item.role === 'question') return append(question_card(item));
-        if (item.role === 'error') {
+        // warnings (e.g. files not downloaded) stay until closed
+        if (item.role === 'error' || item.role === 'warning') {
             const box = document.createElement('div');
-            box.className = 'message error';
+            box.className = `message ${item.role}`;
             box.textContent = item.text;
             if (item.transient) setTimeout(() => box.remove(), 5000);
             const close = Object.assign(document.createElement('button'), { className: 'error-close', textContent: '✕', title: 'Close' });

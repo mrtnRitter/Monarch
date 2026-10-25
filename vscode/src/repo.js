@@ -29,9 +29,9 @@ function git_info(repository) {
  * One-line repo context for the agent; folder = name of the open workspace folder.
  * Only states (no counts), so the line changes only when repo, link, branch or kind of local changes change.
  */
-function context_line({ folder, git = null, remote = null, branch = null, changes = 0, ahead = null, transfer_task = null }) {
-    const files = transfer_task ? `files: send with the skill monarch-transfer to awork task ${transfer_task}` : 'files: no transfer task set (monarch.transferTaskId), files cannot reach the repo';
-    if (!folder) return `${marker} No folder is open in VS Code, so there is no "this repo" · ${files}`;
+function context_line({ folder, git = null, remote = null, branch = null, changes = 0, ahead = null }) {
+    if (!folder) return `${marker} No folder is open in VS Code, so there is no "this repo" · files: cannot be written`;
+    const files = 'files: save them in /workspace/output/ with their repo path, monarch downloads them';
     const url = git ? remote_web_url(remote) : null;
     const online = git === null ? 'git status unknown' : !git ? 'not a git repository, not online' : url ? `online: ${url}` : 'not online (no remote); tell the user to push it first';
     const local = url ? [changes && 'uncommitted changes', ahead === null ? 'branch not pushed' : ahead && 'commits not pushed'].filter(Boolean) : [];
