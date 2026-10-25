@@ -120,7 +120,7 @@ const settle = () => new Promise(resolve => setTimeout(resolve, 20));
 (async () => {
     const extension = require('../src/extension');
     extension.activate(context);
-    assert.deepEqual(Object.keys(registered).sort(), ['monarch.newChat', 'monarch.setApiKey', 'monarch.signIn', 'monarch.signOut', 'monarch.stop']);
+    assert.deepEqual(Object.keys(registered).sort(), ['monarch.newChat', 'monarch.probeDownload', 'monarch.setApiKey', 'monarch.signIn', 'monarch.signOut', 'monarch.stop']);
     const view = { webview: { options: null, html: '', cspSource: 'csp', asWebviewUri: value => value.path, postMessage: message => posted.push(message), onDidReceiveMessage: fn => { on_message = fn; } } };
     provider.resolveWebviewView(view);
     for (const id of ['agents', 'agent', 'month', 'credits', 'co_agents', 'history', 'history_menu', 'model', 'model_menu', 'stop', 'new_chat', 'splitter']) assert.match(view.webview.html, new RegExp(`id="${id}"`), id);

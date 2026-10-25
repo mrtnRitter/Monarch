@@ -60,6 +60,10 @@
             {
                 "command": "monarch.setApiKey",
                 "title": "monarch: Set API key"
+            },
+            {
+                "command": "monarch.probeDownload",
+                "title": "monarch: Probe agent file download"
             }
         ],
         "configuration": {
