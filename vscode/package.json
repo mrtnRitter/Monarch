@@ -1,7 +1,7 @@
 {
     "name": "monarch",
     "displayName": "monarch",
-    "version": "0.16.0",
+    "version": "0.17.0",
     "publisher": "mrtnritter",
     "description": "Chat with awork agents in VS Code. Relays work to co-agents (minizillas) without credits while waiting.",
     "license": "UNLICENSED",
@@ -56,10 +56,6 @@
             {
                 "command": "monarch.stop",
                 "title": "monarch: Stop agent and co-agents"
-            },
-            {
-                "command": "monarch.setApiKey",
-                "title": "monarch: Set API key"
             }
         ],
         "configuration": {
@@ -120,9 +116,6 @@
                                 "type": "object",
                                 "description": "UI names of the status items.",
                                 "properties": {
-                                    "month": {
-                                        "type": "string"
-                                    },
                                     "chat": {
                                         "type": "string"
                                     },
@@ -147,7 +140,6 @@
                             "coAgentId": "6708accf-622d-46be-9e17-7acf38dd018c",
                             "coAgentName": "minizilla",
                             "labels": {
-                                "month": "Monat",
                                 "chat": "Chat",
                                 "coAgents": "Co-Agenten",
                                 "stop": "/stopzilla"
@@ -162,13 +154,8 @@
                 },
                 "monarch.maxCoAgents": {
                     "type": "number",
-                    "default": 3,
+                    "default": 10,
                     "description": "Max. co-agents per job (until cancel/stopzilla). 0 = no cap. Can be changed per chat with − / + in the chat window."
-                },
-                "monarch.maxRounds": {
-                    "type": "number",
-                    "default": 20,
-                    "description": "Max. messages to co-agents per job. 0 = no cap."
                 },
                 "monarch.relayTimeout": {
                     "type": "number",
@@ -196,19 +183,6 @@
                     "default": 100,
                     "minimum": 1,
                     "description": "Credits added or removed per click on − / + of the Chat item (this chat only)."
-                },
-                "monarch.monthlyCredits": {
-                    "type": "number",
-                    "default": 0,
-                    "minimum": 0,
-                    "description": "Your monthly awork AI credit quota (AI plan, see awork account settings → awork AI). 0 = show usage only. The quota cannot be read from the awork API."
-                },
-                "monarch.creditResetDay": {
-                    "type": "number",
-                    "default": 1,
-                    "minimum": 1,
-                    "maximum": 28,
-                    "description": "Day of the month (UTC) on which your AI credits reset."
                 }
             }
         }
