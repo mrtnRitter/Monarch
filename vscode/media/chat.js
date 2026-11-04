@@ -5,7 +5,7 @@
     const element = id => document.getElementById(id);
     const level_names = { minimal: 'Minimal', low: 'Low', medium: 'Medium', high: 'High', xhigh: 'Extra high', max: 'Maximum', maximum: 'Maximum' };
     const state = {
-        agents: [], agent: null, agent_name: null, labels: { month: 'Monat', chat: 'Chat', coAgents: 'Co-Agenten', stop: 'Stop' },
+        agents: [], agent: null, agent_name: null, labels: { chat: 'Chat', coAgents: 'Co-Agenten', stop: 'Stop' },
         user: null, signed_in: false, status: null, steps: null, chats: [], models: { default: {}, models: [] },
     };
 
@@ -315,14 +315,6 @@
     });
 
     // --- status ---
-    function show_month(month) {
-        const value = month || { used: null, quota: 0, error: null, period_start: null };
-        const badge = element('month');
-        badge.className = `badge${value.quota > 0 && value.used !== null && value.used >= value.quota * 0.9 ? ' warn' : ''}`;
-        badge.title = `${value.error || `Your awork AI credits since ${value.period_start || '?'} (all AI use, also outside monarch)`}\nCtrl+click: set API key`;
-        badge.innerHTML = `<span class="label">${escape_html(state.labels.month)}</span> ${escape_html(String(value.used ?? '?'))} / ${escape_html(String(value.quota || '–'))}`;
-    }
-
     function adjustment_button(item, direction, enabled, title) {
         const sign = direction < 0 ? '−' : '+';
         return `<button class="adjust-btn ${direction < 0 ? 'less' : 'more'}" type="button" data-item="${item}" data-direction="${direction}" title="${escape_html(title)}" ${enabled ? '' : 'disabled'}>${sign}</button>`;
@@ -355,10 +347,6 @@
         if (!element('model_menu').classList.contains('hidden')) render_model_menu();
         update_working();
     }
-
-    element('month').addEventListener('click', event => {
-        if (event.ctrlKey || event.metaKey) vscode.postMessage({ type: 'set_api_key' });
-    });
 
     element('statusbar').addEventListener('click', event => {
         const button = event.target.closest('.adjust-btn');
@@ -401,8 +389,6 @@
             add_message(data.item);
         } else if (data.type === 'status') {
             show_status(data.status);
-        } else if (data.type === 'month') {
-            show_month(data.month);
         } else if (data.type === 'chats') {
             state.chats = data.items;
             if (!element('history_menu').classList.contains('hidden')) render_history();

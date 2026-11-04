@@ -3,13 +3,12 @@
 const vscode = require('vscode');
 const crypto = require('crypto');
 const { ChatSession, Notice } = require('./session');
-const { MonthCredits } = require('./month');
 const { log } = require('./log');
 const { create_zip } = require('./zip');
 const { context_line, git_info } = require('./repo');
 
 const fixed_excludes = ['**/.git/**', '**/node_modules/**', '**/__pycache__/**', '**/.venv/**', '**/*.pyc'];
-const default_labels = { month: 'Monat', chat: 'Chat', coAgents: 'Co-Agenten', stop: 'Stop' };
+const default_labels = { chat: 'Chat', coAgents: 'Co-Agenten', stop: 'Stop' };
 const image_types = [[[0x89, 0x50, 0x4e, 0x47], 'image/png'], [[0xff, 0xd8, 0xff], 'image/jpeg'], [[0x47, 0x49, 0x46], 'image/gif'], [[0x52, 0x49, 0x46, 0x46], 'image/webp']];
 const mime_types = { '.py': 'text/x-python', '.md': 'text/markdown', '.json': 'application/json', '.txt': 'text/plain', '.zip': 'application/zip' };
 const max_chats = 100;
@@ -67,7 +66,6 @@ async function _git_repository(uri) {
 }
 
 const _chats_key = agent => `monarch.chats.${agent.agentId}`;
-const _current_key = agent => `monarch.current.${agent.agentId}`;
 
 function _repo_name() {
     return _root()?.path.split('/').filter(Boolean).pop() || null;
@@ -152,9 +150,8 @@ const workspace_adapter = {
 };
 
 class ChatView {
-    constructor(context, client, oauth, key_client = client, secrets = context.secrets) {
-        Object.assign(this, { context, client, oauth, key_client, secrets, view: null, sessions: new Map(), attachments: [], avatars: new Map(), user_avatar: null, me: null, agent_list: null, models: new Map(), last_file: null, last_editor: null, sync_timer: null });
-        this.month = new MonthCredits({ client: this.client, usage_client: this.key_client, settings: () => ({ quota: _config().get('monthlyCredits') || 0, reset_day: _config().get('creditResetDay') || 1 }) });
+    constructor(context, client, oauth) {
+        Object.assign(this, { context, client, oauth, view: null, sessions: new Map(), attachments: [], avatars: new Map(), user_avatar: null, me: null, agent_list: null, models: new Map(), last_file: null, last_editor: null, sync_timer: null });
         // remember the last file so that "Current file" also works while a preview or other non-file tab is active
         const remember = uri => { if (uri && uri.scheme !== 'untitled') this.last_file = uri; };
         // remember the last text editor for "Insert at cursor" while the chat window has the focus (output panels excluded)
@@ -173,8 +170,6 @@ class ChatView {
         Object.assign(this, { agent_list: null, user_avatar: null, me: null });
         this.models.clear();
         this.sessions.clear();
-        this.month.reset();
-        this._post({ type: 'month', month: null });
     }
 
     // --- agents ---
@@ -195,7 +190,7 @@ class ChatView {
 
     _limits() {
         const config = _config();
-        return Object.fromEntries(['maxCredits', 'maxCoAgents', 'creditStep', 'maxRounds', 'relayTimeout', 'pollInterval', 'syncInterval', 'maxFolderMB'].map(key => [key, config.get(key)]));
+        return Object.fromEntries(['maxCredits', 'maxCoAgents', 'creditStep', 'relayTimeout', 'pollInterval', 'syncInterval', 'maxFolderMB'].map(key => [key, config.get(key)]));
     }
 
     async _models(agent) {
@@ -203,10 +198,10 @@ class ChatView {
         return this.models.get(agent.agentId);
     }
 
-    // --- chats (list per agent shared by all repos, current chat per repo) ---
+    // --- chats (list per agent shared by all repos; every window starts with a new chat) ---
     _chats(agent) {
         this._migrate_chats(agent);
-        return { current: this.context.workspaceState.get(_current_key(agent)) ?? null, items: this.context.globalState.get(_chats_key(agent)) || [] };
+        return { items: this.context.globalState.get(_chats_key(agent)) || [] };
     }
 
     /** Move the per-repo lists of 0.4 (single chat) and 0.5 into the shared list. */
@@ -215,28 +210,23 @@ class ChatView {
         const legacy_keys = [_chats_key(agent), `monarch.chat.${agent.name}`];
         const [list, single] = legacy_keys.map(key => workspace.get(key));
         if (!list && !single) return;
-        const legacy = list || (single.thread_id ? { current: single.thread_id, items: [{ thread_id: single.thread_id, title: single.title || 'Earlier chat', updated: Date.now(), state: single }] } : null);
+        const legacy = list || (single.thread_id ? { items: [{ thread_id: single.thread_id, title: single.title || 'Earlier chat', updated: Date.now(), state: single }] } : null);
         if (legacy) {
             const repo = _repo_name();
             this.context.globalState.update(_chats_key(agent), _merge_chats([...(this.context.globalState.get(_chats_key(agent)) || []), ...legacy.items.map(item => ({ repo, ...item }))]));
-            if (workspace.get(_current_key(agent)) === undefined) workspace.update(_current_key(agent), legacy.current || null);
         }
         for (const key of legacy_keys) workspace.update(key, undefined);
     }
 
     _save_chats(agent, chats) {
-        return Promise.all([this.context.globalState.update(_chats_key(agent), _merge_chats(chats.items)), this.context.workspaceState.update(_current_key(agent), chats.current)]);
+        return this.context.globalState.update(_chats_key(agent), _merge_chats(chats.items));
     }
 
+    /** Saves the chat state into the history; no load, so a new window always starts with a new chat. */
     _store(agent) {
         return {
-            load: () => {
-                const chats = this._chats(agent);
-                return chats.items.find(item => item.thread_id === chats.current)?.state;
-            },
             save: state => {
                 const chats = this._chats(agent);
-                chats.current = state.thread_id || null;
                 if (state.thread_id) {
                     const item = chats.items.find(entry => entry.thread_id === state.thread_id);
                     const entry = { thread_id: state.thread_id, title: state.title || item?.title || 'Untitled chat', repo: item ? item.repo ?? null : _repo_name(), updated: Date.now(), state };
@@ -253,7 +243,7 @@ class ChatView {
             const ui = {
                 message: item => this._post({ type: 'message', item, agent: agent.agentId }),
                 info: text => this._post({ type: 'message', item: { role: 'info', text }, agent: agent.agentId }),
-                status: status => { this._post({ type: 'status', status, agent: agent.agentId }); this._refresh_month().catch(() => {}); },
+                status: status => this._post({ type: 'status', status, agent: agent.agentId }),
             };
             this.sessions.set(agent.agentId, new ChatSession({ client: this.client, agent, limits: this._limits(), store: this._store(agent), workspace: workspace_adapter, ui }));
         }
@@ -263,8 +253,8 @@ class ChatView {
     }
 
     _post_chats(agent) {
-        const chats = this._chats(agent);
-        this._post({ type: 'chats', agent: agent.agentId, items: chats.items.map(({ thread_id, title, repo, updated }) => ({ thread_id, title, repo, updated, current: thread_id === chats.current })) });
+        const current = this.sessions.get(agent.agentId)?.state.thread_id || null;
+        this._post({ type: 'chats', agent: agent.agentId, items: this._chats(agent).items.map(({ thread_id, title, repo, updated }) => ({ thread_id, title, repo, updated, current: thread_id === current })) });
     }
 
     // --- avatars (cached until VS Code restarts) ---
@@ -303,7 +293,7 @@ class ChatView {
 <div class="menu-wrap"><button id="history" class="icon-btn" title="Chat history"><svg viewBox="0 0 16 16" width="21" height="21" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 8a5.5 5.5 0 1 0 1.6-3.9"/><path d="M2.5 2.4v2.7h2.7"/><path d="M8 5v3.2l2.2 1.4"/></svg></button><div id="history_menu" class="menu right hidden"></div></div>
 <button id="new_chat" class="icon-btn primary" title="New chat"><svg viewBox="0 0 16 16" width="21" height="21" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M8 3.5v9M3.5 8h9"/></svg></button>
 </div>
-<div class="statusbar" id="statusbar"><span id="month" class="badge"></span><span id="credits" class="badge"></span><span id="co_agents" class="badge"></span><span class="spacer"></span>
+<div class="statusbar" id="statusbar"><span id="credits" class="badge"></span><span id="co_agents" class="badge"></span><span class="spacer"></span>
 <div class="menu-wrap"><button id="model" class="picker-btn" title="Model for this chat"></button><div id="model_menu" class="menu right hidden"></div></div>
 <button id="stop" class="stop-btn"></button></div>
 <div class="messages" id="messages"></div>
@@ -325,24 +315,6 @@ class ChatView {
         if (this.view) this.view.webview.postMessage(message);
     }
 
-    async _refresh_month(force = false) {
-        this._post({ type: 'month', month: await this.month.refresh(force) });
-    }
-
-    async set_api_key() {
-        const value = await vscode.window.showInputBox({
-            title: 'awork API key',
-            prompt: 'Used only to read your monthly AI credit usage. Stored in VS Code secret storage. Leave empty to remove it.',
-            password: true,
-            ignoreFocusOut: true,
-        });
-        if (value === undefined) return;
-        if (value === '') await this.secrets.delete('monarch.apiKey');
-        else await this.secrets.store('monarch.apiKey', value.trim());
-        this.month.reset();
-        await this._refresh_month(true);
-    }
-
     async _on_message(message) {
         const handlers = {
             ready: () => this.refresh(),
@@ -357,7 +329,6 @@ class ChatView {
             open_chat: () => this._open_chat(message.thread_id),
             remove_chat: () => this._remove_chat(message.thread_id),
             import_chat: () => this._import_chat(),
-            set_api_key: () => this.set_api_key(),
             set_model: () => this._session().set_model(message.model),
             adjust: () => {
                 const session = this._session();
@@ -381,8 +352,6 @@ class ChatView {
     /** Re-render agents, sign-in state, history, models and status. */
     async refresh({ reload_agents = false } = {}) {
         const signed_in = await this.oauth.is_logged_in();
-        if (signed_in) this._refresh_month(true).catch(() => {});
-        else { this.month.reset(); this._post({ type: 'month', month: null }); }
         let agents = [];
         if (signed_in) {
             try {
@@ -402,7 +371,6 @@ class ChatView {
         this._post({ type: 'models', agent: agent.agentId, ...(await this._models(agent)) });
         await this._show_history(session, agent);
         session.refresh_credits();
-        this._refresh_month(true).catch(() => {});
     }
 
     // --- sync with chats continued elsewhere (awork web app) ---
@@ -423,7 +391,6 @@ class ChatView {
         log(`sync: chat ${session.state.thread_id} changed elsewhere, reloading`);
         await this._show_history(session, agent);
         session.refresh_credits();
-        this._refresh_month(true).catch(() => {});
     }
 
     async _show_history(session, agent) {
@@ -450,7 +417,6 @@ class ChatView {
         session.load_state(item.state || { thread_id });
         await this._show_history(session, agent);
         session.refresh_credits();
-        this._refresh_month(true).catch(() => {});
     }
 
     /**
@@ -478,13 +444,11 @@ class ChatView {
         log(`chat ${thread_id} taken over from awork`);
         await this._show_history(session, agent);
         session.refresh_credits();
-        this._refresh_month(true).catch(() => {});
     }
 
     async _drop_chat(agent, thread_id) {
         const chats = this._chats(agent);
         chats.items = chats.items.filter(item => item.thread_id !== thread_id);
-        if (chats.current === thread_id) chats.current = null;
         await this._save_chats(agent, chats);
         this._post_chats(agent);
     }

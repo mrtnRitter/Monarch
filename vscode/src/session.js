@@ -86,9 +86,9 @@ function _signature(messages) {
     return messages.map(message => `${message.id}:${(message.content || '').length}:${(message.toolCalls || []).length}:${message.isStreaming ? 1 : 0}`).join('|');
 }
 
-/** Chat state with defaults: thread, title, model override, last sent repo context, staged co-agent files {path: {from, url}}, job (rounds, co-agents). */
+/** Chat state with defaults: thread, title, model override, last sent repo context, staged co-agent files {path: {from, url}}, job (co-agents). */
 function _new_state(state) {
-    return { thread_id: null, title: null, model: null, context: null, staged: {}, rounds: 0, next_index: 1, co_agents: {}, extra_credits: 0, extra_co_agents: 0, ...(state || {}) };
+    return { thread_id: null, title: null, model: null, context: null, staged: {}, next_index: 1, co_agents: {}, extra_credits: 0, extra_co_agents: 0, ...(state || {}) };
 }
 
 class ChatSession {
@@ -96,8 +96,8 @@ class ChatSession {
      * @param {object} options
      * @param {import('./awork').AworkClient} options.client
      * @param {{name, agentId, coAgentId?, coAgentName?}} options.agent
-     * @param {{maxCredits, maxCoAgents, maxRounds, relayTimeout, pollInterval}} options.limits 0 = no cap
-     * @param {{load: () => object|undefined, save: (state: object) => void}} options.store persisted chat state
+     * @param {{maxCredits, maxCoAgents, relayTimeout, pollInterval}} options.limits 0 = no cap
+     * @param {{load?: () => object|undefined, save: (state: object) => void}} options.store persisted chat state; without load the session starts with a new chat
      * @param {{write: (path: string, data: string|Uint8Array) => Promise<string>}|null} options.workspace repo access
      * @param {{message, info, status}} options.ui callbacks for the chat window
      */
@@ -107,7 +107,7 @@ class ChatSession {
             const timer = setTimeout(resolve, ms);
             signal.addEventListener('abort', () => { clearTimeout(timer); reject(new StopRequested()); }, { once: true });
         }));
-        this.state = _new_state(store.load());
+        this.state = _new_state(store.load?.());
         Object.assign(this, { credits: null, credit_error: null, credits_at: 0, busy: false, stopping: false, controller: null, answers: new Map(), staged_outputs: new Map(), phase: null, phase_since: null, last_states: new Map(), empty_polls: new Map(), staged_data: new Map() });
     }
 
@@ -435,11 +435,9 @@ class ChatSession {
 
     // --- ORCA commands ---
     _limit_error(new_co_agent) {
-        const { maxRounds } = this.limits;
         const max_co_agents = this.max_co_agents();
         const max_credits = this.max_credits();
         if (!this.agent.coAgentId) return `no coAgentId configured for ${this.agent.name}`;
-        if (maxRounds && this.state.rounds >= maxRounds) return `maxRounds reached (${this.state.rounds}/${maxRounds})`;
         const alive = this._co_agents(co_agent => co_agent.state !== 'cancelled').length;
         if (new_co_agent && max_co_agents && alive >= max_co_agents) return `maxCoAgents reached (${alive}/${max_co_agents}), cancel one first`;
         if (max_credits && this.credits !== null && this.credits >= max_credits) return `maxCredits reached (${this.credits}/${max_credits})`;
@@ -509,7 +507,6 @@ class ChatSession {
                             unresolved_refs: true,
                         },
                     };
-                    this.state.rounds += 1;
                     spawn_context?.ids.set(spawn_index, id);
                     return { ...result(true, `spawn ${id}`), pending_id: id };
                 }
@@ -518,7 +515,6 @@ class ChatSession {
                 const thread = await this.client.create_thread(this.agent.coAgentId, content, `${id} – ${_first_line(content)}`, attachments);
                 this.state.co_agents[id] = { thread_id: thread.id, message_id: await this._accepted_id(thread.id, thread), state: 'working', relayed: null };
                 spawn_context?.ids.set(spawn_index, id);
-                this.state.rounds += 1;
                 return result(true, `spawn ${id}`);
             }
             if (['send', 'cancel'].includes(action) && !co_agent) return result(false, `${action}: unknown co-agent "${target || ''}", known: ${Object.keys(this.state.co_agents).join(', ') || 'none'}`);
@@ -532,7 +528,6 @@ class ChatSession {
                 const accepted = await this.client.send_message(co_agent.thread_id, content, attachments);
                 this.staged_outputs.delete(target);
                 Object.assign(co_agent, { message_id: await this._accepted_id(co_agent.thread_id, accepted), state: 'working' });
-                this.state.rounds += 1;
                 return result(true, `send ${target}`);
             }
             if (action === 'cancel') {
@@ -661,7 +656,6 @@ class ChatSession {
             Object.assign(co_agent, { state: 'cancelled', relayed: co_agent.message_id });
             delete co_agent.pending_spawn;
         });
-        this.state.rounds = 0;
         return working.length;
     }
 
@@ -743,10 +737,9 @@ class ChatSession {
     }
 
     _status_text(pending, timed_out) {
-        const { maxRounds } = this.limits;
         const max_credits = this.max_credits();
         const lines = ['status:', ...Object.entries(this.state.co_agents).map(([id, co_agent]) => `- ${id}: ${co_agent.state}`)];
-        lines.push(`rounds: ${this.state.rounds}/${maxRounds || 'no cap'}`, `credits: ${this.credits ?? 'unknown'}/${max_credits || 'no cap'}`);
+        lines.push(`credits: ${this.credits ?? 'unknown'}/${max_credits || 'no cap'}`);
         if (pending.length) lines.push(`${pending.some(id => this.state.co_agents[id].state === 'waiting') ? 'still pending' : 'still working'}: ${pending.join(', ')}${timed_out ? ' (relayTimeout reached)' : ''}`);
         return lines.join('\n');
     }

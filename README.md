@@ -42,11 +42,11 @@ Requirements: VS Code 1.85+ with the built-in Git extension, an awork account in
 
 ```bash
 cd monarch/vscode
-python build_vsix.py                         # -> monarch-0.16.0.vsix
-code --install-extension monarch-0.16.0.vsix
+python build_vsix.py                         # -> monarch-0.17.0.vsix
+code --install-extension monarch-0.17.0.vsix
 ```
 
-Or in VS Code: Extensions view → `…` → **Install from VSIX…**. Optional local tests: `node test/test.js`, `node test/test_month.js` and `node test/extension_smoke.js`. No API key is needed for chat; an API key is needed only for Month.
+Or in VS Code: Extensions view → `…` → **Install from VSIX…**. Optional local tests: `node test/test.js` and `node test/extension_smoke.js`.
 
 ## Setup in awork (once per workspace, by the agent owner)
 
@@ -58,7 +58,7 @@ Or in VS Code: Extensions view → `…` → **Install from VSIX…**. Optional 
 
 Every user, also the agent owner, does this once:
 
-1. **Install** `monarch-0.16.0.vsix` (see *Installation*) and reload VS Code (Command Palette → **Developer: Reload Window**).
+1. **Install** `monarch-0.17.0.vsix` (see *Installation*) and reload VS Code (Command Palette → **Developer: Reload Window**).
 2. **Sign in:** Open **monarch** in the activity bar and click **Sign in** (or Command Palette → **monarch: Sign in**). The browser opens; log in to awork and select the workspace.
 3. **Check the agents:** The agent circles at the top show the agents. If an agent shared with you is missing, set **Monarch: Agent Filter** (`monarch.agentFilter`) to `all`.
 4. **Test files:** Start a **new chat** (blue **+**) and send: `Create output/download_test.txt with three lines.`
@@ -84,7 +84,7 @@ All settings are optional. The agent list comes from awork (see `monarch.agentFi
     "agentId": "<mastazilla-agent-id>",
     "coAgentId": "<minizilla-agent-id>",
     "coAgentName": "minizilla",
-    "labels": { "month": "Monat", "chat": "Chat", "coAgents": "Co-Agenten", "stop": "/stopzilla" }
+    "labels": { "chat": "Chat", "coAgents": "Co-Agenten", "stop": "/stopzilla" }
   }
 ]
 ```
@@ -95,13 +95,10 @@ All settings are optional. The agent list comes from awork (see `monarch.agentFi
 | `monarch.redirectPort` | `8765` | Local port of the sign-in callback; must match the redirect URI |
 | `monarch.apiBaseUrl` | `https://api.awork.com/api/v1` | awork API base URL |
 | `monarch.agentFilter` | `own` | `own`: agents you created plus agents listed in `monarch.agents`; `all`: every agent shared with you |
-| `monarch.agents` | entry for Mastazilla | Additions per agent, matched by `agentId` (or `name`): `coAgentId` (agent started by `ORCA: spawn`; empty = no co-agents), `coAgentName` (prefix of co-agent IDs), `labels` (UI names of the status items; `month`, `chat`, `coAgents`, `stop` (`credits` = deprecated, same as `chat`)). Agents used as `coAgentId` are not shown in the agent list. |
+| `monarch.agents` | entry for Mastazilla | Additions per agent, matched by `agentId` (or `name`): `coAgentId` (agent started by `ORCA: spawn`; empty = no co-agents), `coAgentName` (prefix of co-agent IDs), `labels` (UI names of the status items; `chat`, `coAgents`, `stop` (`credits` = deprecated, same as `chat`)). Agents used as `coAgentId` are not shown in the agent list. |
 | `monarch.maxCredits` | `1000` | Credit cap per chat (agent + co-agents); reaching it stops everything; `0` = no cap. Can be changed per chat with − / + in the chat window. |
-| `monarch.maxCoAgents` | `3` | Max. co-agents per job (a co-agent holds its slot until cancel/stopzilla); `0` = no cap. Can be changed per chat with − / + in the chat window. |
+| `monarch.maxCoAgents` | `10` | Max. co-agents per job (a co-agent holds its slot until cancel/stopzilla); `0` = no cap. Can be changed per chat with − / + in the chat window. |
 | `monarch.creditStep` | `100` | Credits added or removed per click on − / + of the Chat item (this chat only); minimum `1` |
-| `monarch.monthlyCredits` | `0` | Your monthly awork AI credit quota (AI plan, see awork account settings → awork AI); `0` = show usage only |
-| `monarch.creditResetDay` | `1` | Day of the month (UTC) on which your AI credits reset; range `1`–`28` |
-| `monarch.maxRounds` | `20` | Max. messages to co-agents per job; `0` = no cap |
 | `monarch.relayTimeout` | `900` | Seconds the relay waits before waking the agent with the current state; `0` = no limit |
 | `monarch.pollInterval` | `3` | Seconds between status checks |
 | `monarch.maxFolderMB` | `20` | Max. size of a folder or file attachment |
@@ -117,7 +114,6 @@ All settings are optional. The agent list comes from awork (see `monarch.agentFi
 | Agent circles | Agents according to `monarch.agentFilter`, with their profile pictures; click to select. If they do not fit into the panel, a dropdown is shown instead. |
 | History (clock) | Chats of the selected agent from all repos (max. 100), newest first, with repo name and date; click to continue a chat, ✕ removes it from the list (the chat stays in awork) |
 | New chat (blue +) | Start a new conversation with the selected agent. **Ctrl+click** (Mac: Cmd+click) takes over an existing chat instead (workaround, e.g. for chats started in the awork web app): paste its link (`https://<workspace>.awork.com/ai/thread/<id>`) or id; the chat must belong to the selected agent and be readable with your login. It opens and is added to the history. |
-| Month | Reads the signed-in user’s AI usage with an awork API key (Ctrl/Cmd+click Month or run `monarch: Set API key`). The key is stored in VS Code Secret Storage, used only for usage, and an empty value removes it. The quota cannot be read from the API; configure it with `monthlyCredits`. The period starts on `creditResetDay` (UTC). Requires awork admin rights; updated at most once per minute and warning-colored at 90% of quota. |
 | Chat | Credits of this chat (agent + co-agents) against `maxCredits`. Hover to show − on the left, the current limit in the middle, and + on the right; clicks change only this chat’s limit by `creditStep`, saved with the chat. The limit cannot go below credits already used. `0` = no limit and no buttons. Turns warning-colored at 90%. |
 | Co-agents | Co-agents of the current job against `maxCoAgents`, incl. how many are working. Hover to show − on the left, the current limit in the middle, and + on the right; clicks change only this chat’s limit by 1. Minimum is the number of active co-agents, and at least 1. `0` = no limit and no buttons. |
 | Model | Model and reasoning level for the next messages of this chat; **Agent default** uses the agent's settings. Saved with the chat; co-agents keep their own model. |
@@ -127,7 +123,7 @@ All settings are optional. The agent list comes from awork (see `monarch.agentFi
 | Enter / Shift+Enter | Send / new line |
 | Ctrl+C / Cmd+C | Copies the selected text of the chat (or of the input) |
 
-The labels of Month, Chat, Co-agents and Stop come from `labels` of the selected agent. The history is stored locally in VS Code for all repos together and survives restarts; the current chat is remembered per repo. Histories of older versions (per repo) are taken over when the repo is opened the first time. It only contains chats started or taken over in monarch: awork does not let API clients list chats (the route of the web app and `/agents/management/threads` are refused for non-admins).
+The labels of Chat, Co-agents and Stop come from `labels` of the selected agent. Every new VS Code window starts with a new chat; earlier chats are continued from the history. The history is stored locally in VS Code for all repos together and survives restarts. Histories of older versions (per repo) are taken over when the repo is opened the first time. It only contains chats started or taken over in monarch: awork does not let API clients list chats (the route of the web app and `/agents/management/threads` are refused for non-admins).
 
 A chat continued in the awork web app is updated in the chat window after `syncInterval` seconds. Files from answers that were not started in monarch are not written into the repo.
 
@@ -188,6 +184,5 @@ monarch wakes the agent with a `[monarch relay]` message when all working co-age
 | Command | Effect |
 |---|---|
 | `monarch: Sign in` / `monarch: Sign out` | OAuth sign-in in the browser / delete the stored sign-in |
-| `monarch: Set API key` | Store or remove the awork API key used only for Month usage |
 | `monarch: New chat` | Same as the blue + button |
 | `monarch: Stop agent and co-agents` | Same as the Stop button |
