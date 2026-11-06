@@ -1,5 +1,5 @@
 'use strict';
-/** One chat with an awork agent: messages, co-agent relay via ORCA commands, limits, credits and stop. */
+/** One chat with an awork agent: messages, co-agent relay via ORCA commands, limits, credits (agent and co-agents separately) and stop. */
 const files = require('./files');
 const { parse_commands, parse_spawn_body } = require('./orca');
 const { strip_context } = require('./repo');
@@ -88,7 +88,7 @@ function _signature(messages) {
 
 /** Chat state with defaults: thread, title, model override, last sent repo context, staged co-agent files {path: {from, url}}, job (co-agents). */
 function _new_state(state) {
-    return { thread_id: null, title: null, model: null, context: null, staged: {}, next_index: 1, co_agents: {}, extra_credits: 0, extra_co_agents: 0, ...(state || {}) };
+    return { thread_id: null, title: null, model: null, context: null, staged: {}, next_index: 1, co_agents: {}, extra_credits: 0, extra_co_credits: 0, extra_co_agents: 0, ...(state || {}) };
 }
 
 class ChatSession {
@@ -96,7 +96,7 @@ class ChatSession {
      * @param {object} options
      * @param {import('./awork').AworkClient} options.client
      * @param {{name, agentId, coAgentId?, coAgentName?}} options.agent
-     * @param {{maxCredits, maxCoAgents, relayTimeout, pollInterval}} options.limits 0 = no cap
+     * @param {{maxCredits, maxCoAgentCredits, maxCoAgents, relayTimeout, pollInterval}} options.limits 0 = no cap
      * @param {{load?: () => object|undefined, save: (state: object) => void}} options.store persisted chat state; without load the session starts with a new chat
      * @param {{write: (path: string, data: string|Uint8Array) => Promise<string>}|null} options.workspace repo access
      * @param {{message, info, status}} options.ui callbacks for the chat window
@@ -108,7 +108,7 @@ class ChatSession {
             signal.addEventListener('abort', () => { clearTimeout(timer); reject(new StopRequested()); }, { once: true });
         }));
         this.state = _new_state(store.load?.());
-        Object.assign(this, { credits: null, credit_error: null, credits_at: 0, busy: false, stopping: false, controller: null, answers: new Map(), staged_outputs: new Map(), phase: null, phase_since: null, last_states: new Map(), empty_polls: new Map(), staged_data: new Map() });
+        Object.assign(this, { credits: null, credit_error: null, co_credits: null, co_credit_error: null, credits_at: 0, busy: false, stopping: false, controller: null, answers: new Map(), staged_outputs: new Map(), phase: null, phase_since: null, last_states: new Map(), empty_polls: new Map(), staged_data: new Map() });
     }
 
     // --- state ---
@@ -120,6 +120,10 @@ class ChatSession {
         return this.limits.maxCredits ? this.limits.maxCredits + this.state.extra_credits : 0;
     }
 
+    max_co_credits() {
+        return this.limits.maxCoAgentCredits ? this.limits.maxCoAgentCredits + this.state.extra_co_credits : 0;
+    }
+
     max_co_agents() {
         return this.limits.maxCoAgents ? this.limits.maxCoAgents + this.state.extra_co_agents : 0;
     }
@@ -128,10 +132,17 @@ class ChatSession {
         return this.limits.creditStep > 0 ? this.limits.creditStep : 100;
     }
 
-    _can_less_credits() {
-        const limit = this.max_credits();
+    _can_less(limit, used) {
         const next = limit - this._credit_step();
-        return limit > 0 && next >= 1 && next > (this.credits ?? 0);
+        return limit > 0 && next >= 1 && next > (used ?? 0);
+    }
+
+    _can_less_credits() {
+        return this._can_less(this.max_credits(), this.credits);
+    }
+
+    _can_less_co_credits() {
+        return this._can_less(this.max_co_credits(), this.co_credits);
     }
 
     _can_less_co_agents() {
@@ -140,32 +151,38 @@ class ChatSession {
         return limit > 0 && limit - 1 >= Math.max(1, alive);
     }
 
-    adjust_credits(direction) {
-        const limit = this.max_credits();
+    _adjust(key, limit, can_less, direction, step) {
         if (!limit || ![1, -1].includes(direction)) return false;
-        if (direction === -1 && !this._can_less_credits()) return false;
-        this.state.extra_credits += direction * this._credit_step();
+        if (direction === -1 && !can_less) return false;
+        this.state[key] += direction * step;
         this._save();
         this._emit();
         return true;
     }
 
+    /** Change the agent credit limit of this chat by ±creditStep; false if not possible. */
+    adjust_credits(direction) {
+        return this._adjust('extra_credits', this.max_credits(), this._can_less_credits(), direction, this._credit_step());
+    }
+
+    /** Change the co-agent credit limit of this chat by ±creditStep; false if not possible. */
+    adjust_co_credits(direction) {
+        return this._adjust('extra_co_credits', this.max_co_credits(), this._can_less_co_credits(), direction, this._credit_step());
+    }
+
     adjust_co_agents(direction) {
-        const limit = this.max_co_agents();
-        if (!limit || ![1, -1].includes(direction)) return false;
-        if (direction === -1 && !this._can_less_co_agents()) return false;
-        this.state.extra_co_agents += direction;
-        this._save();
-        this._emit();
-        return true;
+        return this._adjust('extra_co_agents', this.max_co_agents(), this._can_less_co_agents(), direction, 1);
     }
 
     status() {
         const max_credits = this.max_credits();
+        const max_co_credits = this.max_co_credits();
         const max_co_agents = this.max_co_agents();
         return {
             credits: this.credits, max_credits, credit_step: this._credit_step(),
             can_less_credits: this._can_less_credits(), can_more_credits: max_credits > 0,
+            co_credits: this.co_credits, max_co_credits,
+            can_less_co_credits: this._can_less_co_credits(), can_more_co_credits: max_co_credits > 0,
             co_agents: this._co_agents(co_agent => co_agent.state !== 'cancelled').length,
             working: this._co_agents(co_agent => co_agent.state === 'working').length,
             max_co_agents, can_less_co_agents: this._can_less_co_agents(), can_more_co_agents: max_co_agents > 0,
@@ -188,32 +205,43 @@ class ChatSession {
     }
 
     // --- credits ---
-    /** Credits of this chat: agent thread plus all co-agent threads (thread details, no admin rights needed). null if not readable. */
-    async refresh_credits() {
-        const ids = [...new Set([this.state.thread_id, ...Object.values(this.state.co_agents).map(co_agent => co_agent.thread_id)].filter(Boolean))];
+    /** Sum of creditsUsed of the given threads (thread details, no admin rights needed): {used, error}; used = null if not readable. */
+    async _thread_credits(ids) {
         try {
-            const threads = await Promise.all(ids.map(id => this.client.thread(id)));
-            this.credits = threads.reduce((sum, thread) => sum + (thread.usage?.creditsUsed || 0), 0);
-            this.credit_error = null;
+            const threads = await Promise.all([...new Set(ids.filter(Boolean))].map(id => this.client.thread(id)));
+            return { used: threads.reduce((sum, thread) => sum + (thread.usage?.creditsUsed || 0), 0), error: null };
         } catch (error) {
-            Object.assign(this, { credits: null, credit_error: error.message });
+            return { used: null, error: error.message };
         }
-        this.credits_at = Date.now();
+    }
+
+    /** Credits of this chat, separately for the agent thread and all co-agent threads. Returns {credits, co_credits}. */
+    async refresh_credits() {
+        const [agent, co_agents] = await Promise.all([
+            this._thread_credits([this.state.thread_id]),
+            this._thread_credits(Object.values(this.state.co_agents).map(co_agent => co_agent.thread_id)),
+        ]);
+        Object.assign(this, { credits: agent.used, credit_error: agent.error, co_credits: co_agents.used, co_credit_error: co_agents.error, credits_at: Date.now() });
         this._emit();
-        return this.credits;
+        return { credits: this.credits, co_credits: this.co_credits };
     }
 
     async _check_budget(strict) {
-        const limit = this.max_credits();
-        const used = await this.refresh_credits();
-        if (!limit) return;
-        if (used === null) {
-            if (strict) throw new Error(`Credits not readable (${this.credit_error}). Set monarch.maxCredits to 0 to chat without a credit cap.`);
-            return;
-        }
-        if (used >= limit) {
-            await this.stop(`maxCredits reached (${used}/${limit})`);
-            throw new StopRequested();
+        await this.refresh_credits();
+        const budgets = [
+            ['maxCredits', 'Credits', this.credits, this.max_credits(), this.credit_error],
+            ['maxCoAgentCredits', 'Co-agent credits', this.co_credits, this.max_co_credits(), this.co_credit_error],
+        ];
+        for (const [setting, name, used, limit, error] of budgets) {
+            if (!limit) continue;
+            if (used === null) {
+                if (strict) throw new Error(`${name} not readable (${error}). Set monarch.${setting} to 0 to chat without this credit cap.`);
+                continue;
+            }
+            if (used >= limit) {
+                await this.stop(`${setting} reached (${used}/${limit})`);
+                throw new StopRequested();
+            }
         }
     }
 
@@ -437,10 +465,12 @@ class ChatSession {
     _limit_error(new_co_agent) {
         const max_co_agents = this.max_co_agents();
         const max_credits = this.max_credits();
+        const max_co_credits = this.max_co_credits();
         if (!this.agent.coAgentId) return `no coAgentId configured for ${this.agent.name}`;
         const alive = this._co_agents(co_agent => co_agent.state !== 'cancelled').length;
         if (new_co_agent && max_co_agents && alive >= max_co_agents) return `maxCoAgents reached (${alive}/${max_co_agents}), cancel one first`;
         if (max_credits && this.credits !== null && this.credits >= max_credits) return `maxCredits reached (${this.credits}/${max_credits})`;
+        if (max_co_credits && this.co_credits !== null && this.co_credits >= max_co_credits) return `maxCoAgentCredits reached (${this.co_credits}/${max_co_credits})`;
         return null;
     }
 
@@ -480,7 +510,7 @@ class ChatSession {
         const co_agent = target ? this.state.co_agents[target] : null;
         try {
             if (action === 'spawn') {
-                const parsed = parse_spawn_body(body);
+                const parsed = parse_spawn_body(body, this.agent.coAgentName || 'coagent');
                 if (parsed.invalid_after.length) return result(false, `spawn: invalid ${parsed.invalid_after.join(', ')}`);
                 if (!parsed.body) return result(false, 'spawn: empty brief');
                 const error = this._limit_error(true);
@@ -737,9 +767,9 @@ class ChatSession {
     }
 
     _status_text(pending, timed_out) {
-        const max_credits = this.max_credits();
+        const budget = (used, limit) => `${used ?? 'unknown'}/${limit || 'no cap'}`;
         const lines = ['status:', ...Object.entries(this.state.co_agents).map(([id, co_agent]) => `- ${id}: ${co_agent.state}`)];
-        lines.push(`credits: ${this.credits ?? 'unknown'}/${max_credits || 'no cap'}`);
+        lines.push(`credits: agent ${budget(this.credits, this.max_credits())}, co-agents ${budget(this.co_credits, this.max_co_credits())}`);
         if (pending.length) lines.push(`${pending.some(id => this.state.co_agents[id].state === 'waiting') ? 'still pending' : 'still working'}: ${pending.join(', ')}${timed_out ? ' (relayTimeout reached)' : ''}`);
         return lines.join('\n');
     }
@@ -787,7 +817,7 @@ class ChatSession {
         this.state = _new_state();
         this.staged_data.clear();
         this.staged_outputs.clear();
-        this.credits = 0;
+        Object.assign(this, { credits: 0, co_credits: 0 });
         this._save();
         this._emit();
     }
@@ -799,7 +829,7 @@ class ChatSession {
         this.answers.clear();
         this.staged_data.clear();
         this.staged_outputs.clear();
-        this.credits = null;
+        Object.assign(this, { credits: null, co_credits: null });
         this._save();
         this._emit();
     }

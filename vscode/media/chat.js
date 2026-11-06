@@ -5,7 +5,7 @@
     const element = id => document.getElementById(id);
     const level_names = { minimal: 'Minimal', low: 'Low', medium: 'Medium', high: 'High', xhigh: 'Extra high', max: 'Maximum', maximum: 'Maximum' };
     const state = {
-        agents: [], agent: null, agent_name: null, labels: { chat: 'Chat', coAgents: 'Co-Agenten', stop: 'Stop' },
+        agents: [], agent: null, agent_name: null, labels: { chat: 'Chat', coCredits: 'Co-Credits', coAgents: 'Co-Agenten', stop: 'Stop' },
         user: null, signed_in: false, status: null, steps: null, chats: [], models: { default: {}, models: [] },
     };
 
@@ -322,8 +322,9 @@
 
     function adjust_controls(item, max, can_less, can_more, step) {
         if (!(max > 0)) return { less: '', value: '', more: '' };
-        const less_title = item === 'credits' ? `−${step} credits for this chat` : '−1 co-agent slot';
-        const more_title = item === 'credits' ? `+${step} credits for this chat` : '+1 co-agent slot';
+        const unit = { credits: `${step} credits`, co_credits: `${step} co-agent credits` }[item];
+        const less_title = unit ? `−${unit} for this chat` : '−1 co-agent slot';
+        const more_title = unit ? `+${unit} for this chat` : '+1 co-agent slot';
         return {
             less: adjustment_button(item, -1, can_less, less_title),
             value: `<span class="adjust-value" title="Limit for this chat">${escape_html(String(max))}</span>`,
@@ -331,13 +332,18 @@
         };
     }
 
+    function show_credits(item, label, used, max, can_less, can_more, step) {
+        const full = max > 0 && used !== null && used >= max * 0.9;
+        const controls = adjust_controls(item, max, can_less, can_more, step);
+        const badge = element(item);
+        badge.className = `badge adjustable${full ? ' warn' : ''}`;
+        badge.innerHTML = `${controls.less}${controls.value}<span class="badge-content"><span class="label">${escape_html(label)}</span> ${escape_html(String(used ?? '?'))} / ${escape_html(String(max || '∞'))}</span>${controls.more}`;
+    }
+
     function show_status(status) {
         state.status = status;
-        const credits_full = status.max_credits > 0 && status.credits !== null && status.credits >= status.max_credits * 0.9;
-        const credit_controls = adjust_controls('credits', status.max_credits, status.can_less_credits, status.can_more_credits, status.credit_step);
-        const credits = element('credits');
-        credits.className = `badge adjustable${credits_full ? ' warn' : ''}`;
-        credits.innerHTML = `${credit_controls.less}${credit_controls.value}<span class="badge-content"><span class="label">${escape_html(state.labels.chat)}</span> ${escape_html(String(status.credits ?? '?'))} / ${escape_html(String(status.max_credits || '∞'))}</span>${credit_controls.more}`;
+        show_credits('credits', state.labels.chat, status.credits, status.max_credits, status.can_less_credits, status.can_more_credits, status.credit_step);
+        show_credits('co_credits', state.labels.coCredits, status.co_credits, status.max_co_credits, status.can_less_co_credits, status.can_more_co_credits, status.credit_step);
         const co_controls = adjust_controls('co_agents', status.max_co_agents, status.can_less_co_agents, status.can_more_co_agents);
         const co_agents = element('co_agents');
         co_agents.className = 'badge adjustable';

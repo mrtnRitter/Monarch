@@ -1,5 +1,5 @@
 'use strict';
-/** Webview chat window: agents from awork, chat history, model choice, status (credits, co-agents, stop), messages and attachments. */
+/** Webview chat window: agents from awork, chat history, model choice, status (agent credits, co-agent credits, co-agents, stop), messages and attachments. */
 const vscode = require('vscode');
 const crypto = require('crypto');
 const { ChatSession, Notice } = require('./session');
@@ -8,7 +8,7 @@ const { create_zip } = require('./zip');
 const { context_line, git_info } = require('./repo');
 
 const fixed_excludes = ['**/.git/**', '**/node_modules/**', '**/__pycache__/**', '**/.venv/**', '**/*.pyc'];
-const default_labels = { chat: 'Chat', coAgents: 'Co-Agenten', stop: 'Stop' };
+const default_labels = { chat: 'Chat', coCredits: 'Co-Credits', coAgents: 'Co-Agenten', stop: 'Stop' };
 const image_types = [[[0x89, 0x50, 0x4e, 0x47], 'image/png'], [[0xff, 0xd8, 0xff], 'image/jpeg'], [[0x47, 0x49, 0x46], 'image/gif'], [[0x52, 0x49, 0x46, 0x46], 'image/webp']];
 const mime_types = { '.py': 'text/x-python', '.md': 'text/markdown', '.json': 'application/json', '.txt': 'text/plain', '.zip': 'application/zip' };
 const max_chats = 100;
@@ -190,7 +190,7 @@ class ChatView {
 
     _limits() {
         const config = _config();
-        return Object.fromEntries(['maxCredits', 'maxCoAgents', 'creditStep', 'relayTimeout', 'pollInterval', 'syncInterval', 'maxFolderMB'].map(key => [key, config.get(key)]));
+        return Object.fromEntries(['maxCredits', 'maxCoAgentCredits', 'maxCoAgents', 'creditStep', 'relayTimeout', 'pollInterval', 'syncInterval', 'maxFolderMB'].map(key => [key, config.get(key)]));
     }
 
     async _models(agent) {
@@ -293,7 +293,7 @@ class ChatView {
 <div class="menu-wrap"><button id="history" class="icon-btn" title="Chat history"><svg viewBox="0 0 16 16" width="21" height="21" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 8a5.5 5.5 0 1 0 1.6-3.9"/><path d="M2.5 2.4v2.7h2.7"/><path d="M8 5v3.2l2.2 1.4"/></svg></button><div id="history_menu" class="menu right hidden"></div></div>
 <button id="new_chat" class="icon-btn primary" title="New chat"><svg viewBox="0 0 16 16" width="21" height="21" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M8 3.5v9M3.5 8h9"/></svg></button>
 </div>
-<div class="statusbar" id="statusbar"><span id="credits" class="badge"></span><span id="co_agents" class="badge"></span><span class="spacer"></span>
+<div class="statusbar" id="statusbar"><span id="credits" class="badge"></span><span id="co_credits" class="badge"></span><span id="co_agents" class="badge"></span><span class="spacer"></span>
 <div class="menu-wrap"><button id="model" class="picker-btn" title="Model for this chat"></button><div id="model_menu" class="menu right hidden"></div></div>
 <button id="stop" class="stop-btn"></button></div>
 <div class="messages" id="messages"></div>
@@ -332,7 +332,8 @@ class ChatView {
             set_model: () => this._session().set_model(message.model),
             adjust: () => {
                 const session = this._session();
-                const changed = message.item === 'credits' ? session.adjust_credits(message.direction) : message.item === 'co_agents' ? session.adjust_co_agents(message.direction) : false;
+                const adjust = { credits: 'adjust_credits', co_credits: 'adjust_co_credits', co_agents: 'adjust_co_agents' }[message.item];
+                const changed = adjust ? session[adjust](message.direction) : false;
                 if (!changed) throw new Notice('This limit cannot be changed further.');
             },
             sign_in: () => vscode.commands.executeCommand('monarch.signIn'),

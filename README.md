@@ -1,10 +1,10 @@
 # monarch
 
-VS Code chat window for awork agents. You talk to an agent (e.g. **mastazilla**); the agent delegates work to co-agents (e.g. **minizilla**) with ORCA commands. monarch runs these commands, waits for the co-agents without the agent running (no agent credits while waiting) and passes their answers back.
+VS Code chat window for awork agents. You talk to an agent (e.g. **CodeZilla**); the agent delegates work to co-agents (e.g. **minizilla**) with ORCA commands. monarch runs these commands, waits for the co-agents without the agent running (no agent credits while waiting) and passes their answers back.
 
 ## ORCA spawn dependencies
 
-A spawn brief may contain one or more `AFTER:` lines. monarch reserves its `minizilla_N` ID immediately and reports `ok: spawn minizilla_N (waiting for ...)` while it waits. It starts the spawn only after every dependency has answered successfully. `AFTER: minizilla_N` names an existing minizilla, while `AFTER: spawn_K` names the K-th `### ORCA: spawn` block in the same mastazilla answer (counting from 1). A dependency answer with `STATUS: question` or `STATUS: blocked`, or a cancelled dependency, prevents the spawn and returns control to mastazilla; the relay timeout also returns control while work is still pending.
+A spawn brief may contain one or more `AFTER:` lines. monarch reserves its `<coAgentName>_N` ID (e.g. `minizilla_N`) immediately and reports `ok: spawn minizilla_N (waiting for ...)` while it waits. It starts the spawn only after every dependency has answered successfully. `AFTER: <coAgentName>_N` (e.g. `AFTER: minizilla_2`) names an existing co-agent, while `AFTER: spawn_K` names the K-th `### ORCA: spawn` block in the same agent answer (counting from 1). A dependency answer with `STATUS: question` or `STATUS: blocked`, or a cancelled dependency, prevents the spawn and returns control to the agent; the relay timeout also returns control while work is still pending.
 
 `ATTACH: spawn_K` resolves to the files staged by that spawn, when the dependent spawn starts. For example:
 
@@ -18,7 +18,7 @@ ATTACH: spawn_1
 Review the shared plan and save the review.
 ```
 
-Multiple `AFTER:` lines are allowed; all listed minizillas must finish before launch. A waiting spawn can also be cancelled with `### ORCA: cancel minizilla_N`.
+Multiple `AFTER:` lines are allowed; all listed co-agents must finish before launch. A waiting spawn can also be cancelled with `### ORCA: cancel minizilla_N`.
 
 ## Repository layout
 
@@ -32,7 +32,6 @@ monarch/
 │   └── build_vsix.py       # builds monarch-<version>.vsix
 └── zillas/
 │   ├── codezilla.md        # system prompt for CodeZilla
-│   ├── mastazilla.md       # system prompt for mastazilla
 │   └── minizilla.md        # system prompt for minizilla
 ```
 
@@ -42,8 +41,8 @@ Requirements: VS Code 1.85+ with the built-in Git extension, an awork account in
 
 ```bash
 cd monarch/vscode
-python build_vsix.py                         # -> monarch-0.17.0.vsix
-code --install-extension monarch-0.17.0.vsix
+python build_vsix.py                         # -> monarch-0.18.0.vsix
+code --install-extension monarch-0.18.0.vsix
 ```
 
 Or in VS Code: Extensions view → `…` → **Install from VSIX…**. Optional local tests: `node test/test.js` and `node test/extension_smoke.js`.
@@ -51,14 +50,14 @@ Or in VS Code: Extensions view → `…` → **Install from VSIX…**. Optional 
 ## Setup in awork (once per workspace, by the agent owner)
 
 1. **Client app for sign-in:** Settings → Integrations → add a client application of type **Public** with the name `monarch`. Redirect URI: `http://localhost:8765/callback` (port = `monarch.redirectPort`). If the client ID is not `monarch`, every user enters it in `monarch.clientId`.
-2. **Agents:** Create **minizilla** with `zillas/minizilla.md` and a low model preset (e.g. `fast`), **mastazilla** with `zillas/mastazilla.md` and a high model preset (e.g. `deep`); CodeZilla uses `zillas/codezilla.md`. After a change of a file in `zillas/`, copy it into the agent again.
+2. **Agents:** Create **CodeZilla** with `zillas/codezilla.md` and a high model preset (e.g. `deep`), **minizilla** with `zillas/minizilla.md` and a low model preset (e.g. `fast`). Enter the agent IDs in `monarch.agents` (`agentId` = CodeZilla, `coAgentId` = minizilla) if they differ from the default. After a change of a file in `zillas/`, copy it into the agent again.
 3. **Sharing:** Share the agents with the colleagues who use monarch.
 
 ## Setup per user (step by step)
 
 Every user, also the agent owner, does this once:
 
-1. **Install** `monarch-0.17.0.vsix` (see *Installation*) and reload VS Code (Command Palette → **Developer: Reload Window**).
+1. **Install** `monarch-0.18.0.vsix` (see *Installation*) and reload VS Code (Command Palette → **Developer: Reload Window**).
 2. **Sign in:** Open **monarch** in the activity bar and click **Sign in** (or Command Palette → **monarch: Sign in**). The browser opens; log in to awork and select the workspace.
 3. **Check the agents:** The agent circles at the top show the agents. If an agent shared with you is missing, set **Monarch: Agent Filter** (`monarch.agentFilter`) to `all`.
 4. **Test files:** Start a **new chat** (blue **+**) and send: `Create output/download_test.txt with three lines.`
@@ -81,10 +80,10 @@ All settings are optional. The agent list comes from awork (see `monarch.agentFi
 ```json
 "monarch.agents": [
   {
-    "agentId": "<mastazilla-agent-id>",
+    "agentId": "<codezilla-agent-id>",
     "coAgentId": "<minizilla-agent-id>",
     "coAgentName": "minizilla",
-    "labels": { "chat": "Chat", "coAgents": "Co-Agenten", "stop": "/stopzilla" }
+    "labels": { "chat": "Chat", "coCredits": "Co-Credits", "coAgents": "Co-Agenten", "stop": "/stopzilla" }
   }
 ]
 ```
@@ -95,10 +94,11 @@ All settings are optional. The agent list comes from awork (see `monarch.agentFi
 | `monarch.redirectPort` | `8765` | Local port of the sign-in callback; must match the redirect URI |
 | `monarch.apiBaseUrl` | `https://api.awork.com/api/v1` | awork API base URL |
 | `monarch.agentFilter` | `own` | `own`: agents you created plus agents listed in `monarch.agents`; `all`: every agent shared with you |
-| `monarch.agents` | entry for Mastazilla | Additions per agent, matched by `agentId` (or `name`): `coAgentId` (agent started by `ORCA: spawn`; empty = no co-agents), `coAgentName` (prefix of co-agent IDs), `labels` (UI names of the status items; `chat`, `coAgents`, `stop` (`credits` = deprecated, same as `chat`)). Agents used as `coAgentId` are not shown in the agent list. |
-| `monarch.maxCredits` | `1000` | Credit cap per chat (agent + co-agents); reaching it stops everything; `0` = no cap. Can be changed per chat with − / + in the chat window. |
+| `monarch.agents` | entry for CodeZilla | Additions per agent, matched by `agentId` (or `name`): `coAgentId` (agent started by `ORCA: spawn`; empty = no co-agents), `coAgentName` (prefix of co-agent IDs), `labels` (UI names of the status items; `chat`, `coCredits`, `coAgents`, `stop` (`credits` = deprecated, same as `chat`)). Agents used as `coAgentId` are not shown in the agent list. |
+| `monarch.maxCredits` | `1000` | Credit cap per chat for the agent only; reaching it stops the agent and all co-agents; `0` = no cap. Can be changed per chat with − / + in the chat window. |
+| `monarch.maxCoAgentCredits` | `1000` | Credit cap per chat for all co-agents together; reaching it stops the agent and all co-agents, `spawn` and `send` are refused; `0` = no cap. Can be changed per chat with − / + in the chat window. |
 | `monarch.maxCoAgents` | `10` | Max. co-agents per job (a co-agent holds its slot until cancel/stopzilla); `0` = no cap. Can be changed per chat with − / + in the chat window. |
-| `monarch.creditStep` | `100` | Credits added or removed per click on − / + of the Chat item (this chat only); minimum `1` |
+| `monarch.creditStep` | `100` | Credits added or removed per click on − / + of the Chat and Co-Credits items (this chat only); minimum `1` |
 | `monarch.relayTimeout` | `900` | Seconds the relay waits before waking the agent with the current state; `0` = no limit |
 | `monarch.pollInterval` | `3` | Seconds between status checks |
 | `monarch.maxFolderMB` | `20` | Max. size of a folder or file attachment |
@@ -114,7 +114,8 @@ All settings are optional. The agent list comes from awork (see `monarch.agentFi
 | Agent circles | Agents according to `monarch.agentFilter`, with their profile pictures; click to select. If they do not fit into the panel, a dropdown is shown instead. |
 | History (clock) | Chats of the selected agent from all repos (max. 100), newest first, with repo name and date; click to continue a chat, ✕ removes it from the list (the chat stays in awork) |
 | New chat (blue +) | Start a new conversation with the selected agent. **Ctrl+click** (Mac: Cmd+click) takes over an existing chat instead (workaround, e.g. for chats started in the awork web app): paste its link (`https://<workspace>.awork.com/ai/thread/<id>`) or id; the chat must belong to the selected agent and be readable with your login. It opens and is added to the history. |
-| Chat | Credits of this chat (agent + co-agents) against `maxCredits`. Hover to show − on the left, the current limit in the middle, and + on the right; clicks change only this chat’s limit by `creditStep`, saved with the chat. The limit cannot go below credits already used. `0` = no limit and no buttons. Turns warning-colored at 90%. |
+| Chat | Credits of the agent in this chat (without co-agents) against `maxCredits`. Hover to show − on the left, the current limit in the middle, and + on the right; clicks change only this chat’s limit by `creditStep`, saved with the chat. The limit cannot go below credits already used. `0` = no limit and no buttons. Turns warning-colored at 90%. |
+| Co-Credits | Credits of all co-agents of this chat against `maxCoAgentCredits`. − / + and limit as for Chat (steps of `creditStep`, not below the co-agent credits already used, saved with the chat). `0` = no limit and no buttons. Turns warning-colored at 90%. |
 | Co-agents | Co-agents of the current job against `maxCoAgents`, incl. how many are working. Hover to show − on the left, the current limit in the middle, and + on the right; clicks change only this chat’s limit by 1. Minimum is the number of active co-agents, and at least 1. `0` = no limit and no buttons. |
 | Model | Model and reasoning level for the next messages of this chat; **Agent default** uses the agent's settings. Saved with the chat; co-agents keep their own model. |
 | Stop | Stops the agent and all co-agents and closes the job |
@@ -123,18 +124,18 @@ All settings are optional. The agent list comes from awork (see `monarch.agentFi
 | Enter / Shift+Enter | Send / new line |
 | Ctrl+C / Cmd+C | Copies the selected text of the chat (or of the input) |
 
-The labels of Chat, Co-agents and Stop come from `labels` of the selected agent. Every new VS Code window starts with a new chat; earlier chats are continued from the history. The history is stored locally in VS Code for all repos together and survives restarts. Histories of older versions (per repo) are taken over when the repo is opened the first time. It only contains chats started or taken over in monarch: awork does not let API clients list chats (the route of the web app and `/agents/management/threads` are refused for non-admins).
+The labels of Chat, Co-Credits, Co-agents and Stop come from `labels` of the selected agent. Every new VS Code window starts with a new chat; earlier chats are continued from the history. The history is stored locally in VS Code for all repos together and survives restarts. Histories of older versions (per repo) are taken over when the repo is opened the first time. It only contains chats started or taken over in monarch: awork does not let API clients list chats (the route of the web app and `/agents/management/threads` are refused for non-admins).
 
 A chat continued in the awork web app is updated in the chat window after `syncInterval` seconds. Files from answers that were not started in monarch are not written into the repo.
 
-If credits cannot be read and `maxCredits` is not `0`, the chat does not accept further messages.
+If the agent credits cannot be read and `maxCredits` is not `0` (or the co-agent credits and `maxCoAgentCredits`), the chat does not accept further messages.
 
 ### Chat view
 
 | Item | Display |
 |---|---|
 | Your messages | Right, in a bubble, with your awork profile picture |
-| Agent answers | Left, in a bubble (max. 85 % wide), with the agent's awork profile picture, name and answer time (e.g. `Mastazilla · 19 s`); Markdown incl. tables and code (wide code and tables scroll inside the bubble). **Copy** next to the name (on hover) copies the answer as Markdown |
+| Agent answers | Left, in a bubble (max. 85 % wide), with the agent's awork profile picture, name and answer time (e.g. `CodeZilla · 19 s`); Markdown incl. tables and code (wide code and tables scroll inside the bubble). **Copy** next to the name (on hover) copies the answer as Markdown |
 | Code blocks | Language and toolbar above each block: **Copy**; **Insert** at the cursor of the active or last active editor (replaces selections); **New file** opens an unsaved file with the block's language; **Terminal** puts the code into the active terminal (or a new `monarch` terminal) without running it. Multi-line code is pasted via the clipboard, so it stays in the clipboard |
 | Questions | Questions with answer options from the agent as a card; click an option to send it as your answer, or type your own answer |
 | Steps | Relay and command events as collapsible group (`relay · 3 events`) |
@@ -177,7 +178,7 @@ An agent with `coAgentId` controls co-agents with blocks at the end of its answe
 | `### ORCA: commit` | Write all staged co-agent files into the repo; failed ones stay staged |
 | `### ORCA: stopzilla` | Stop all co-agents, close the job |
 
-monarch wakes the agent with a `[monarch relay]` message when all working co-agents have answered, when one answers with `STATUS: question`/`blocked`, or after `relayTimeout`. It lists the staged files of each co-agent (`files (staged, not in the repo yet): …`) and download warnings; no files are attached. A line `ATTACH: <repo path>` in a brief or message attaches that file (staged version first, else from the local repo, `maxFolderMB` each); `ATTACH: <co-agent id>` attaches all staged files of that co-agent; max. 20 files per message. Commands beyond the limits are refused and reported to the agent.
+monarch wakes the agent with a `[monarch relay]` message when all working co-agents have answered, when one answers with `STATUS: question`/`blocked`, or after `relayTimeout`. It lists the staged files of each co-agent (`files (staged, not in the repo yet): …`), download warnings and the credits of agent and co-agents separately (`credits: agent 120/1000, co-agents 340/1000`); no files are attached. A line `ATTACH: <repo path>` in a brief or message attaches that file (staged version first, else from the local repo, `maxFolderMB` each); `ATTACH: <co-agent id>` attaches all staged files of that co-agent; max. 20 files per message. Commands beyond the limits are refused and reported to the agent.
 
 ## Commands
 

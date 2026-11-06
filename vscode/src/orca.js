@@ -39,15 +39,20 @@ function parse_commands(text) {
     return { text: lines.slice(0, headers[0].index).join('\n').trim(), commands };
 }
 
-/** Parse dependency and spawned-attachment lines from a spawn brief. */
-function parse_spawn_body(body) {
+/**
+ * Parse dependency and spawned-attachment lines from a spawn brief.
+ * AFTER accepts <co_agent_name>_N (returned in the configured spelling) or spawn_N.
+ */
+function parse_spawn_body(body, co_agent_name = 'coagent') {
     const after = [];
     const invalid_after = [];
+    const prefix = co_agent_name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const after_pattern = new RegExp(`^\\s*AFTER:\\s*(?:(spawn)|(${prefix}))_(\\d+)\\s*$`, 'i');
     const lines = (body || '').split('\n');
     const remaining = lines.filter(line => {
         if (!/^\s*AFTER\s*:/i.test(line)) return true;
-        const match = line.match(/^\s*AFTER:\s*(minizilla_\d+|spawn_\d+)\s*$/i);
-        if (match) after.push(match[1].toLowerCase());
+        const match = line.match(after_pattern);
+        if (match) after.push(`${match[1] ? 'spawn' : co_agent_name}_${match[3]}`);
         else invalid_after.push(line.trim());
         return false;
     });
