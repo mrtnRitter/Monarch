@@ -220,9 +220,10 @@
         const questions = item.questions || [];
         const instant = questions.length === 1 && !questions[0].multi && questions[0].options.length > 0;
         const lock = () => card.querySelectorAll('button, input').forEach(node => { node.disabled = true; });
+        open_cards.push({ lock, interrupt_id: item.interrupt_id });
         const submit = Object.assign(document.createElement('button'), { className: 'question-send', type: 'button', textContent: 'Send answer', disabled: true });
         const update = () => { submit.disabled = !parts.every(part => part.answers().length); };
-        const on_send = option => send_text(option) && (lock(), true);
+        const on_send = option => send_text(option);
         const parts = questions.map(question => question_part(card, question, instant, instant ? on_send : update));
         if (instant) {
             if (questions[0].custom) card.insertAdjacentHTML('beforeend', '<div class="question-hint">or type your own answer below</div>');
@@ -412,6 +413,7 @@
             show_empty_state();
         } else if (data.type === 'history') {
             state.steps = null;
+            open_cards.length = 0;
             show_empty_state();
             data.items.forEach(add_message);
         } else if (data.type === 'message') {
@@ -438,9 +440,13 @@
         }
     });
 
+    // a sent message answers the latest open question card; all open cards are closed afterwards
+    const open_cards = [];
     function send_text(text) {
         if (!text.trim() || state.status?.busy) return false;
-        vscode.postMessage({ type: 'send', text });
+        const interrupt_id = [...open_cards].reverse().find(card => card.interrupt_id)?.interrupt_id;
+        vscode.postMessage({ type: 'send', text, ...(interrupt_id ? { interrupt_id } : {}) });
+        open_cards.splice(0).forEach(card => card.lock());
         return true;
     }
     const send = () => {

@@ -77,27 +77,38 @@ function questions_of(messages, seen = new Set()) {
     });
 }
 
-// awork sends {questions: [{question, options?, multiSelect?, allowCustomText?}]}; {question, options, allowCustomText} is the old format
+// {questions: [{question, options?, multiSelect?, allowCustomText?}]} or the old {question, options, allowCustomText}; awork events use snake_case keys
 function _questions(args) {
     const legacy = typeof args.question === 'string' && Array.isArray(args.options) && args.options.length;
     const items = Array.isArray(args.questions) && args.questions.length ? args.questions : legacy ? [args] : [];
     return items.filter(item => typeof item?.question === 'string' && item.question.trim()).map(item => {
         const options = Array.isArray(item.options) ? item.options.map(String) : [];
-        return { text: item.question, options, multi: Boolean(item.multiSelect), custom: !options.length || (legacy ? Boolean(item.allowCustomText) : item.allowCustomText !== false) };
+        const allow = item.allowCustomText ?? item.allow_custom_text;
+        return { text: item.question, options, multi: Boolean(item.multiSelect ?? item.multi_select), custom: !options.length || (legacy ? Boolean(allow) : allow !== false) };
     });
 }
 
-// awork marks the question message with runtimeMessageId '<id>:question'; it holds only the text, the options sit on the thread
+// awork marks the question message with runtimeMessageId '<id>:question'; it holds only the text, the options come with the run events
 function _is_question(message) {
     return (message.runtimeMessageId || '').endsWith(':question');
 }
 
-/** Card for the question awork is waiting on (thread.pendingUserQuestion), or null; connection and credential requests are skipped. */
-function pending_question(thread) {
-    const ask = thread?.pendingUserQuestion?.userQuestion;
-    if (!ask || ask.skillId || ask.connectorId) return null;
+function _event_data(event) {
+    try {
+        return JSON.parse(event.dataJson || '{}');
+    } catch {
+        return {};
+    }
+}
+
+/** Card for the open question: interrupt of type request_info in the last RUN_FINISHED event, or null; credential requests are skipped. */
+function pending_question(events) {
+    const finished = (events || []).filter(event => event.eventName === 'RUN_FINISHED').sort((a, b) => a.sequence - b.sequence).pop();
+    const interrupt = (_event_data(finished || {}).interrupt || []).find(item => item?.value?.type === 'request_info');
+    const ask = interrupt?.value;
+    if (!ask || ask.skill_id || ask.skillId) return null;
     const questions = _questions(ask);
-    return questions.length ? { role: 'question', questions } : null;
+    return questions.length ? { role: 'question', questions, interrupt_id: interrupt.id } : null;
 }
 
 /** Text without a trailing copy of the question texts (shown as cards instead). */
@@ -327,11 +338,11 @@ class ChatSession {
     }
 
     /** Send one message; context = repo context line contained in content, remembered once the message is accepted. */
-    async _post(content, attachments, context = null) {
+    async _post(content, attachments, context = null, interrupt_id = null) {
         const started = Date.now();
         this._set_phase('agent');
         let accepted;
-        const options = this._model_options();
+        const options = { ...this._model_options(), ...(interrupt_id ? { answerToInterruptId: interrupt_id } : {}) };
         if (this.state.thread_id) {
             accepted = await this.client.send_message(this.state.thread_id, content, attachments, options);
         } else {
@@ -352,7 +363,8 @@ class ChatSession {
      * The repo context line is only added when it differs from the last one sent in this chat.
      * Resolves when the agent is done or stopped.
      */
-    async send(text, uploads = [], context = '') {
+    /** interrupt_id: id of the open question this text answers (answerToInterruptId). */
+    async send(text, uploads = [], context = '', interrupt_id = null) {
         if (this.busy) throw new Notice('The agent is still working.');
         if (!this.agent.agentId) throw new Notice(`Set agentId for ${this.agent.name} in monarch.agents.`);
         if (uploads.length > max_attachments) throw new Notice(`Max. ${max_attachments} attachments per message.`);
@@ -362,9 +374,9 @@ class ChatSession {
             await this._check_budget(true);
             if (!this.state.thread_id && !this.state.title) this.state.title = _first_line(text);
             const fresh = context && context !== this.state.context ? context : null;
-            let next = { content: fresh ? `${text}\n\n${fresh}` : text, attachments: await this._upload(uploads), context: fresh };
+            let next = { content: fresh ? `${text}\n\n${fresh}` : text, attachments: await this._upload(uploads), context: fresh, interrupt_id };
             this.ui.message({ role: 'user', text });
-            while (next) next = await this._handle_answer(await this._post(next.content, next.attachments, next.context));
+            while (next) next = await this._handle_answer(await this._post(next.content, next.attachments, next.context, next.interrupt_id));
         } catch (error) {
             if (error instanceof Superseded) this.ui.info('chat continued in awork: stopped waiting, the chat is reloaded');
             else if (!(error instanceof StopRequested)) throw error;
@@ -384,7 +396,8 @@ class ChatSession {
     async _pending_questions(messages) {
         if (!this.state.thread_id || !messages.some(_is_question)) return [];
         try {
-            const card = pending_question(await this.client.thread(this.state.thread_id));
+            const card = pending_question(await this.client.events(this.state.thread_id));
+            if (!card) log('question: no open question found in the run events');
             return card ? [card] : [];
         } catch (error) {
             log(`question: answer options not readable (${_reason(error)})`);

@@ -179,6 +179,11 @@ class AworkClient {
         return this.request('GET', `/agents/threads/${thread_id}`);
     }
 
+    /** Run events of a thread, as loaded by the awork web app (not in the public API docs): [{sequence, eventName, dataJson}]. */
+    async events(thread_id) {
+        return (await this.request('GET', `/agents/threads/${thread_id}/events`)) || [];
+    }
+
     /** Custom agents visible to the signed-in user. */
     async agents() {
         return (await this.request('GET', '/agents')) || [];

@@ -323,7 +323,7 @@ class ChatView {
                 await this.context.workspaceState.update('monarch.agent', message.id);
                 await this.refresh();
             },
-            send: () => this._send(message.text),
+            send: () => this._send(message.text, message.interrupt_id),
             stop: () => this.stop(),
             new_chat: () => this.new_chat(),
             open_chat: () => this._open_chat(message.thread_id),
@@ -461,13 +461,13 @@ class ChatView {
         await this._drop_chat(agent, thread_id);
     }
 
-    async _send(text) {
+    async _send(text, interrupt_id = null) {
         if (!text.trim()) return;
         const session = this._session();
         const { uploads, note } = await this._uploads();
         this.attachments = [];
         this._post_attachments();
-        await session.send(text + note, uploads, await this._context());
+        await session.send(text + note, uploads, await this._context(), interrupt_id);
     }
 
     /** Context line for the agent: open repo, online link, branch, kind of local changes. */

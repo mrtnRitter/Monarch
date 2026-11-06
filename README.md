@@ -41,8 +41,8 @@ Requirements: VS Code 1.85+ with the built-in Git extension, an awork account in
 
 ```bash
 cd monarch/vscode
-python build_vsix.py                         # -> monarch-0.18.3.vsix
-code --install-extension monarch-0.18.3.vsix
+python build_vsix.py                         # -> monarch-0.18.4.vsix
+code --install-extension monarch-0.18.4.vsix
 ```
 
 Or in VS Code: Extensions view → `…` → **Install from VSIX…**. Optional local tests: `node test/test.js` and `node test/extension_smoke.js`.
