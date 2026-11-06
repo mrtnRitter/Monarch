@@ -137,7 +137,7 @@ If the agent credits cannot be read and `maxCredits` is not `0` (or the co-agent
 | Your messages | Right, in a bubble, with your awork profile picture |
 | Agent answers | Left, in a bubble (max. 85 % wide), with the agent's awork profile picture, name and answer time (e.g. `CodeZilla · 19 s`); Markdown incl. tables and code (wide code and tables scroll inside the bubble). **Copy** next to the name (on hover) copies the answer as Markdown |
 | Code blocks | Language and toolbar above each block: **Copy**; **Insert** at the cursor of the active or last active editor (replaces selections); **New file** opens an unsaved file with the block's language; **Terminal** puts the code into the active terminal (or a new `monarch` terminal) without running it. Multi-line code is pasted via the clipboard, so it stays in the clipboard |
-| Questions | Questions with answer options from the agent as a card; click an option to send it as your answer, or type your own answer |
+| Questions | Questions from the agent as a card; with one single-choice question, click an option to send it or type your own answer below; with several questions or multiple choice, select the options, optionally fill in your own answer and send them together with **Send answer** |
 | Steps | Relay and command events as collapsible group (`relay · 3 events`) |
 | While running | Spinner with elapsed time: `<agent> is working …` or `waiting for <co-agents> …` |
 | Warnings | Yellow box in the middle, e.g. a co-agent file that could not be downloaded; stays until closed with ✕ |

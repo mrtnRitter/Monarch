@@ -213,26 +213,49 @@
         state.steps.scrollIntoView({ block: 'end' });
     }
 
+    // one single-choice question: a click sends the option; otherwise answers are collected and sent together
     function question_card(item) {
         const card = document.createElement('div');
         card.className = 'question';
-        const title = document.createElement('div');
-        title.className = 'question-text';
-        title.textContent = item.text;
-        card.appendChild(title);
-        for (const option of item.options) {
-            const button = document.createElement('button');
-            button.className = 'option';
-            button.textContent = option;
+        const questions = item.questions || [];
+        const instant = questions.length === 1 && !questions[0].multi && questions[0].options.length > 0;
+        const lock = () => card.querySelectorAll('button, input').forEach(node => { node.disabled = true; });
+        const submit = Object.assign(document.createElement('button'), { className: 'question-send', type: 'button', textContent: 'Send answer', disabled: true });
+        const update = () => { submit.disabled = !parts.every(part => part.answers().length); };
+        const on_send = option => send_text(option) && (lock(), true);
+        const parts = questions.map(question => question_part(card, question, instant, instant ? on_send : update));
+        if (instant) {
+            if (questions[0].custom) card.insertAdjacentHTML('beforeend', '<div class="question-hint">or type your own answer below</div>');
+            return card;
+        }
+        submit.addEventListener('click', () => {
+            if (on_send(parts.map(part => `${questions.length > 1 ? `${part.text}: ` : ''}${part.answers().join(', ')}`).join('\n'))) submit.textContent = 'Sent';
+        });
+        card.appendChild(submit);
+        return card;
+    }
+
+    /** Question title, option buttons and (when collecting) an own-answer field; instant: on_choose(option) sends and returns true on success. */
+    function question_part(card, question, instant, on_choose) {
+        card.appendChild(Object.assign(document.createElement('div'), { className: 'question-text', textContent: question.text }));
+        const buttons = question.options.map(option => {
+            const button = Object.assign(document.createElement('button'), { className: 'option', type: 'button', textContent: option });
             button.addEventListener('click', () => {
-                if (!send_text(option)) return;
-                button.classList.add('chosen');
-                card.querySelectorAll('.option').forEach(node => { node.disabled = true; });
+                if (instant) return on_choose(option) && button.classList.add('chosen');
+                if (!question.multi) buttons.forEach(node => node !== button && node.classList.remove('chosen'));
+                if (question.multi) button.classList.toggle('chosen'); else button.classList.add('chosen');
+                on_choose();
             });
             card.appendChild(button);
+            return button;
+        });
+        const input = !instant && question.custom ? Object.assign(document.createElement('input'), { className: 'question-input', type: 'text', placeholder: question.options.length ? 'Own answer …' : 'Your answer …' }) : null;
+        if (input) {
+            input.addEventListener('input', () => on_choose());
+            card.appendChild(input);
         }
-        if (item.custom) card.insertAdjacentHTML('beforeend', '<div class="question-hint">or type your own answer below</div>');
-        return card;
+        const answers = () => [...buttons.filter(node => node.classList.contains('chosen')).map(node => node.textContent), ...(input?.value.trim() ? [input.value.trim()] : [])];
+        return { text: question.text, answers };
     }
 
     function add_message(item) {

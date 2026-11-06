@@ -65,20 +65,31 @@ function _arguments(call) {
     }
 }
 
-/** Questions with answer options that the agent asked via tool calls: [{role: 'question', text, options, custom}], each tool call once. */
+/** Question cards that the agent asked via tool calls, each tool call once: [{role: 'question', questions: [{text, options, multi, custom}]}]. Credential requests (skillId) are skipped. */
 function questions_of(messages, seen = new Set()) {
     return messages.flatMap(message => message.toolCalls || []).flatMap(call => {
         const args = _arguments(call);
-        const key = call.id || args.question;
-        if (typeof args.question !== 'string' || !Array.isArray(args.options) || !args.options.length || seen.has(key)) return [];
+        const questions = _questions(args);
+        const key = call.id || questions.map(question => question.text).join('\n');
+        if (!questions.length || args.skillId || seen.has(key)) return [];
         seen.add(key);
-        return [{ role: 'question', text: args.question, options: args.options.map(String), custom: Boolean(args.allowCustomText) }];
+        return [{ role: 'question', questions }];
+    });
+}
+
+// awork now sends {questions: [{question, options?, multiSelect?, allowCustomText?}]}; {question, options, allowCustomText} is the old format
+function _questions(args) {
+    const legacy = typeof args.question === 'string' && Array.isArray(args.options) && args.options.length;
+    const items = Array.isArray(args.questions) ? args.questions : legacy ? [args] : [];
+    return items.filter(item => typeof item?.question === 'string' && item.question.trim()).map(item => {
+        const options = Array.isArray(item.options) ? item.options.map(String) : [];
+        return { text: item.question, options, multi: Boolean(item.multiSelect), custom: !options.length || (legacy ? Boolean(item.allowCustomText) : item.allowCustomText !== false) };
     });
 }
 
 /** Text without a trailing copy of the question texts (shown as cards instead). */
 function _without_questions(text, questions) {
-    return questions.reduce((rest, { text: question }) => (rest.trimEnd().endsWith(question.trim()) ? rest.trimEnd().slice(0, -question.trim().length).trimEnd() : rest), text);
+    return questions.flatMap(card => card.questions).reverse().reduce((rest, { text: question }) => (rest.trimEnd().endsWith(question.trim()) ? rest.trimEnd().slice(0, -question.trim().length).trimEnd() : rest), text);
 }
 
 /** Fingerprint of a message list to detect changes made elsewhere (e.g. in the awork web app). */

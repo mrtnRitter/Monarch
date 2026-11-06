@@ -102,6 +102,17 @@ span.avatar {
 .question .option:not(:disabled):hover { border-color: var(--vscode-focusBorder); }
 .question .option.chosen { border-color: var(--vscode-focusBorder); opacity: 1; }
 .question-hint { font-size: 0.8em; opacity: 0.6; }
+.question .option.chosen:not(:disabled) { box-shadow: inset 0 0 0 1px var(--vscode-focusBorder); }
+.question-input {
+  padding: 5px 8px; border-radius: 6px; font-family: var(--vscode-font-family); font-size: var(--vscode-font-size); color: var(--vscode-input-foreground);
+  background: var(--vscode-input-background); border: 1px solid var(--vscode-panel-border); outline: none;
+}
+.question-input:focus { border-color: var(--vscode-focusBorder); }
+.question-send {
+  align-self: flex-end; padding: 4px 14px; border-radius: 12px; font-weight: 500;
+  color: var(--vscode-button-foreground); background: var(--vscode-button-background);
+}
+.question-send:not(:disabled):hover { background: var(--vscode-button-hoverBackground); }
 .file { display: block; cursor: pointer; color: var(--vscode-textLink-foreground); font-size: 0.9em; }
 .file:hover { text-decoration: underline; }
 .warning { color: var(--vscode-editorWarning-foreground); font-size: 0.85em; }
