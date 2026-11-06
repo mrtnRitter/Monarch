@@ -56,13 +56,20 @@ function answer_text(answer) {
     return answer.map(message => files.clean_text(message.content)).filter(Boolean).join('\n\n');
 }
 
+// tool call arguments may sit directly on the call or OpenAI-style under call.function
 function _arguments(call) {
-    if (typeof call.arguments !== 'string') return call.arguments || {};
+    const args = call.arguments ?? call.function?.arguments ?? call.input ?? call.args;
+    if (typeof args !== 'string') return args && typeof args === 'object' ? args : {};
     try {
-        return JSON.parse(call.arguments);
+        return JSON.parse(args);
     } catch {
         return {};
     }
+}
+
+// diagnostic: structure of the run messages (roles, fields, tool names and argument keys) without their content
+function _shape(messages) {
+    return messages.map(message => `${message.role || '?'}{${Object.keys(message).join(',')}}${(message.toolCalls || []).map(call => ` ${call.name || call.function?.name || '?'}(${Object.keys(_arguments(call)).join(',')})`).join('')}`).join(' | ');
 }
 
 /** Question cards that the agent asked via tool calls, each tool call once: [{role: 'question', questions: [{text, options, multi, custom}]}]. Credential requests (skillId) are skipped. */
@@ -372,6 +379,7 @@ class ChatSession {
         const { text, commands } = parse_commands(answer_text(answer));
         const written = await this._write_repo_files(run);
         const questions = questions_of(run);
+        log(`answer: ${questions.length} question card(s); messages: ${_shape(run)}`);
         const shown = _without_questions(text, questions);
         this.ui.message({ role: 'agent', text: shown || (questions.length ? '' : state === 'completed' ? '(no answer)' : `(run ${state})`), files: written.files, warnings: written.warnings, duration_ms });
         questions.forEach(question => this.ui.message(question));
