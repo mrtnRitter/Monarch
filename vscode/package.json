@@ -1,7 +1,7 @@
 {
     "name": "monarch",
     "displayName": "monarch",
-    "version": "0.17.0",
+    "version": "0.18.0",
     "publisher": "mrtnritter",
     "description": "Chat with awork agents in VS Code. Relays work to co-agents (minizillas) without credits while waiting.",
     "license": "UNLICENSED",
@@ -119,6 +119,9 @@
                                     "chat": {
                                         "type": "string"
                                     },
+                                    "coCredits": {
+                                        "type": "string"
+                                    },
                                     "coAgents": {
                                         "type": "string"
                                     },
@@ -135,12 +138,13 @@
                     },
                     "default": [
                         {
-                            "agentId": "09bddd40-df90-436a-aad5-f5c2a71f0a9c",
-                            "name": "Mastazilla",
+                            "agentId": "5f2f2cbf-b4fb-40d6-bc1d-327217a2dee7",
+                            "name": "CodeZilla",
                             "coAgentId": "6708accf-622d-46be-9e17-7acf38dd018c",
                             "coAgentName": "minizilla",
                             "labels": {
                                 "chat": "Chat",
+                                "coCredits": "Co-Credits",
                                 "coAgents": "Co-Agenten",
                                 "stop": "/stopzilla"
                             }
@@ -150,7 +154,13 @@
                 "monarch.maxCredits": {
                     "type": "number",
                     "default": 1000,
-                    "description": "Credit cap per chat (agent + co-agents). Reaching it stops everything. 0 = no cap (also needed if credits cannot be read). Can be changed per chat with − / + in the chat window."
+                    "description": "Credit cap per chat for the agent only (co-agents: monarch.maxCoAgentCredits). Reaching it stops the agent and all co-agents. 0 = no cap (also needed if credits cannot be read). Can be changed per chat with − / + in the chat window."
+                },
+                "monarch.maxCoAgentCredits": {
+                    "type": "number",
+                    "default": 1000,
+                    "minimum": 0,
+                    "description": "Credit cap per chat for all co-agents together. Reaching it stops the agent and all co-agents; spawn and send are refused. 0 = no cap (also needed if credits cannot be read). Can be changed per chat with − / + in the chat window."
                 },
                 "monarch.maxCoAgents": {
                     "type": "number",
@@ -182,7 +192,7 @@
                     "type": "number",
                     "default": 100,
                     "minimum": 1,
-                    "description": "Credits added or removed per click on − / + of the Chat item (this chat only)."
+                    "description": "Credits added or removed per click on − / + of the Chat and Co-Credits items (this chat only)."
                 }
             }
         }
