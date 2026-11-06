@@ -56,20 +56,13 @@ function answer_text(answer) {
     return answer.map(message => files.clean_text(message.content)).filter(Boolean).join('\n\n');
 }
 
-// tool call arguments may sit directly on the call or OpenAI-style under call.function
 function _arguments(call) {
-    const args = call.arguments ?? call.function?.arguments ?? call.input ?? call.args;
-    if (typeof args !== 'string') return args && typeof args === 'object' ? args : {};
+    if (typeof call.arguments !== 'string') return call.arguments || {};
     try {
-        return JSON.parse(args);
+        return JSON.parse(call.arguments);
     } catch {
         return {};
     }
-}
-
-// diagnostic: structure of the run messages (roles, fields, tool names and argument keys) without their content
-function _shape(messages) {
-    return messages.map(message => `${message.role || '?'}{${Object.keys(message).join(',')}}${(message.toolCalls || []).map(call => ` ${call.name || call.function?.name || '?'}(${Object.keys(_arguments(call)).join(',')})`).join('')}`).join(' | ');
 }
 
 /** Question cards that the agent asked via tool calls, each tool call once: [{role: 'question', questions: [{text, options, multi, custom}]}]. Credential requests (skillId) are skipped. */
@@ -84,14 +77,27 @@ function questions_of(messages, seen = new Set()) {
     });
 }
 
-// awork now sends {questions: [{question, options?, multiSelect?, allowCustomText?}]}; {question, options, allowCustomText} is the old format
+// awork sends {questions: [{question, options?, multiSelect?, allowCustomText?}]}; {question, options, allowCustomText} is the old format
 function _questions(args) {
     const legacy = typeof args.question === 'string' && Array.isArray(args.options) && args.options.length;
-    const items = Array.isArray(args.questions) ? args.questions : legacy ? [args] : [];
+    const items = Array.isArray(args.questions) && args.questions.length ? args.questions : legacy ? [args] : [];
     return items.filter(item => typeof item?.question === 'string' && item.question.trim()).map(item => {
         const options = Array.isArray(item.options) ? item.options.map(String) : [];
         return { text: item.question, options, multi: Boolean(item.multiSelect), custom: !options.length || (legacy ? Boolean(item.allowCustomText) : item.allowCustomText !== false) };
     });
+}
+
+// awork marks the question message with runtimeMessageId '<id>:question'; it holds only the text, the options sit on the thread
+function _is_question(message) {
+    return (message.runtimeMessageId || '').endsWith(':question');
+}
+
+/** Card for the question awork is waiting on (thread.pendingUserQuestion), or null; connection and credential requests are skipped. */
+function pending_question(thread) {
+    const ask = thread?.pendingUserQuestion?.userQuestion;
+    if (!ask || ask.skillId || ask.connectorId) return null;
+    const questions = _questions(ask);
+    return questions.length ? { role: 'question', questions } : null;
 }
 
 /** Text without a trailing copy of the question texts (shown as cards instead). */
@@ -375,11 +381,21 @@ class ChatSession {
     }
 
     // --- answer handling ---
+    async _pending_questions(messages) {
+        if (!this.state.thread_id || !messages.some(_is_question)) return [];
+        try {
+            const card = pending_question(await this.client.thread(this.state.thread_id));
+            return card ? [card] : [];
+        } catch (error) {
+            log(`question: answer options not readable (${_reason(error)})`);
+            return [];
+        }
+    }
+
     async _handle_answer({ answer, run, state, duration_ms }) {
         const { text, commands } = parse_commands(answer_text(answer));
         const written = await this._write_repo_files(run);
-        const questions = questions_of(run);
-        log(`answer: ${questions.length} question card(s); messages: ${_shape(run)}`);
+        const questions = [...questions_of(run), ...await this._pending_questions(run)];
         const shown = _without_questions(text, questions);
         this.ui.message({ role: 'agent', text: shown || (questions.length ? '' : state === 'completed' ? '(no answer)' : `(run ${state})`), files: written.files, warnings: written.warnings, duration_ms });
         questions.forEach(question => this.ui.message(question));
@@ -868,7 +884,11 @@ class ChatSession {
         this.synced = _signature(messages);
         const seen = new Set();
         let asked_at = null;
-        return messages.flatMap(message => {
+        const pending_at = messages.map(_is_question).lastIndexOf(true);
+        const open = pending_at >= 0 && !messages.slice(pending_at + 1).some(_is_user);
+        const pending = open ? (await this._pending_questions([messages[pending_at]]))[0] : null;
+        return messages.flatMap((message, index) => {
+            if (pending && index === pending_at) return [pending];
             const role = (message.role || '').toLowerCase();
             const questions = questions_of([message], seen);
             if (!message.content || ['tool', 'system'].includes(role)) return questions;
@@ -884,4 +904,4 @@ class ChatSession {
     }
 }
 
-module.exports = { ChatSession, Notice, StopRequested, Superseded, answer_of, answer_text, questions_of, relay_prefix };
+module.exports = { ChatSession, Notice, StopRequested, Superseded, answer_of, answer_text, pending_question, questions_of, relay_prefix };
