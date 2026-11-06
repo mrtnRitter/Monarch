@@ -243,6 +243,7 @@ class ChatView {
             const ui = {
                 message: item => this._post({ type: 'message', item, agent: agent.agentId }),
                 info: text => this._post({ type: 'message', item: { role: 'info', text }, agent: agent.agentId }),
+                // Forward status snapshots intact, including the optional activity payload.
                 status: status => this._post({ type: 'status', status, agent: agent.agentId }),
             };
             this.sessions.set(agent.agentId, new ChatSession({ client: this.client, agent, limits: this._limits(), store: this._store(agent), workspace: workspace_adapter, ui }));
@@ -297,6 +298,7 @@ class ChatView {
 <div class="menu-wrap"><button id="model" class="picker-btn" title="Model for this chat"></button><div id="model_menu" class="menu right hidden"></div></div>
 <button id="stop" class="stop-btn"></button></div>
 <div class="messages" id="messages"></div>
+<section id="activity_view" class="activity-view" aria-label="Agent activity" hidden></section>
 <div id="working" class="working hidden"><span class="spinner"></span><span id="working_text"></span></div>
 <div class="input-area">
 <div id="splitter" class="splitter" title="Drag to resize the input"></div>
@@ -395,18 +397,23 @@ class ChatView {
     }
 
     async _show_history(session, agent) {
+        const requested_thread_id = session.state.thread_id;
         try {
-            this._post({ type: 'history', items: await session.history(), agent: agent.agentId });
+            const items = await session.history();
+            if (session.state.thread_id !== requested_thread_id) return;
+            this._post({ type: 'history', items, thread_id: requested_thread_id, agent: agent.agentId });
         } catch (error) {
+            if (session.state.thread_id !== requested_thread_id) return;
             if (error.status !== 404) {
-                this._post({ type: 'history', items: [{ role: 'info', text: `history not loaded: ${error.message}` }], agent: agent.agentId });
+                this._post({ type: 'history', items: [{ role: 'info', text: `history not loaded: ${error.message}` }], thread_id: requested_thread_id, agent: agent.agentId });
                 return;
             }
             // chat was deleted in awork
-            const thread_id = session.state.thread_id;
             session.new_chat();
-            await this._drop_chat(agent, thread_id);
-            this._post({ type: 'history', items: [{ role: 'error', text: 'This chat no longer exists in awork and was removed from the history.' }], agent: agent.agentId });
+            const new_thread_id = session.state.thread_id;
+            await this._drop_chat(agent, requested_thread_id);
+            if (session.state.thread_id !== new_thread_id) return;
+            this._post({ type: 'history', items: [{ role: 'error', text: 'This chat no longer exists in awork and was removed from the history.' }], thread_id: new_thread_id, agent: agent.agentId });
         }
     }
 

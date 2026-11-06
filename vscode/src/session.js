@@ -126,6 +126,214 @@ function _new_state(state) {
     return { thread_id: null, title: null, model: null, context: null, staged: {}, next_index: 1, co_agents: {}, extra_credits: 0, extra_co_credits: 0, extra_co_agents: 0, ...(state || {}) };
 }
 
+const activity_states = new Set(['running', 'completed', 'failed', 'cancelled', 'waiting', 'unknown']);
+const activity_read_timeout_ms = 200;
+const activity_private_key = /reasoning|thinking|thought|signature|password|passwd|secret|credential|authorization|bearer|token|access[_-]?token|refresh[_-]?token|api[_-]?key|private[_-]?key/i;
+
+function _activity_hash(value) {
+    let hash = 2166136261;
+    for (const char of String(value)) hash = Math.imul(hash ^ char.charCodeAt(0), 16777619);
+    return (hash >>> 0).toString(36);
+}
+
+function _activity_redact(text) {
+    return text
+        .replace(/-----BEGIN [^-]*PRIVATE KEY-----[\s\S]*?-----END [^-]*PRIVATE KEY-----/gi, '[REDACTED]')
+        .replace(/\bBearer\s+[A-Za-z0-9._~+/-]+={0,2}/gi, 'Bearer [REDACTED]')
+        .replace(/\b(password|passwd|secret|credential|authorization|token|access[_-]?token|refresh[_-]?token|api[_-]?key|private[_-]?key)(\s*[:=]\s*)(?:"[^"]*"|'[^']*'|[^\s,;}\]]+)/gi, '$1$2[REDACTED]')
+        .replace(/<((?:password|passwd|secret|token|authorization|api[_-]?key))>[^<]*<\/\1>/gi, '<$1>[REDACTED]</$1>')
+        .replace(/\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{4,}\b/g, '[REDACTED]')
+        .replace(/\b(?:sk-[A-Za-z0-9_-]{8,}|gh[pousr]_[A-Za-z0-9_]{8,})\b/g, '[REDACTED]')
+        .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, '');
+}
+
+function _activity_value(value, depth = 0, seen = new WeakSet()) {
+    if (depth > 8 || value === undefined || typeof value === 'function' || typeof value === 'symbol') return undefined;
+    if (typeof value === 'string') {
+        const trimmed = value.trim();
+        if (trimmed && /^[{[\"]/.test(trimmed)) {
+            try {
+                const parsed = JSON.parse(trimmed);
+                if (parsed !== value) return _activity_value(parsed, depth + 1, seen);
+            } catch {}
+        }
+        return _activity_redact(value).slice(0, 4000);
+    }
+    if (value === null || typeof value === 'boolean' || typeof value === 'number') return value;
+    if (typeof value !== 'object' || seen.has(value)) return undefined;
+    seen.add(value);
+    if (Array.isArray(value)) return value.map(item => _activity_value(item, depth + 1, seen)).filter(item => item !== undefined);
+    const result = {};
+    for (const [key, item] of Object.entries(value)) {
+        if (activity_private_key.test(key)) continue;
+        const cleaned = _activity_value(item, depth + 1, seen);
+        if (cleaned !== undefined) result[key] = cleaned;
+    }
+    return result;
+}
+
+function _activity_display(value) {
+    const cleaned = _activity_value(value);
+    if (cleaned === undefined || cleaned === null) return null;
+    if (typeof cleaned === 'string') return cleaned.slice(0, 4000) || null;
+    try { return JSON.stringify(cleaned).slice(0, 4000); } catch { return null; }
+}
+
+function _activity_state(value) {
+    const state = String(value || '').toLowerCase().replace(/[\s-]+/g, '_');
+    if (['running', 'started', 'in_progress', 'processing', 'pending'].includes(state)) return 'running';
+    if (['completed', 'complete', 'success', 'succeeded', 'successful', 'ok', 'finished', 'done'].includes(state)) return 'completed';
+    if (['failed', 'failure', 'error', 'errored'].includes(state)) return 'failed';
+    if (['cancelled', 'canceled', 'aborted', 'stopped', 'interrupted'].includes(state)) return 'cancelled';
+    if (['waiting', 'awaiting', 'awaiting_input', 'input_required', 'requires_action', 'requires_info', 'paused'].includes(state)) return 'waiting';
+    return 'unknown';
+}
+
+function _activity_object(event) {
+    if (!event || typeof event.dataJson !== 'string') return null;
+    try {
+        let value = JSON.parse(event.dataJson);
+        for (let depth = 0; depth < 4 && typeof value === 'string'; depth++) value = JSON.parse(value);
+        return value && typeof value === 'object' && !Array.isArray(value) ? value : null;
+    } catch { return null; }
+}
+
+function _activity_marker(data, event, message_id) {
+    const sources = [data, data?.data, data?.metadata, event];
+    const keys = ['acceptedMessageId', 'accepted_message_id', 'messageId', 'message_id'];
+    for (const source of sources) {
+        if (!source || typeof source !== 'object') continue;
+        for (const key of keys) {
+            if (source[key] !== undefined && source[key] !== null) return String(source[key]) === String(message_id);
+        }
+    }
+    return null;
+}
+
+function _activity_run_id(data, event) {
+    const sources = [data, data?.data, data?.metadata, event];
+    const keys = ['threadRunId', 'thread_run_id', 'run_id', 'runId'];
+    for (const source of sources) {
+        if (!source || typeof source !== 'object') continue;
+        for (const key of keys) {
+            if (typeof source[key] === 'string' || typeof source[key] === 'number') return String(source[key]);
+        }
+    }
+    return null;
+}
+
+function _activity_has_interrupt(value) {
+    let interrupt = value;
+    for (let depth = 0; depth < 4 && typeof interrupt === 'string'; depth++) {
+        try { interrupt = JSON.parse(interrupt); } catch { break; }
+    }
+    if (Array.isArray(interrupt)) return interrupt.length > 0;
+    if (interrupt && typeof interrupt === 'object') return Object.keys(interrupt).length > 0;
+    return Boolean(interrupt);
+}
+
+function _activity_call_id(data) {
+    const id = data?.tool_call_id ?? data?.toolCallId ?? data?.toolCallID;
+    return typeof id === 'string' || typeof id === 'number' ? String(id) : null;
+}
+
+function _activity_events(events, message_id, baseline) {
+    if (!Array.isArray(events)) return null;
+    const unique = new Map();
+    for (const event of events) {
+        if (!event || !Number.isFinite(event.sequence) || typeof event.eventName !== 'string') continue;
+        const data = _activity_object(event);
+        if (!data) continue;
+        const marker = _activity_marker(data, event, message_id);
+        if (marker === false || (marker !== true && (!Number.isFinite(baseline) || event.sequence <= baseline))) continue;
+        if (!unique.has(event.sequence)) unique.set(event.sequence, { event, data, marker, run_id: _activity_run_id(data, event) });
+    }
+    const scoped = [...unique.values()].sort((a, b) => a.event.sequence - b.event.sequence);
+    if (!scoped.length) return null;
+    const run_ids = [...new Set(scoped.map(item => item.run_id).filter(Boolean))];
+    const selected_run_id = run_ids.at(-1) || null;
+    const selected = run_ids.length === 1
+        ? scoped
+        : selected_run_id
+            ? scoped.filter(item => item.run_id === selected_run_id || (item.run_id === null && item.marker === true))
+            : scoped;
+    if (!selected.length) return null;
+
+    const calls = new Map();
+    const args_parts = new Map();
+    let run_state = null;
+    const get_call = (id, sequence) => {
+        const call_id = id || `event-${sequence}`;
+        const key = `${call_id}`;
+        if (!calls.has(key)) calls.set(key, { key: `call-${_activity_hash(key)}`, sequence, label: null, tool_name: null, status: 'running', parameters: null, result: null });
+        const item = calls.get(key);
+        item.sequence = Math.min(item.sequence, sequence);
+        return item;
+    };
+    for (const { event, data } of selected) {
+        const name = event.eventName.toUpperCase();
+        const call_id = _activity_call_id(data);
+        if (name === 'RUN_INTENT') {
+            const item = get_call(call_id, event.sequence);
+            item.label = _activity_display(data.intent) || item.label;
+        } else if (name === 'TOOL_CALL_START') {
+            const item = get_call(call_id, event.sequence);
+            item.tool_name = _activity_display(data.tool_call_name ?? data.toolName) || item.tool_name;
+            item.label = _activity_display(data.tool_intent ?? data.intent) || item.label || item.tool_name;
+            if (data.tool_parameters !== undefined || data.toolParameters !== undefined) item.parameters = _activity_display(data.tool_parameters ?? data.toolParameters);
+        } else if (name === 'TOOL_CALL_ARGS') {
+            const item = get_call(call_id, event.sequence);
+            const delta = data.delta ?? data.args?.delta ?? data.tool_arguments_delta;
+            if (typeof delta === 'string') args_parts.set(item.key, [...(args_parts.get(item.key) || []), delta]);
+            else if (delta !== undefined) args_parts.set(item.key, [...(args_parts.get(item.key) || []), _activity_display(delta) || '']);
+        } else if (name === 'TOOL_CALL_END') {
+            const item = get_call(call_id, event.sequence);
+            const status = _activity_state(data.status);
+            item.status = status === 'unknown' ? 'unknown' : status;
+            const result = data.tool_result !== undefined ? data.tool_result : data.content;
+            if (result !== undefined && result !== null) item.result = _activity_display(result);
+        } else if (name === 'RUN_ERROR') {
+            run_state = 'failed';
+            if (call_id) get_call(call_id, event.sequence).status = 'failed';
+        } else if (name === 'RUN_FINISHED') {
+            const interrupted = _activity_has_interrupt(data.interrupt);
+            if (run_state !== 'failed') run_state = interrupted ? 'waiting' : data.status !== undefined ? _activity_state(data.status) : 'completed';
+        }
+    }
+    const items = [...calls.values()].sort((a, b) => a.sequence - b.sequence);
+    for (const item of items) {
+        const parts = args_parts.get(item.key);
+        if (parts?.length) item.parameters = _activity_display(parts.join(''));
+    }
+    return { items, state: run_state && activity_states.has(run_state) ? run_state : null };
+}
+
+function _activity_messages(messages, message_id, run_state) {
+    if (!Array.isArray(messages)) return null;
+    const start = messages.findIndex(message => message?.id === message_id && _is_user(message));
+    if (start < 0) return null;
+    const calls = new Map();
+    let sequence = 0;
+    for (const message of messages.slice(start + 1)) {
+        if (_is_user(message)) break;
+        for (const call of Array.isArray(message.toolCalls) ? message.toolCalls : []) {
+            if (!call || typeof call !== 'object') continue;
+            const id = typeof call.id === 'string' || typeof call.id === 'number' ? String(call.id) : `index-${sequence}`;
+            if (calls.has(id)) continue;
+            sequence++;
+            const status = call.status === undefined ? (run_state === 'running' && call.response == null ? 'running' : 'unknown') : _activity_state(call.status);
+            calls.set(id, {
+                key: `call-${_activity_hash(id)}`, sequence: Number.isFinite(call.sequence) ? call.sequence : sequence,
+                label: _activity_display(call.intent) || _activity_display(call.toolName),
+                tool_name: _activity_display(call.toolName), status,
+                parameters: _activity_display(call.arguments),
+                result: call.response === undefined || call.response === null ? null : _activity_display(call.response),
+            });
+        }
+    }
+    return calls.size ? { items: [...calls.values()].sort((a, b) => a.sequence - b.sequence), state: null } : null;
+}
+
 class ChatSession {
     /**
      * @param {object} options
@@ -143,7 +351,7 @@ class ChatSession {
             signal.addEventListener('abort', () => { clearTimeout(timer); reject(new StopRequested()); }, { once: true });
         }));
         this.state = _new_state(store.load?.());
-        Object.assign(this, { credits: null, credit_error: null, co_credits: null, co_credit_error: null, credits_at: 0, busy: false, stopping: false, controller: null, answers: new Map(), staged_outputs: new Map(), phase: null, phase_since: null, last_states: new Map(), empty_polls: new Map(), staged_data: new Map() });
+        Object.assign(this, { credits: null, credit_error: null, co_credits: null, co_credit_error: null, credits_at: 0, busy: false, stopping: false, controller: null, answers: new Map(), staged_outputs: new Map(), phase: null, phase_since: null, last_states: new Map(), empty_polls: new Map(), staged_data: new Map(), activity_data: null, activity_baselines: new Map(), activity_run_baselines: new Map(), activity_event_reads: new Map(), activity_events_disabled: false });
     }
 
     // --- state ---
@@ -221,7 +429,7 @@ class ChatSession {
             co_agents: this._co_agents(co_agent => co_agent.state !== 'cancelled').length,
             working: this._co_agents(co_agent => co_agent.state === 'working').length,
             max_co_agents, can_less_co_agents: this._can_less_co_agents(), can_more_co_agents: max_co_agents > 0,
-            busy: this.busy, thread_id: this.state.thread_id,
+            busy: this.busy, thread_id: this.state.thread_id, activity: this._activity_snapshot(),
             phase: this.phase, phase_since: this.phase_since, model: this.state.model,
         };
     }
@@ -233,6 +441,132 @@ class ChatSession {
 
     _emit() {
         this.ui.status(this.status());
+    }
+
+    _activity_snapshot() {
+        const activity = this.activity_data;
+        if (!activity || activity.thread_id !== this.state.thread_id) return null;
+        const runs = activity.runs.filter(run => run.items.length).map(run => ({
+            run_key: run.run_key, state: run.state, source: run.source, current_key: run.current_key,
+            items: run.items.map(({ key, sequence, label, tool_name, status, parameters, result }) => ({ key, sequence, label, tool_name, status, parameters, result })),
+        }));
+        return runs.length ? { thread_id: activity.thread_id, runs } : null;
+    }
+
+    _activity_changed(previous) {
+        if (previous !== JSON.stringify(this._activity_snapshot())) {
+            try { this._emit(); } catch {}
+        }
+    }
+
+    async _activity_read_events(thread_id) {
+        if (this.activity_events_disabled || typeof this.client.events !== 'function' || this.activity_event_reads.has(thread_id)) return null;
+        const request = Promise.resolve().then(() => this.client.events(thread_id)).then(events => ({ events }), error => ({ error }));
+        this.activity_event_reads.set(thread_id, request);
+        let timer;
+        const outcome = await Promise.race([
+            request.then(result => ({ ready: true, result })),
+            new Promise(resolve => { timer = setTimeout(() => resolve({ ready: false }), activity_read_timeout_ms); }),
+        ]);
+        clearTimeout(timer);
+        if (!outcome.ready) {
+            request.then(result => {
+                if (this.activity_event_reads.get(thread_id) === request) this.activity_event_reads.delete(thread_id);
+                if ([401, 403].includes(result.error?.status)) this.activity_events_disabled = true;
+            });
+            return null;
+        }
+        if (this.activity_event_reads.get(thread_id) === request) this.activity_event_reads.delete(thread_id);
+        if (outcome.result.error) {
+            if ([401, 403].includes(outcome.result.error?.status)) this.activity_events_disabled = true;
+            return null;
+        }
+        return Array.isArray(outcome.result.events) ? outcome.result.events : null;
+    }
+
+    async _activity_prepare(thread_id) {
+        if (!thread_id || this.activity_events_disabled || typeof this.client.events !== 'function') return;
+        if (Number.isFinite(this.activity_baselines.get(thread_id))) return;
+        const events = await this._activity_read_events(thread_id);
+        const sequences = Array.isArray(events) ? events.map(event => event?.sequence).filter(Number.isFinite) : [];
+        this.activity_baselines.set(thread_id, events ? sequences.reduce((max, sequence) => Math.max(max, sequence), -1) : null);
+    }
+
+    _activity_start(thread_id, message_id) {
+        if (thread_id !== this.state.thread_id) return null;
+        if (!this.activity_data || this.activity_data.thread_id !== thread_id) this.activity_data = { thread_id, runs: [] };
+        const run_key = `run-${_activity_hash(`${thread_id}\u0000${message_id}`)}`;
+        let run = this.activity_data.runs.find(item => item.run_key === run_key);
+        if (!run) {
+            run = { run_key, state: 'running', source: 'unavailable', current_key: null, items: [], _item_map: new Map() };
+            this.activity_data.runs.push(run);
+        }
+        this.activity_run_baselines.set(run_key, this.activity_baselines.has(thread_id) ? this.activity_baselines.get(thread_id) : null);
+        return run;
+    }
+
+    _activity_apply(run, payload, source, fallback_state) {
+        if (!run) return;
+        const previous = JSON.stringify(this._activity_snapshot());
+        if (payload?.items?.length) {
+            run.items = payload.items.map(item => ({
+                key: `${run.run_key}:${item.key}`, sequence: Number(item.sequence),
+                label: typeof item.label === 'string' ? item.label : null,
+                tool_name: typeof item.tool_name === 'string' ? item.tool_name : null,
+                status: activity_states.has(item.status) ? item.status : 'unknown',
+                parameters: typeof item.parameters === 'string' ? item.parameters : null,
+                result: typeof item.result === 'string' ? item.result : null,
+            }));
+            run.source = source;
+        }
+        const event_state = payload?.state && activity_states.has(payload.state) ? payload.state : null;
+        const next_state = event_state || (fallback_state ? _activity_state(fallback_state) : run.state);
+        const preserve_event_end = !event_state && ['failed', 'cancelled', 'waiting'].includes(run.state) && ['running', 'completed'].includes(next_state);
+        if (!preserve_event_end) run.state = next_state;
+        const terminal = new Set(['completed', 'failed', 'cancelled', 'waiting']);
+        if (terminal.has(run.state)) {
+            for (const item of run.items) if (item.status === 'running') item.status = run.state === 'completed' ? 'unknown' : run.state;
+        }
+        const current = run.state === 'running' ? [...run.items].reverse().find(item => item.status === 'running') : null;
+        run.current_key = current?.key || null;
+        if (!run.items.length) run.source = 'unavailable';
+        this._activity_changed(previous);
+    }
+
+    async _activity_refresh(thread_id, message_id, run_state, run, known_messages = null) {
+        if (!run || thread_id !== this.state.thread_id) return;
+        let payload = null;
+        let source = 'unavailable';
+        const events = await this._activity_read_events(thread_id);
+        if (Array.isArray(events)) {
+            const sequences = events.map(event => event?.sequence).filter(Number.isFinite);
+            if (sequences.length) this.activity_baselines.set(thread_id, sequences.reduce((max, sequence) => Math.max(max, sequence), this.activity_baselines.get(thread_id) || -1));
+            payload = _activity_events(events, message_id, this.activity_run_baselines.get(run.run_key));
+            if (payload) source = 'events';
+        }
+        if (!payload) {
+            try {
+                const messages = known_messages || await this.client.messages(thread_id);
+                payload = _activity_messages(messages, message_id, run_state || run.state);
+                if (payload) source = 'messages';
+            } catch {}
+        }
+        this._activity_apply(run, payload, source, run_state);
+    }
+
+    _activity_finish(thread_id, message_id, state) {
+        const run = this.activity_data?.runs.find(item => item.run_key === `run-${_activity_hash(`${thread_id}\u0000${message_id}`)}`);
+        if (run) this._activity_apply(run, null, run.source, state);
+    }
+
+    _activity_stop() {
+        const run = [...(this.activity_data?.runs || [])].reverse().find(item => item.state === 'running');
+        if (!run || run.items.length === 0) return;
+        const previous = JSON.stringify(this._activity_snapshot());
+        run.state = 'cancelled';
+        for (const item of run.items) if (item.status === 'running') item.status = 'cancelled';
+        run.current_key = null;
+        this._activity_changed(previous);
     }
 
     _save() {
@@ -313,19 +647,28 @@ class ChatSession {
     }
 
     async _wait_for_run(thread_id, message_id) {
+        const activity_run = this._activity_start(thread_id, message_id);
         let run;
         let checked_at = Date.now();
-        while (!(run = await this._run_state(thread_id, message_id)).state) {
-            const every = (this.limits.syncInterval || 0) * 1000;
-            if (every && thread_id === this.state.thread_id && Date.now() - checked_at >= every) {
-                checked_at = Date.now();
-                await this._check_superseded(thread_id, message_id);
+        try {
+            while (!(run = await this._run_state(thread_id, message_id)).state) {
+                await this._activity_refresh(thread_id, message_id, 'running', activity_run);
+                const every = (this.limits.syncInterval || 0) * 1000;
+                if (every && thread_id === this.state.thread_id && Date.now() - checked_at >= every) {
+                    checked_at = Date.now();
+                    await this._check_superseded(thread_id, message_id);
+                }
+                await this._tick();
             }
-            await this._tick();
+            const messages = await this.client.messages(thread_id);
+            if (thread_id === this.state.thread_id) this.synced = _signature(messages);
+            await this._activity_refresh(thread_id, message_id, run.state, activity_run, messages);
+            this._activity_finish(thread_id, message_id, run.state);
+            return { ...answer_of(messages, message_id, run.response_id), state: run.state };
+        } catch (error) {
+            this._activity_finish(thread_id, message_id, this.stopping ? 'cancelled' : error instanceof Superseded ? 'waiting' : 'unknown');
+            throw error;
         }
-        const messages = await this.client.messages(thread_id);
-        if (thread_id === this.state.thread_id) this.synced = _signature(messages);
-        return { ...answer_of(messages, message_id, run.response_id), state: run.state };
     }
 
     /** Throw Superseded if a newer user message (written elsewhere) follows message_id. */
@@ -340,6 +683,8 @@ class ChatSession {
     /** Send one message; context = repo context line contained in content, remembered once the message is accepted. */
     async _post(content, attachments, context = null, interrupt_id = null) {
         const started = Date.now();
+        if (this.state.thread_id) await this._activity_prepare(this.state.thread_id);
+        if (this.stopping) throw new StopRequested();
         this._set_phase('agent');
         let accepted;
         const options = { ...this._model_options(), ...(interrupt_id ? { answerToInterruptId: interrupt_id } : {}) };
@@ -348,6 +693,7 @@ class ChatSession {
         } else {
             accepted = await this.client.create_thread(this.agent.agentId, content, `monarch – ${this.agent.name} ${new Date().toISOString().slice(0, 16).replace('T', ' ')}`, attachments, options);
             this.state.thread_id = accepted.id;
+            if (!this.activity_baselines.has(accepted.id)) this.activity_baselines.set(accepted.id, -1);
             this._save();
         }
         if (context) {
@@ -850,6 +1196,7 @@ class ChatSession {
     /** Emergency stop: cancel the agent run and all co-agents, close the job. */
     async stop(reason = 'manual') {
         this.stopping = true;
+        this._activity_stop();
         if (this.controller) this.controller.abort();
         const working = this._co_agents(co_agent => co_agent.state === 'working').length;
         if (this.state.thread_id) await this.client.cancel(this.state.thread_id).catch(() => {}); // finished runs cannot be cancelled
@@ -863,6 +1210,9 @@ class ChatSession {
     new_chat() {
         if (this.busy) throw new Notice('Stop the agent first.');
         this.state = _new_state();
+        this.activity_data = null;
+        this.activity_baselines.clear();
+        this.activity_run_baselines.clear();
         this.staged_data.clear();
         this.staged_outputs.clear();
         Object.assign(this, { credits: 0, co_credits: 0 });
@@ -873,7 +1223,13 @@ class ChatSession {
     /** Switch to a stored chat state. */
     load_state(state) {
         if (this.busy) throw new Notice('Stop the agent first.');
+        const previous_thread_id = this.state.thread_id;
         this.state = _new_state(state);
+        if (previous_thread_id !== this.state.thread_id) {
+            this.activity_data = null;
+            this.activity_baselines.clear();
+            this.activity_run_baselines.clear();
+        }
         this.answers.clear();
         this.staged_data.clear();
         this.staged_outputs.clear();

@@ -7,7 +7,20 @@
     const state = {
         agents: [], agent: null, agent_name: null, labels: { chat: 'Chat', coCredits: 'Co-Credits', coAgents: 'Co-Agenten', stop: 'Stop' },
         user: null, signed_in: false, status: null, steps: null, chats: [], models: { default: {}, models: [] },
+        activity_thread_id: null, activity_runs: new Map(), activity_open_runs: new Set(), activity_open_items: new Set(), activity_notice: null,
+        active_thread_id: null, history_thread_known: false, pending_statuses: new Map(),
     };
+
+    function reset_activity(thread_id = null) {
+        state.activity_thread_id = thread_id;
+        state.activity_runs = new Map();
+        state.activity_open_runs.clear();
+        state.activity_open_items.clear();
+        state.activity_notice = null;
+        const view = element('activity_view');
+        view.replaceChildren();
+        view.hidden = true;
+    }
 
     const level_name = level => level_names[level] || (level ? level[0].toUpperCase() + level.slice(1) : '');
     const current_agent = () => state.agents.find(agent => agent.id === state.agent) || null;
@@ -213,6 +226,178 @@
         state.steps.scrollIntoView({ block: 'end' });
     }
 
+    const activity_states = new Set(['running', 'completed', 'failed', 'cancelled', 'waiting', 'unknown']);
+    const activity_sources = new Set(['events', 'messages', 'unavailable']);
+    const activity_state_labels = { running: 'Running', completed: 'Completed', failed: 'Failed', cancelled: 'Cancelled', waiting: 'Waiting', unknown: 'Status unknown' };
+    const activity_source_labels = { events: 'Event stream', messages: 'Message history', unavailable: 'Source unavailable' };
+
+    function activity_key(...parts) {
+        return JSON.stringify(parts);
+    }
+
+    function activity_string(value) {
+        return typeof value === 'string' && value.trim() ? value : null;
+    }
+
+    function activity_state(value) {
+        return activity_states.has(value) ? value : 'unknown';
+    }
+
+    function normalize_activity_item(item, index) {
+        const key = activity_string(item?.key) || `missing-item-${index}`;
+        const sequence = Number.isFinite(item?.sequence) ? item.sequence : null;
+        return {
+            key, sequence, label: activity_string(item?.label), tool_name: activity_string(item?.tool_name),
+            status: activity_state(item?.status), parameters: activity_string(item?.parameters), result: activity_string(item?.result),
+        };
+    }
+
+    function normalize_activity_run(run, index) {
+        const run_key = activity_string(run?.run_key) || `missing-run-${index}`;
+        const unique_items = new Map();
+        (Array.isArray(run?.items) ? run.items : []).forEach((item, item_index) => {
+            const normalized = normalize_activity_item(item, item_index);
+            unique_items.set(normalized.key, normalized);
+        });
+        return {
+            run_key, state: activity_state(run?.state),
+            source: activity_sources.has(run?.source) ? run.source : 'unavailable',
+            current_key: activity_string(run?.current_key), items: [...unique_items.values()],
+        };
+    }
+
+    function merge_activity_run(previous, incoming) {
+        const items = new Map((previous?.items || []).map(item => [item.key, item]));
+        incoming.items.forEach(item => items.set(item.key, { ...items.get(item.key), ...item }));
+        const ordered_items = [...items.values()].sort((left, right) => (left.sequence ?? Number.MAX_SAFE_INTEGER) - (right.sequence ?? Number.MAX_SAFE_INTEGER));
+        return { ...previous, ...incoming, items: ordered_items };
+    }
+
+    function sync_activity_open_state(view) {
+        for (const node of view.querySelectorAll('details[data-activity-run-key]')) {
+            const key = node.dataset.activityRunKey;
+            if (node.open) state.activity_open_runs.add(key);
+            else state.activity_open_runs.delete(key);
+        }
+        for (const node of view.querySelectorAll('details[data-activity-item-key]')) {
+            const key = node.dataset.activityItemKey;
+            if (node.open) state.activity_open_items.add(key);
+            else state.activity_open_items.delete(key);
+        }
+    }
+
+    function activity_text(tag, class_name, text) {
+        const node = document.createElement(tag);
+        node.className = class_name;
+        node.textContent = text;
+        return node;
+    }
+
+    function activity_field(container, label, value) {
+        const field = document.createElement('div');
+        field.className = 'activity-field';
+        field.append(activity_text('div', 'activity-field-label', label), activity_text('div', 'activity-value', value));
+        container.appendChild(field);
+    }
+
+    function latest_activity_item(run) {
+        if (run.current_key) return run.items.find(item => item.key === run.current_key) || null;
+        return run.items.at(-1) || null;
+    }
+
+    function activity_run_summary(run, status) {
+        if (status.phase === 'relay' && status.busy && ['running', 'waiting'].includes(run.state)) return 'Waiting for co-agents…';
+        const latest = latest_activity_item(run);
+        if (latest) return latest.label || latest.tool_name || 'Action name unavailable';
+        if (run.current_key) return 'Current action details unavailable';
+        if (run.source === 'unavailable') return 'Activity details unavailable';
+        if (run.state === 'running') return 'Waiting for agent activity…';
+        if (run.state === 'waiting') return 'Waiting for agent…';
+        if (run.state === 'completed') return 'No action details recorded';
+        return activity_state_labels[run.state];
+    }
+
+    function render_activity_item(run, item, thread_id) {
+        const key = activity_key(thread_id, run.run_key, item.key);
+        const details = document.createElement('details');
+        details.className = `activity-item state-${item.status}`;
+        details.dataset.activityItemKey = key;
+        details.open = state.activity_open_items.has(key);
+
+        const summary = document.createElement('summary');
+        summary.className = 'activity-item-summary';
+        const sequence = item.sequence === null ? 'Sequence unavailable' : `#${item.sequence}`;
+        summary.textContent = `${sequence} · ${item.label || item.tool_name || 'Action name unavailable'} · ${activity_state_labels[item.status]}`;
+        details.appendChild(summary);
+
+        const content = document.createElement('div');
+        content.className = 'activity-item-content';
+        activity_field(content, 'Tool name', item.tool_name || 'Tool name unavailable');
+        activity_field(content, 'Parameters', item.parameters || 'Not provided');
+        activity_field(content, 'Result', item.result || 'Not provided');
+        activity_field(content, 'Status', activity_state_labels[item.status]);
+        details.appendChild(content);
+        return details;
+    }
+
+    function render_activity_run(run, status, thread_id) {
+        const key = activity_key(thread_id, run.run_key);
+        const details = document.createElement('details');
+        details.className = `activity-run state-${run.state}`;
+        details.dataset.activityRunKey = key;
+        details.open = state.activity_open_runs.has(key);
+
+        const summary = document.createElement('summary');
+        summary.className = 'activity-run-summary';
+        summary.append(
+            activity_text('span', 'activity-action', activity_run_summary(run, status)),
+            activity_text('span', `activity-state state-${run.state}`, activity_state_labels[run.state]),
+            activity_text('span', `activity-source source-${run.source}`, activity_source_labels[run.source]),
+        );
+        details.appendChild(summary);
+
+        const content = document.createElement('div');
+        content.className = 'activity-run-content';
+        if (run.items.length) run.items.forEach(item => content.appendChild(render_activity_item(run, item, thread_id)));
+        else content.appendChild(activity_text('div', 'activity-empty', run.source === 'unavailable' ? 'Action details unavailable.' : 'No action details recorded.'));
+        details.appendChild(content);
+        return details;
+    }
+
+    function render_activity(status) {
+        const view = element('activity_view');
+        sync_activity_open_state(view);
+        const runs = [...state.activity_runs.values()];
+        if (!runs.length && !state.activity_notice) {
+            view.replaceChildren();
+            view.hidden = true;
+            return;
+        }
+        const content = [];
+        if (state.activity_notice) content.push(activity_text('div', 'activity-notice', state.activity_notice));
+        runs.forEach(run => content.push(render_activity_run(run, status, state.activity_thread_id)));
+        view.replaceChildren(...content);
+        view.hidden = false;
+    }
+
+    function update_activity(status) {
+        const thread_id = activity_string(status.thread_id);
+        if (thread_id !== state.activity_thread_id) reset_activity(thread_id);
+        const activity = status.activity;
+        if (activity && activity.thread_id === thread_id) {
+            state.activity_notice = null;
+            if (Array.isArray(activity.runs)) {
+                activity.runs.forEach((run, index) => {
+                    const normalized = normalize_activity_run(run, index);
+                    state.activity_runs.set(normalized.run_key, merge_activity_run(state.activity_runs.get(normalized.run_key), normalized));
+                });
+            } else {
+                state.activity_notice = 'Agent activity details unavailable.';
+            }
+        }
+        render_activity(status);
+    }
+
     // one single-choice question: a click sends the option; otherwise answers are collected and sent together
     function question_card(item) {
         const card = document.createElement('div');
@@ -364,8 +549,9 @@
         badge.innerHTML = `${controls.less}${controls.value}<span class="badge-content"><span class="label">${escape_html(label)}</span> ${escape_html(String(used ?? '?'))} / ${escape_html(String(max || '∞'))}</span>${controls.more}`;
     }
 
-    function show_status(status) {
+    function show_status(status, show_activity = true) {
         state.status = status;
+        if (show_activity) update_activity(status);
         show_credits('credits', state.labels.chat, status.credits, status.max_credits, status.can_less_credits, status.can_more_credits, status.credit_step);
         show_credits('co_credits', state.labels.coCredits, status.co_credits, status.max_co_credits, status.can_less_co_credits, status.can_more_co_credits, status.credit_step);
         const co_controls = adjust_controls('co_agents', status.max_co_agents, status.can_less_co_agents, status.can_more_co_agents);
@@ -403,7 +589,8 @@
         if (data.agent && data.agent !== state.agent) return;
         if (data.type === 'init') {
             const labels = data.labels || {};
-            Object.assign(state, { agents: data.agents, agent: data.current, agent_name: data.current_name, labels: { ...state.labels, ...labels, chat: labels.chat || labels.credits || state.labels.chat }, user: data.user, signed_in: data.signed_in, steps: null, chats: [], models: { default: {}, models: [] }, status: null });
+            Object.assign(state, { agents: data.agents, agent: data.current, agent_name: data.current_name, labels: { ...state.labels, ...labels, chat: labels.chat || labels.credits || state.labels.chat }, user: data.user, signed_in: data.signed_in, steps: null, chats: [], models: { default: {}, models: [] }, status: null, active_thread_id: null, history_thread_known: false, pending_statuses: new Map() });
+            reset_activity(null);
             element('stop').textContent = state.labels.stop;
             element('model').textContent = 'Model ▾';
             render_agents();
@@ -412,14 +599,28 @@
             close_menus();
             show_empty_state();
         } else if (data.type === 'history') {
+            const thread_id = typeof data.thread_id === 'string' ? data.thread_id : null;
+            const thread_key = JSON.stringify(thread_id);
+            const pending_status = state.pending_statuses.get(thread_key);
+            if (state.active_thread_id !== thread_id) reset_activity(thread_id);
+            state.active_thread_id = thread_id;
+            state.history_thread_known = true;
+            state.pending_statuses.clear();
             state.steps = null;
             open_cards.length = 0;
             show_empty_state();
             data.items.forEach(add_message);
+            if (pending_status) show_status(pending_status);
         } else if (data.type === 'message') {
             add_message(data.item);
         } else if (data.type === 'status') {
-            show_status(data.status);
+            const thread_key = JSON.stringify(data.status.thread_id ?? null);
+            state.pending_statuses.set(thread_key, data.status);
+            if (!state.history_thread_known) show_status(data.status, false);
+            else if (data.status.thread_id === state.active_thread_id) {
+                state.pending_statuses.delete(thread_key);
+                show_status(data.status);
+            }
         } else if (data.type === 'chats') {
             state.chats = data.items;
             if (!element('history_menu').classList.contains('hidden')) render_history();
