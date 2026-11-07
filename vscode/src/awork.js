@@ -256,8 +256,8 @@ class AworkClient {
     }
 
     /** Download an agent output file by its downloadUrl (relative to the API base URL). */
-    download(download_url) {
-        return this.request('GET', download_url, { raw: true });
+    download(download_url, options = {}) {
+        return this.request('GET', download_url, { raw: true, ...options });
     }
 
     /** Signed-in user incl. id, firstName and lastName. */

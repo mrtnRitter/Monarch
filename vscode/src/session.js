@@ -10,6 +10,8 @@ const { log } = require('./log');
 const active_states = new Set(['', 'accepted', 'created', 'queued', 'pending', 'started', 'running', 'processing', 'in_progress', 'inprogress', 'streaming']);
 const max_empty_polls = 10;
 const urgent_states = new Set(['question', 'blocked']);
+// co-agent states set by monarch; an awork run status with the same name must not be mistaken for them
+const own_co_states = new Set(['working', 'waiting', 'answered', 'cancelled']);
 const skip_roles = new Set(['user', 'tool', 'system']);
 const status_pattern = /^\W*STATUS:\W*(\w+)/im;
 const max_attachments = 20;
@@ -836,6 +838,7 @@ class ChatSession {
         this.ui.message({ role: 'agent', text: shown || (questions.length ? '' : state === 'completed' ? '(no answer)' : `(run ${state})`), files: written.files, warnings: written.warnings, duration_ms });
         questions.forEach(question => this.ui.message(question));
         if (!commands.length) return null;
+        this._set_phase('commands');
         const results = [];
         const spawn_context = { ids: new Map(), count: commands.filter(command => command.action === 'spawn').length };
         let spawn_index = 0;
@@ -867,9 +870,10 @@ class ChatSession {
             if (!path) { warnings.push(`${sent} not written (unsafe path)`); continue; }
             if (!file.downloadUrl) { warnings.push(`${path} not downloaded (no download link)`); continue; }
             try {
-                found.set(path, { path, data: await this.client.download(file.downloadUrl), url: file.downloadUrl });
+                found.set(path, { path, data: await this._request(signal => this.client.download(file.downloadUrl, { signal })), url: file.downloadUrl });
                 log(`download ${path}: ok`);
             } catch (error) {
+                if (error instanceof StopRequested) throw error;
                 log(`download ${path}: ${error.message}`);
                 warnings.push(`${path} not downloaded (${_reason(error)})`);
             }
@@ -901,7 +905,7 @@ class ChatSession {
 
     /** Content of a staged co-agent file; downloaded again if it is not in memory (e.g. after a reload). */
     async _staged_file(path) {
-        if (!this.staged_data.has(path)) this.staged_data.set(path, await this.client.download(this.state.staged[path].url));
+        if (!this.staged_data.has(path)) this.staged_data.set(path, await this._request(signal => this.client.download(this.state.staged[path].url, { signal })));
         return this.staged_data.get(path);
     }
 
@@ -916,6 +920,7 @@ class ChatSession {
             try {
                 error = await this._write(path, await this._staged_file(path));
             } catch (download_error) {
+                if (download_error instanceof StopRequested) throw download_error;
                 error = `not downloaded (${_reason(download_error)})`;
             }
             if (error) {
@@ -968,9 +973,10 @@ class ChatSession {
                 else if (!this.workspace?.read) throw new Error('no folder open');
                 else data = await this.workspace.read(path);
             } catch (error) {
+                if (error instanceof StopRequested) throw error;
                 throw new Error(`attachment ${path} not readable (${error.status ? _reason(error) : error.message})`);
             }
-            attachments.push({ temporaryFileId: await this.client.upload_temporary_file(files.basename(path), data) });
+            attachments.push({ temporaryFileId: await this._request(signal => this.client.upload_temporary_file(files.basename(path), data, undefined, { signal })) });
         }
         const content = lines.filter(line => !attach_pattern.test(line)).join('\n').trim();
         return { content: `${content}\n\nAttached files (relative to repo root): ${paths.join(', ')}`, attachments };
@@ -1101,6 +1107,7 @@ class ChatSession {
 
     async _advance_waiting_spawns() {
         const failures = [];
+        let launched = 0;
         for (const id of this._co_agents(co_agent => co_agent.state === 'waiting')) {
             const co_agent = this.state.co_agents[id];
             const pending = co_agent.pending_spawn;
@@ -1139,11 +1146,22 @@ class ChatSession {
                     if (this.state.co_agents[dependency_id]?.state === 'answered') await this._stage_outputs(dependency_id);
                 }
                 await this._launch_spawn(id, pending);
+                launched += 1;
                 this._save();
             } catch (error) {
+                if (error instanceof StopRequested) throw error;
                 Object.assign(co_agent, { state: 'failed', relayed: co_agent.message_id });
                 delete co_agent.pending_spawn;
                 failures.push({ ok: false, action: 'spawn', line: `spawn ${id}: not started (${error.message.slice(0, 160)})` });
+            }
+        }
+        // nothing changed and no co-agent works: the waiting spawns wait for each other (circular AFTER) and would never start
+        if (!launched && !failures.length && !this._co_agents(co_agent => co_agent.state === 'working').length) {
+            for (const id of this._co_agents(co_agent => co_agent.state === 'waiting')) {
+                const co_agent = this.state.co_agents[id];
+                Object.assign(co_agent, { state: 'cancelled', relayed: co_agent.message_id });
+                delete co_agent.pending_spawn;
+                failures.push({ ok: false, action: 'spawn', line: `spawn ${id}: not started, circular AFTER dependencies` });
             }
         }
         if (failures.length) this._save();
@@ -1166,8 +1184,8 @@ class ChatSession {
             const co_agent = this.state.co_agents[id];
             const run = await this._run_state(co_agent.thread_id, co_agent.message_id);
             if (!run.state) continue;
-            this.answers.set(id, answer_of(await this.client.messages(co_agent.thread_id), co_agent.message_id, run.response_id));
-            co_agent.state = run.state === 'completed' ? 'answered' : run.state;
+            this.answers.set(id, answer_of(await this._request(signal => this.client.messages(co_agent.thread_id, { signal })), co_agent.message_id, run.response_id));
+            co_agent.state = run.state === 'completed' ? 'answered' : own_co_states.has(run.state) ? `run_${run.state}` : run.state;
             this._save();
         }
         this._emit();
@@ -1176,7 +1194,7 @@ class ChatSession {
     async _answer_for(id) {
         if (!this.answers.has(id)) {
             const co_agent = this.state.co_agents[id];
-            this.answers.set(id, answer_of(await this.client.messages(co_agent.thread_id), co_agent.message_id, null));
+            this.answers.set(id, answer_of(await this._request(signal => this.client.messages(co_agent.thread_id, { signal })), co_agent.message_id, null));
         }
         return this.answers.get(id);
     }

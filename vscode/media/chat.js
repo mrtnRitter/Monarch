@@ -576,7 +576,8 @@
         element('working').classList.toggle('hidden', !active);
         if (!active) return;
         const elapsed = format_duration(Date.now() - status.phase_since);
-        element('working_text').textContent = status.phase === 'relay' ? `waiting for ${state.labels.coAgents.toLowerCase()} … ${elapsed}` : `${state.agent_name} is working … ${elapsed}`;
+        const texts = { relay: `waiting for ${state.labels.coAgents.toLowerCase()} …`, commands: 'relay is running commands …' };
+        element('working_text').textContent = `${texts[status.phase] || `${state.agent_name} is working …`} ${elapsed}`;
     }
     setInterval(update_working, 1000);
 
@@ -614,13 +615,15 @@
         } else if (data.type === 'message') {
             add_message(data.item);
         } else if (data.type === 'status') {
-            const thread_key = JSON.stringify(data.status.thread_id ?? null);
-            state.pending_statuses.set(thread_key, data.status);
-            if (!state.history_thread_known) show_status(data.status, false);
-            else if (data.status.thread_id === state.active_thread_id) {
-                state.pending_statuses.delete(thread_key);
-                show_status(data.status);
-            }
+            const thread_id = data.status.thread_id ?? null;
+            const thread_key = JSON.stringify(thread_id);
+            // a new chat gets its thread with the first message; no history message follows
+            if (state.history_thread_known && state.active_thread_id === null && thread_id) state.active_thread_id = thread_id;
+            const current = state.history_thread_known && thread_id === state.active_thread_id;
+            if (current) state.pending_statuses.delete(thread_key);
+            else state.pending_statuses.set(thread_key, data.status);
+            // busy, phase and credits are shown at once; only the activity waits for the history of its thread
+            show_status(data.status, current);
         } else if (data.type === 'chats') {
             state.chats = data.items;
             if (!element('history_menu').classList.contains('hidden')) render_history();

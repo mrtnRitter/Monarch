@@ -139,7 +139,7 @@ If the agent credits cannot be read and `maxCredits` is not `0` (or the co-agent
 | Code blocks | Language and toolbar above each block: **Copy**; **Insert** at the cursor of the active or last active editor (replaces selections); **New file** opens an unsaved file with the block's language; **Terminal** puts the code into the active terminal (or a new `monarch` terminal) without running it. Multi-line code is pasted via the clipboard, so it stays in the clipboard |
 | Questions | Questions from the agent as a card; with one single-choice question, click an option to send it or type your own answer below; with several questions or multiple choice, select the options, optionally fill in your own answer and send them together with **Send answer** |
 | Steps | Relay and command events as collapsible group (`relay · 3 events`) |
-| While running | Spinner with elapsed time: `<agent> is working …` or `waiting for <co-agents> …` |
+| While running | Spinner with elapsed time: `<agent> is working …`, `relay is running commands …` (ORCA commands of the answer) or `waiting for <co-agents> …`; it disappears as soon as the agent and all co-agents are done |
 | Warnings | Yellow box in the middle, e.g. a co-agent file that could not be downloaded; stays until closed with ✕ |
 | Errors | Red box in the middle; hints about actions that are not possible right now (e.g. `Stop the agent first.`, attachments) disappear after 5 s; ✕ closes any error box |
 
