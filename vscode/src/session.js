@@ -9,7 +9,8 @@ const { log } = require('./log');
 // any other status ends the wait, so an unknown final status cannot block the chat
 const active_states = new Set(['', 'accepted', 'created', 'queued', 'pending', 'started', 'running', 'processing', 'in_progress', 'inprogress', 'streaming']);
 const max_empty_polls = 10;
-const urgent_states = new Set(['question', 'blocked']);
+// these answers wake the agent at once, even while other co-agents still work, and stop AFTER dependents
+const urgent_states = new Set(['question', 'blocked', 'plan']);
 // co-agent states set by monarch; an awork run status with the same name must not be mistaken for them
 const own_co_states = new Set(['working', 'waiting', 'answered', 'cancelled']);
 const skip_roles = new Set(['user', 'tool', 'system']);
@@ -144,6 +145,7 @@ function _new_state(state) {
 
 const terminal_states = new Set(['completed', 'failed', 'cancelled', 'waiting']);
 const max_step_chars = 200;
+const progress_steps = 3;
 const max_answer_credits = 500;
 
 function _redact(text) {
@@ -358,8 +360,8 @@ class ChatSession {
      * @param {{write: (path: string, data: string|Uint8Array) => Promise<string>}|null} options.workspace repo access
      * @param {{message, status, answer_credits?}} options.ui callbacks for the chat window; steps come as message({role: 'step', text})
      */
-    constructor({ client, agent, limits, store, workspace, ui, sleep, credit_refresh_ms = 10_000, credit_read_timeout_ms = 15_000 }) {
-        Object.assign(this, { client, agent, limits, store, workspace, ui, credit_refresh_ms, credit_read_timeout_ms });
+    constructor({ client, agent, limits, store, workspace, ui, sleep, credit_refresh_ms = 10_000, credit_read_timeout_ms = 15_000, progress_timeout_ms = 5_000 }) {
+        Object.assign(this, { client, agent, limits, store, workspace, ui, credit_refresh_ms, credit_read_timeout_ms, progress_timeout_ms });
         this.sleep = sleep || ((ms, signal) => new Promise((resolve, reject) => {
             if (signal?.aborted) return reject(new StopRequested());
             const finish = error => {
@@ -1095,7 +1097,8 @@ class ChatSession {
                 const { content, attachments } = await this._brief(parsed.body);
                 this.state.next_index += 1;
                 const thread = await this.client.create_thread(this.agent.coAgentId, content, `${id} – ${_first_line(content)}`, attachments);
-                this.state.co_agents[id] = { thread_id: thread.id, message_id: await this._accepted_id(thread.id, thread), state: 'working', relayed: null };
+                const message_id = await this._accepted_id(thread.id, thread);
+                this.state.co_agents[id] = { thread_id: thread.id, message_id, first_message_id: message_id, state: 'working', relayed: null };
                 spawn_context?.ids.set(spawn_index, id);
                 return result(true, `spawn ${id}`);
             }
@@ -1181,7 +1184,8 @@ class ChatSession {
         const { content, attachments } = await this._brief(body);
         const thread = await this.client.create_thread(this.agent.coAgentId, content, `${id} – ${_first_line(content)}`, attachments);
         const co_agent = this.state.co_agents[id];
-        Object.assign(co_agent, { thread_id: thread.id, message_id: await this._accepted_id(thread.id, thread), state: 'working', relayed: null });
+        const message_id = await this._accepted_id(thread.id, thread);
+        Object.assign(co_agent, { thread_id: thread.id, message_id, first_message_id: message_id, state: 'working', relayed: null });
         delete co_agent.pending_spawn;
     }
 
@@ -1209,7 +1213,7 @@ class ChatSession {
                     break;
                 }
                 if (await this._is_urgent(dependency_id)) {
-                    failed = `${dependency_id} answered with STATUS: question or STATUS: blocked`;
+                    failed = `${dependency_id} answered with STATUS: question, blocked or plan`;
                     break;
                 }
             }
@@ -1343,10 +1347,41 @@ class ChatSession {
         return lines.join('\n');
     }
 
+    /**
+     * Progress lines of working co-agents for a timeout relay: "- <id>: <n> steps, last: <a> | <b> | <c>".
+     * Display only: bounded by progress_timeout_ms and never rejects; a read that ends later is dropped.
+     */
+    async _co_agent_progress(ids) {
+        if (!ids.length || !this._events_available()) return [];
+        const unreadable = id => `- ${id}: steps not readable`;
+        const read = async id => {
+            const co_agent = this.state.co_agents[id];
+            const events = await this._read_events(co_agent.thread_id);
+            const payload = events && _event_calls(events, co_agent.message_id, null, co_agent.message_id === co_agent.first_message_id);
+            if (!payload) return unreadable(id);
+            const steps = payload.items.map(item => step_text(item.intent, item.tool_name)?.replace(/^Agent step: /, '')).filter(Boolean);
+            return `- ${id}: ${steps.length} steps${steps.length ? `, last: ${steps.slice(-progress_steps).join(' | ')}` : ''}`;
+        };
+        let timer;
+        const limit = new Promise(resolve => {
+            timer = setTimeout(() => resolve(null), this.progress_timeout_ms);
+            timer.unref?.();
+        });
+        try {
+            const lines = await Promise.race([Promise.all(ids.map(id => read(id).catch(() => unreadable(id)))), limit]);
+            return lines || ids.map(id => `${unreadable(id)} (timed out)`);
+        } finally {
+            clearTimeout(timer);
+        }
+    }
+
     async _build_relay(fresh, pending, results, timed_out) {
         const parts = [`${relay_prefix} co-agent update`];
         if (results.length) parts.push(['commands:', ...results.map(result => `- ${result.ok ? 'ok' : 'refused'}: ${result.line}`)].join('\n'));
         for (const id of fresh) parts.push(await this._forward(id));
+        const progress = timed_out ? await this._co_agent_progress(pending.filter(id => this.state.co_agents[id].state === 'working')) : [];
+        if (this.stopping) throw new StopRequested();
+        if (progress.length) parts.push(['progress (working co-agents):', ...progress].join('\n'));
         parts.push(this._status_text(pending, timed_out));
         this._save();
         this._emit();
