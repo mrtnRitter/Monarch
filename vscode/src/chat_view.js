@@ -243,8 +243,8 @@ class ChatView {
             const ui = {
                 message: item => this._post({ type: 'message', item, agent: agent.agentId }),
                 info: text => this._post({ type: 'message', item: { role: 'info', text }, agent: agent.agentId }),
-                // Forward status snapshots intact, including the optional activity payload.
                 status: status => this._post({ type: 'status', status, agent: agent.agentId }),
+                answer_credits: ({ thread_id, key, credits }) => this._post({ type: 'answer_credits', thread_id, key, credits, agent: agent.agentId }),
             };
             this.sessions.set(agent.agentId, new ChatSession({ client: this.client, agent, limits: this._limits(), store: this._store(agent), workspace: workspace_adapter, ui }));
         }
@@ -298,7 +298,6 @@ class ChatView {
 <div class="menu-wrap"><button id="model" class="picker-btn" title="Model for this chat"></button><div id="model_menu" class="menu right hidden"></div></div>
 <button id="stop" class="stop-btn"></button></div>
 <div class="messages" id="messages"></div>
-<section id="activity_view" class="activity-view" aria-label="Agent activity" hidden></section>
 <div id="working" class="working hidden"><span class="spinner"></span><span id="working_text"></span></div>
 <div class="input-area">
 <div id="splitter" class="splitter" title="Drag to resize the input"></div>

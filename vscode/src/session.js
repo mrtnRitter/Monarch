@@ -124,22 +124,16 @@ function _signature(messages) {
     return messages.map(message => `${message.id}:${(message.content || '').length}:${(message.toolCalls || []).length}:${message.isStreaming ? 1 : 0}`).join('|');
 }
 
-/** Chat state with defaults: thread, title, model override, last sent repo context, staged co-agent files {path: {from, url}}, job (co-agents). */
+/** Chat state with defaults: thread, title, model override, last sent repo context, staged co-agent files {path: {from, url}}, job (co-agents), agent credits per answer {message id: credits}. */
 function _new_state(state) {
-    return { thread_id: null, title: null, model: null, context: null, staged: {}, next_index: 1, co_agents: {}, extra_credits: 0, extra_co_credits: 0, extra_co_agents: 0, ...(state || {}) };
+    return { thread_id: null, title: null, model: null, context: null, staged: {}, next_index: 1, co_agents: {}, answer_credits: {}, extra_credits: 0, extra_co_credits: 0, extra_co_agents: 0, ...(state || {}) };
 }
 
-const activity_states = new Set(['running', 'completed', 'failed', 'cancelled', 'waiting', 'unknown']);
-const activity_read_timeout_ms = 200;
-const activity_private_key = /reasoning|thinking|thought|signature|password|passwd|secret|credential|authorization|bearer|token|access[_-]?token|refresh[_-]?token|api[_-]?key|private[_-]?key/i;
+const terminal_states = new Set(['completed', 'failed', 'cancelled', 'waiting']);
+const max_step_chars = 200;
+const max_answer_credits = 500;
 
-function _activity_hash(value) {
-    let hash = 2166136261;
-    for (const char of String(value)) hash = Math.imul(hash ^ char.charCodeAt(0), 16777619);
-    return (hash >>> 0).toString(36);
-}
-
-function _activity_redact(text) {
+function _redact(text) {
     return text
         .replace(/-----BEGIN [^-]*PRIVATE KEY-----[\s\S]*?-----END [^-]*PRIVATE KEY-----/gi, '[REDACTED]')
         .replace(/\bBearer\s+[A-Za-z0-9._~+/-]+={0,2}/gi, 'Bearer [REDACTED]')
@@ -150,82 +144,77 @@ function _activity_redact(text) {
         .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, '');
 }
 
-function _activity_value(value, depth = 0, seen = new WeakSet()) {
-    if (depth > 8 || value === undefined || typeof value === 'function' || typeof value === 'symbol') return undefined;
+/** Text in one line with secrets redacted. */
+function _one_line(text) {
+    return _redact(String(text)).replace(/\s+/g, ' ').trim();
+}
+
+function _text(value) {
+    return typeof value === 'string' && value.trim() ? _one_line(value) : null;
+}
+
+/** Tool call arguments as object (JSON string or object); null if missing or not complete yet. */
+function _parse_args(value) {
+    let parsed = value;
     if (typeof value === 'string') {
-        const trimmed = value.trim();
-        if (trimmed && /^[{[\"]/.test(trimmed)) {
-            try {
-                const parsed = JSON.parse(trimmed);
-                if (parsed !== value) return _activity_value(parsed, depth + 1, seen);
-            } catch {}
+        try {
+            parsed = JSON.parse(value);
+        } catch {
+            return null;
         }
-        return _activity_redact(value).slice(0, 4000);
     }
-    if (value === null || typeof value === 'boolean' || typeof value === 'number') return value;
-    if (typeof value !== 'object' || seen.has(value)) return undefined;
-    seen.add(value);
-    if (Array.isArray(value)) return value.map(item => _activity_value(item, depth + 1, seen)).filter(item => item !== undefined);
-    const result = {};
-    for (const [key, item] of Object.entries(value)) {
-        if (activity_private_key.test(key)) continue;
-        const cleaned = _activity_value(item, depth + 1, seen);
-        if (cleaned !== undefined) result[key] = cleaned;
-    }
-    return result;
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : null;
 }
 
-function _activity_display(value) {
-    const cleaned = _activity_value(value);
-    if (cleaned === undefined || cleaned === null) return null;
-    if (typeof cleaned === 'string') return cleaned.slice(0, 4000) || null;
-    try { return JSON.stringify(cleaned).slice(0, 4000); } catch { return null; }
+/** Display line of an agent step: "Agent step: <intent> · <tool name>"; null without both. */
+function step_text(intent, tool_name) {
+    const parts = [intent, tool_name].filter(Boolean);
+    if (!parts.length) return null;
+    const text = `Agent step: ${parts.join(' · ')}`;
+    return text.length > max_step_chars ? `${text.slice(0, max_step_chars - 1)}…` : text;
 }
 
-function _activity_state(value) {
+/** Display line of a relay event: "ok: X" -> "Relay: X", "refused: X" -> "Relay: refused – X", "relay: X" -> "Relay: X". */
+function relay_text(text) {
+    const match = /^(ok|refused|relay):\s*/.exec(text);
+    const rest = match ? text.slice(match[0].length) : text;
+    return _one_line(match?.[1] === 'refused' ? `Relay: refused – ${rest}` : `Relay: ${rest}`);
+}
+
+function _event_state(value) {
     const state = String(value || '').toLowerCase().replace(/[\s-]+/g, '_');
-    if (['running', 'started', 'in_progress', 'processing', 'pending'].includes(state)) return 'running';
     if (['completed', 'complete', 'success', 'succeeded', 'successful', 'ok', 'finished', 'done'].includes(state)) return 'completed';
     if (['failed', 'failure', 'error', 'errored'].includes(state)) return 'failed';
     if (['cancelled', 'canceled', 'aborted', 'stopped', 'interrupted'].includes(state)) return 'cancelled';
     if (['waiting', 'awaiting', 'awaiting_input', 'input_required', 'requires_action', 'requires_info', 'paused'].includes(state)) return 'waiting';
-    return 'unknown';
+    return null;
 }
 
-function _activity_object(event) {
+function _event_object(event) {
     if (!event || typeof event.dataJson !== 'string') return null;
     try {
         let value = JSON.parse(event.dataJson);
         for (let depth = 0; depth < 4 && typeof value === 'string'; depth++) value = JSON.parse(value);
         return value && typeof value === 'object' && !Array.isArray(value) ? value : null;
-    } catch { return null; }
-}
-
-function _activity_marker(data, event, message_id) {
-    const sources = [data, data?.data, data?.metadata, event];
-    const keys = ['acceptedMessageId', 'accepted_message_id', 'messageId', 'message_id'];
-    for (const source of sources) {
-        if (!source || typeof source !== 'object') continue;
-        for (const key of keys) {
-            if (source[key] !== undefined && source[key] !== null) return String(source[key]) === String(message_id);
-        }
+    } catch {
+        return null;
     }
-    return null;
 }
 
-function _activity_run_id(data, event) {
-    const sources = [data, data?.data, data?.metadata, event];
-    const keys = ['threadRunId', 'thread_run_id', 'run_id', 'runId'];
-    for (const source of sources) {
+function _event_field(data, event, keys) {
+    for (const source of [data, data?.data, data?.metadata, event]) {
         if (!source || typeof source !== 'object') continue;
-        for (const key of keys) {
-            if (typeof source[key] === 'string' || typeof source[key] === 'number') return String(source[key]);
-        }
+        for (const key of keys) if (source[key] !== undefined && source[key] !== null) return source[key];
     }
-    return null;
+    return undefined;
 }
 
-function _activity_has_interrupt(value) {
+function _event_run_id(data, event) {
+    const id = _event_field(data, event, ['threadRunId', 'thread_run_id', 'run_id', 'runId']);
+    return typeof id === 'string' || typeof id === 'number' ? String(id) : null;
+}
+
+function _event_has_interrupt(value) {
     let interrupt = value;
     for (let depth = 0; depth < 4 && typeof interrupt === 'string'; depth++) {
         try { interrupt = JSON.parse(interrupt); } catch { break; }
@@ -235,114 +224,115 @@ function _activity_has_interrupt(value) {
     return Boolean(interrupt);
 }
 
-function _activity_call_id(data) {
+function _event_call_id(data) {
     const id = data?.tool_call_id ?? data?.toolCallId ?? data?.toolCallID;
     return typeof id === 'string' || typeof id === 'number' ? String(id) : null;
 }
 
-function _activity_events(events, message_id, baseline, expected_run_id = null, fresh_thread = false) {
+/** Events of the run of message_id: [{event, data}] in order, or null if the run is not found (another user's run must not be taken). */
+function _run_events(events, message_id, expected_run_id, fresh_thread) {
     if (!Array.isArray(events)) return null;
     const unique = new Map();
     for (const event of events) {
         if (!event || !Number.isFinite(event.sequence) || typeof event.eventName !== 'string') continue;
-        const data = _activity_object(event);
-        if (data && !unique.has(event.sequence)) unique.set(event.sequence, { event, data, run_id: _activity_run_id(data, event) });
+        const data = _event_object(event);
+        if (data && !unique.has(event.sequence)) unique.set(event.sequence, { event, data, run_id: _event_run_id(data, event) });
     }
     const ordered = [...unique.values()].sort((a, b) => a.event.sequence - b.event.sequence);
-    let selected_run_id = expected_run_id;
-    if (!selected_run_id) {
-        const anchor = ordered.findIndex(({ event, data }) => ['USER_MESSAGE_ADDED', 'RUN_STARTED'].includes(event.eventName) && _activity_marker(data, event, message_id) === true);
+    let run_id = expected_run_id;
+    if (!run_id) {
+        const is_own = ({ event, data }) => ['USER_MESSAGE_ADDED', 'RUN_STARTED'].includes(event.eventName) && String(_event_field(data, event, ['acceptedMessageId', 'accepted_message_id', 'messageId', 'message_id'])) === String(message_id);
+        const anchor = ordered.findIndex(is_own);
         if (anchor >= 0) {
-            const own = ordered[anchor];
-            selected_run_id = own.run_id;
-            if (!selected_run_id) {
+            run_id = ordered[anchor].run_id;
+            if (!run_id) {
                 const following = ordered.slice(anchor + 1);
                 const next_user = following.findIndex(item => item.event.eventName === 'USER_MESSAGE_ADDED');
-                const window = next_user < 0 ? following : following.slice(0, next_user);
-                selected_run_id = window.find(item => item.event.eventName === 'RUN_STARTED')?.run_id || null;
+                run_id = (next_user < 0 ? following : following.slice(0, next_user)).find(item => item.event.eventName === 'RUN_STARTED')?.run_id || null;
             }
         } else if (fresh_thread) {
-            selected_run_id = ordered.find(item => item.event.eventName === 'RUN_STARTED')?.run_id || null;
+            run_id = ordered.find(item => item.event.eventName === 'RUN_STARTED')?.run_id || null;
         }
     }
-    // A sequence cursor alone cannot distinguish another user's run.
-    if (!selected_run_id) return null;
-    const selected = ordered.filter(item => item.run_id === selected_run_id);
-    if (!selected.length) return null;
+    if (!run_id) return null;
+    const selected = ordered.filter(item => item.run_id === run_id);
+    return selected.length ? selected : null;
+}
 
+/**
+ * Tool calls and end state of the run of message_id from the run events: {items: [{key, has_id, sequence, intent, tool_name, ready}], state}, or null.
+ * Events without tool call id are ignored, so the same call from the messages cannot appear twice.
+ */
+function _event_calls(events, message_id, expected_run_id = null, fresh_thread = false) {
+    const selected = _run_events(events, message_id, expected_run_id, fresh_thread);
+    if (!selected) return null;
     const calls = new Map();
-    const args_parts = new Map();
-    let run_state = null;
-    const get_call = (id, sequence) => {
-        const call_id = id || `event-${sequence}`;
-        const key = `${call_id}`;
-        if (!calls.has(key)) calls.set(key, { key: `call-${_activity_hash(key)}`, sequence, label: null, tool_name: null, status: 'running', parameters: null, result: null });
-        const item = calls.get(key);
-        item.sequence = Math.min(item.sequence, sequence);
-        return item;
+    let state = null;
+    const get_call = (key, sequence) => {
+        if (!calls.has(key)) calls.set(key, { key, sequence, tool_name: null, explicit: null, parameters: undefined, args: [], ended: false });
+        return calls.get(key);
     };
     for (const { event, data } of selected) {
         const name = event.eventName.toUpperCase();
-        const call_id = _activity_call_id(data);
+        const call_id = _event_call_id(data);
+        if (name === 'RUN_ERROR') state = 'failed';
+        else if (name === 'RUN_FINISHED' && state !== 'failed') state = _event_has_interrupt(data.interrupt) ? 'waiting' : data.status !== undefined ? _event_state(data.status) : 'completed';
+        if (!call_id) continue;
         if (name === 'RUN_INTENT') {
             const item = get_call(call_id, event.sequence);
-            item.label = _activity_display(data.intent) || item.label;
+            item.explicit = _text(data.intent) || item.explicit;
         } else if (name === 'TOOL_CALL_START') {
             const item = get_call(call_id, event.sequence);
-            item.tool_name = _activity_display(data.tool_call_name ?? data.toolName) || item.tool_name;
-            item.label = _activity_display(data.tool_intent ?? data.intent) || item.label || item.tool_name;
-            if (data.tool_parameters !== undefined || data.toolParameters !== undefined) item.parameters = _activity_display(data.tool_parameters ?? data.toolParameters);
+            item.tool_name = _text(data.tool_call_name ?? data.toolCallName ?? data.toolName) || item.tool_name;
+            item.explicit = _text(data.tool_intent ?? data.intent) || item.explicit;
+            item.parameters = data.tool_parameters ?? data.toolParameters ?? item.parameters;
         } else if (name === 'TOOL_CALL_ARGS') {
-            const item = get_call(call_id, event.sequence);
             const delta = data.delta ?? data.args?.delta ?? data.tool_arguments_delta;
-            if (typeof delta === 'string') args_parts.set(item.key, [...(args_parts.get(item.key) || []), delta]);
-            else if (delta !== undefined) args_parts.set(item.key, [...(args_parts.get(item.key) || []), _activity_display(delta) || '']);
+            if (delta !== undefined && delta !== null) get_call(call_id, event.sequence).args.push(typeof delta === 'string' ? delta : JSON.stringify(delta));
         } else if (name === 'TOOL_CALL_END') {
-            const item = get_call(call_id, event.sequence);
-            const status = _activity_state(data.status);
-            item.status = status === 'unknown' ? 'unknown' : status;
-            const result = data.tool_result !== undefined ? data.tool_result : data.content;
-            if (result !== undefined && result !== null) item.result = _activity_display(result);
-        } else if (name === 'RUN_ERROR') {
-            run_state = 'failed';
-            if (call_id) get_call(call_id, event.sequence).status = 'failed';
-        } else if (name === 'RUN_FINISHED') {
-            const interrupted = _activity_has_interrupt(data.interrupt);
-            if (run_state !== 'failed') run_state = interrupted ? 'waiting' : data.status !== undefined ? _activity_state(data.status) : 'completed';
+            get_call(call_id, event.sequence).ended = true;
         }
     }
-    const items = [...calls.values()].sort((a, b) => a.sequence - b.sequence);
-    for (const item of items) {
-        const parts = args_parts.get(item.key);
-        if (parts?.length) item.parameters = _activity_display(parts.join(''));
-    }
-    return { items, state: run_state && activity_states.has(run_state) ? run_state : null };
+    const items = [...calls.values()].sort((a, b) => a.sequence - b.sequence).map(item => {
+        const args = _parse_args(item.parameters !== undefined ? item.parameters : item.args.join('') || undefined);
+        return { key: item.key, has_id: true, sequence: item.sequence, tool_name: item.tool_name, intent: item.explicit || _text(args?.intent), ready: Boolean(item.explicit) || item.ended || args !== null };
+    });
+    return { items, state: terminal_states.has(state) ? state : null };
 }
 
-function _activity_messages(messages, message_id, run_state) {
-    if (!Array.isArray(messages)) return null;
-    const start = messages.findIndex(message => message?.id === message_id && _is_user(message));
-    if (start < 0) return null;
+/** Tool calls of messages in order: [{key, has_id, sequence, intent, tool_name, ready}]; key = tool call id, else prefix and position. */
+function _message_calls(messages, prefix = 'message') {
     const calls = new Map();
-    let sequence = 0;
-    for (const message of messages.slice(start + 1)) {
-        if (_is_user(message)) break;
-        for (const call of Array.isArray(message.toolCalls) ? message.toolCalls : []) {
+    let position = 0;
+    for (const message of messages) {
+        for (const call of Array.isArray(message?.toolCalls) ? message.toolCalls : []) {
             if (!call || typeof call !== 'object') continue;
-            const id = typeof call.id === 'string' || typeof call.id === 'number' ? String(call.id) : `index-${sequence}`;
-            if (calls.has(id)) continue;
-            sequence++;
-            const status = call.status === undefined ? (run_state === 'running' && call.response == null ? 'running' : 'unknown') : _activity_state(call.status);
-            calls.set(id, {
-                key: `call-${_activity_hash(id)}`, sequence: Number.isFinite(call.sequence) ? call.sequence : sequence,
-                label: _activity_display(call.intent) || _activity_display(call.toolName),
-                tool_name: _activity_display(call.toolName), status,
-                parameters: _activity_display(call.arguments),
-                result: call.response === undefined || call.response === null ? null : _activity_display(call.response),
-            });
+            const has_id = typeof call.id === 'string' || typeof call.id === 'number';
+            const key = has_id ? String(call.id) : `${prefix}-${position}`;
+            position++;
+            if (calls.has(key)) continue;
+            const explicit = _text(call.intent);
+            const args = _parse_args(call.arguments ?? call.function?.arguments);
+            const done = (call.response !== undefined && call.response !== null) || call.status !== undefined;
+            calls.set(key, { key, has_id, sequence: calls.size, tool_name: _text(call.toolName ?? call.name ?? call.function?.name), intent: explicit || _text(args?.intent), ready: Boolean(explicit) || args !== null || done });
         }
     }
-    return calls.size ? { items: [...calls.values()].sort((a, b) => a.sequence - b.sequence), state: null } : null;
+    return [...calls.values()];
+}
+
+/** Step items of one message's tool calls, each call once per history. */
+function _history_steps(message, keys) {
+    return _message_calls([message], `${message.id}`).filter(call => !keys.has(call.key) && keys.add(call.key)).map(call => step_text(call.intent, call.tool_name)).filter(Boolean).map(text => ({ role: 'step', text }));
+}
+
+/** Tool calls of the run started by the user message message_id. */
+function _run_calls(messages, message_id) {
+    if (!Array.isArray(messages)) return [];
+    const start = messages.findIndex(message => message?.id === message_id && _is_user(message));
+    if (start < 0) return [];
+    const rest = messages.slice(start + 1);
+    const end = rest.findIndex(_is_user);
+    return _message_calls(end < 0 ? rest : rest.slice(0, end));
 }
 
 class ChatSession {
@@ -353,10 +343,10 @@ class ChatSession {
      * @param {{maxCredits, maxCoAgentCredits, maxCoAgents, relayTimeout, pollInterval}} options.limits 0 = no cap
      * @param {{load?: () => object|undefined, save: (state: object) => void}} options.store persisted chat state; without load the session starts with a new chat
      * @param {{write: (path: string, data: string|Uint8Array) => Promise<string>}|null} options.workspace repo access
-     * @param {{message, info, status}} options.ui callbacks for the chat window
+     * @param {{message, status, answer_credits?}} options.ui callbacks for the chat window; steps come as message({role: 'step', text})
      */
-    constructor({ client, agent, limits, store, workspace, ui, sleep, credit_refresh_ms = 10_000 }) {
-        Object.assign(this, { client, agent, limits, store, workspace, ui, credit_refresh_ms });
+    constructor({ client, agent, limits, store, workspace, ui, sleep, credit_refresh_ms = 10_000, credit_read_timeout_ms = 15_000 }) {
+        Object.assign(this, { client, agent, limits, store, workspace, ui, credit_refresh_ms, credit_read_timeout_ms });
         this.sleep = sleep || ((ms, signal) => new Promise((resolve, reject) => {
             if (signal?.aborted) return reject(new StopRequested());
             const finish = error => {
@@ -369,7 +359,7 @@ class ChatSession {
             signal?.addEventListener('abort', on_abort, { once: true });
         }));
         this.state = _new_state(store.load?.());
-        Object.assign(this, { credits: null, credit_error: null, co_credits: null, co_credit_error: null, credits_at: 0, busy: false, stopping: false, controller: null, answers: new Map(), staged_outputs: new Map(), phase: null, phase_since: null, last_states: new Map(), empty_polls: new Map(), staged_data: new Map(), activity_data: null, activity_baselines: new Map(), activity_run_baselines: new Map(), activity_event_reads: new Map(), activity_events_disabled: false, credit_refresh_index: 0 });
+        Object.assign(this, { credits: null, credit_error: null, co_credits: null, co_credit_error: null, credits_at: 0, busy: false, stopping: false, controller: null, answers: new Map(), staged_outputs: new Map(), phase: null, phase_since: null, last_states: new Map(), empty_polls: new Map(), staged_data: new Map(), event_reads: new Map(), events_disabled: false, credit_refresh_index: 0, agent_run_active: false, idle_credit_read: null, budget_check: null, local_keys: 0, chat_controller: new AbortController() });
     }
 
     // --- state ---
@@ -447,7 +437,7 @@ class ChatSession {
             co_agents: this._co_agents(co_agent => co_agent.state !== 'cancelled').length,
             working: this._co_agents(co_agent => co_agent.state === 'working').length,
             max_co_agents, can_less_co_agents: this._can_less_co_agents(), can_more_co_agents: max_co_agents > 0,
-            busy: this.busy, thread_id: this.state.thread_id, activity: this._activity_snapshot(),
+            busy: this.busy, thread_id: this.state.thread_id,
             phase: this.phase, phase_since: this.phase_since, model: this.state.model,
         };
     }
@@ -461,22 +451,6 @@ class ChatSession {
         this.ui.status(this.status());
     }
 
-    _activity_snapshot() {
-        const activity = this.activity_data;
-        if (!activity || activity.thread_id !== this.state.thread_id) return null;
-        const runs = activity.runs.filter(run => run.items.length).map(run => ({
-            run_key: run.run_key, state: run.state, source: run.source, current_key: run.current_key,
-            items: run.items.map(({ key, sequence, label, tool_name, status, parameters, result }) => ({ key, sequence, label, tool_name, status, parameters, result })),
-        }));
-        return runs.length ? { thread_id: activity.thread_id, runs } : null;
-    }
-
-    _activity_changed(previous) {
-        if (previous !== JSON.stringify(this._activity_snapshot())) {
-            try { this._emit(); } catch {}
-        }
-    }
-
     async _request(action, signal = this.controller?.signal) {
         if (this.stopping || signal?.aborted) throw new StopRequested();
         try {
@@ -487,156 +461,139 @@ class ChatSession {
         }
     }
 
-    async _activity_read_events(thread_id) {
-        if (this.activity_events_disabled || typeof this.client.events !== 'function') return null;
-        const pending = this.activity_event_reads.get(thread_id);
-        if (pending) return pending;
-        const request = this._request(signal => this.client.events(thread_id, { signal })).then(events => Array.isArray(events) ? events : null, error => {
-            if ([401, 403].includes(error.status)) this.activity_events_disabled = true;
-            return null;
-        }).finally(() => {
-            if (this.activity_event_reads.get(thread_id) === request) this.activity_event_reads.delete(thread_id);
-        });
-        this.activity_event_reads.set(thread_id, request);
-        return request;
-    }
-
-    async _activity_prepare(thread_id) {
-        if (!thread_id || this.activity_events_disabled || typeof this.client.events !== 'function') return;
-        if (Number.isFinite(this.activity_baselines.get(thread_id))) return;
-        let timer;
-        const request = this._activity_read_events(thread_id);
-        try {
-            const events = await this._request(() => Promise.race([
-                request,
-                new Promise(resolve => { timer = setTimeout(() => resolve(null), activity_read_timeout_ms); }),
-            ]));
-            const sequences = Array.isArray(events) ? events.map(event => event?.sequence).filter(Number.isFinite) : [];
-            this.activity_baselines.set(thread_id, events ? sequences.reduce((max, sequence) => Math.max(max, sequence), -1) : null);
-        } finally {
-            clearTimeout(timer);
-        }
-    }
-
-    _activity_start(thread_id, message_id, run_info = {}) {
-        if (thread_id !== this.state.thread_id) return null;
-        if (!this.activity_data || this.activity_data.thread_id !== thread_id) this.activity_data = { thread_id, runs: [] };
-        const run_key = `run-${_activity_hash(`${thread_id}\u0000${message_id}`)}`;
-        let run = this.activity_data.runs.find(item => item.run_key === run_key);
-        if (!run) {
-            run = { run_key, state: 'running', source: 'unavailable', current_key: null, items: [], _item_map: new Map() };
-            this.activity_data.runs.push(run);
-        }
-        run._run_id = _activity_run_id(run_info, null);
-        run._fresh_thread = Boolean(run_info._new_thread);
-        run._signal = this.controller?.signal;
-        run._closed = false;
-        run._terminal = null;
-        run._has_events = false;
-        run._finished = new Promise(resolve => { run._resolve_finished = resolve; });
-        this.activity_run_baselines.set(run_key, this.activity_baselines.has(thread_id) ? this.activity_baselines.get(thread_id) : null);
-        return run;
-    }
-
-    _activity_apply(run, payload, source, fallback_state) {
-        if (!run) return;
-        const previous = JSON.stringify(this._activity_snapshot());
-        if (payload?.items?.length) {
-            run.items = payload.items.map(item => ({
-                key: `${run.run_key}:${item.key}`, sequence: Number(item.sequence),
-                label: typeof item.label === 'string' ? item.label : null,
-                tool_name: typeof item.tool_name === 'string' ? item.tool_name : null,
-                status: activity_states.has(item.status) ? item.status : 'unknown',
-                parameters: typeof item.parameters === 'string' ? item.parameters : null,
-                result: typeof item.result === 'string' ? item.result : null,
-            }));
-            run.source = source;
-        }
-        const event_state = payload?.state && activity_states.has(payload.state) ? payload.state : null;
-        const next_state = event_state || (fallback_state ? _activity_state(fallback_state) : run.state);
-        const preserve_event_end = !event_state && ['failed', 'cancelled', 'waiting'].includes(run.state) && ['running', 'completed'].includes(next_state);
-        if (!preserve_event_end) run.state = next_state;
-        const terminal = new Set(['completed', 'failed', 'cancelled', 'waiting']);
-        if (terminal.has(run.state)) {
-            for (const item of run.items) if (item.status === 'running') item.status = run.state === 'completed' ? 'unknown' : run.state;
-        }
-        const current = run.state === 'running' ? [...run.items].reverse().find(item => item.status === 'running') : null;
-        run.current_key = current?.key || null;
-        if (!run.items.length) run.source = 'unavailable';
-        this._activity_changed(previous);
-    }
-
-    _activity_live(thread_id, run) {
-        return run && !run._closed && !run._signal?.aborted && thread_id === this.state.thread_id && this.activity_data?.runs.includes(run);
-    }
-
-    _activity_refresh(thread_id, message_id, run_state, run, known_messages = null) {
-        if (!this._activity_live(thread_id, run)) return;
-        const apply_messages = messages => {
-            if (!this._activity_live(thread_id, run) || run._has_events) return;
-            const payload = _activity_messages(messages, message_id, run_state || run.state);
-            this._activity_apply(run, payload, payload ? 'messages' : 'unavailable', run_state);
-        };
-        if (known_messages) apply_messages(known_messages);
-        if (!known_messages && !run._terminal && !run._events_pending && !this.activity_events_disabled) {
-            run._events_pending = this._activity_read_events(thread_id).then(events => {
-                if (!this._activity_live(thread_id, run) || !events) return;
-                const payload = _activity_events(events, message_id, this.activity_run_baselines.get(run.run_key), run._run_id, run._fresh_thread);
-                if (!payload) return;
-                const sequences = events.map(event => event?.sequence).filter(Number.isFinite);
-                if (sequences.length) this.activity_baselines.set(thread_id, sequences.reduce((max, sequence) => Math.max(max, sequence), -1));
-                run._has_events = Boolean(payload.items.length || payload.state);
-                this._activity_apply(run, payload, 'events', run_state);
-                if (['completed', 'failed', 'cancelled', 'waiting'].includes(payload.state) && !run._terminal) {
-                    run._terminal = { state: payload.state, response_id: null };
-                    run._resolve_finished({ run: run._terminal });
-                }
-            }).catch(() => {}).finally(() => { run._events_pending = null; });
-        }
-        if (!known_messages && !run._has_events && !run._messages_pending) {
-            run._messages_pending = this._request(signal => this.client.messages(thread_id, { signal }), run._signal)
-                .then(apply_messages).catch(() => {}).finally(() => { run._messages_pending = null; });
-        }
-    }
-
-    _activity_finish(thread_id, message_id, state) {
-        const run = this.activity_data?.runs.find(item => item.run_key === `run-${_activity_hash(`${thread_id}\u0000${message_id}`)}`);
-        if (run) this._activity_apply(run, null, run.source, state);
-    }
-
-    _activity_stop() {
-        const run = [...(this.activity_data?.runs || [])].reverse().find(item => item.state === 'running');
-        if (!run || run.items.length === 0) return;
-        const previous = JSON.stringify(this._activity_snapshot());
-        run.state = 'cancelled';
-        for (const item of run.items) if (item.status === 'running') item.status = 'cancelled';
-        run.current_key = null;
-        this._activity_changed(previous);
-    }
-
     _save() {
         this.store.save(this.state);
     }
 
-    // --- credits ---
-    /** Sum of creditsUsed of the given threads (thread details, no admin rights needed): {used, error}; used = null if not readable. */
-    async _thread_credits(ids) {
-        try {
-            const threads = await Promise.all([...new Set(ids.filter(Boolean))].map(id => this._request(signal => this.client.thread(id, { signal }))));
-            return { used: threads.reduce((sum, thread) => sum + (thread.usage?.creditsUsed || 0), 0), error: null };
-        } catch (error) {
-            if (error instanceof StopRequested) throw error;
-            return { used: null, error: error.message };
+    // --- steps (display only: never awaited on the critical path) ---
+    _step(text) {
+        if (text) this.ui.message({ role: 'step', text });
+    }
+
+    _info(text) {
+        this._step(relay_text(text));
+    }
+
+    _events_available() {
+        return !this.events_disabled && typeof this.client.events === 'function';
+    }
+
+    /** One events read per thread at a time; null if not readable (401/403 switch the events off for this session). */
+    _read_events(thread_id) {
+        if (!this._events_available()) return Promise.resolve(null);
+        const pending = this.event_reads.get(thread_id);
+        if (pending) return pending;
+        const request = this._request(signal => this.client.events(thread_id, { signal })).then(events => (Array.isArray(events) ? events : null), error => {
+            if ([401, 403].includes(error.status)) this.events_disabled = true;
+            return null;
+        }).finally(() => {
+            if (this.event_reads.get(thread_id) === request) this.event_reads.delete(thread_id);
+        });
+        this.event_reads.set(thread_id, request);
+        return request;
+    }
+
+    _steps_start(thread_id, message_id, run_info = {}) {
+        const run = { thread_id, message_id, run_id: _event_run_id(run_info, null), fresh: Boolean(run_info._new_thread), signal: this.controller?.signal, emitted: new Set(), event_items: [], has_events: false, closed: false, terminal: null, events_pending: null, messages_pending: null };
+        run.finished = new Promise(resolve => { run.resolve_finished = resolve; });
+        return run;
+    }
+
+    _steps_live(run) {
+        return !run.closed && !run.signal?.aborted && run.thread_id === this.state.thread_id;
+    }
+
+    /** Show calls not shown yet, in order; before the end only the ready prefix (a later call makes the earlier ones ready). */
+    _steps_emit(run, items, final = false) {
+        const ordered = [...items].sort((a, b) => a.sequence - b.sequence);
+        for (const [index, item] of ordered.entries()) {
+            if (run.emitted.has(item.key)) continue;
+            if (!final && !item.ready && index === ordered.length - 1) break;
+            run.emitted.add(item.key);
+            this._step(step_text(item.intent, item.tool_name));
         }
     }
 
-    /** Credits of this chat, separately for the agent thread and all co-agent threads. Returns {credits, co_credits}. */
+    /** Start background reads of the run's tool calls (events, else messages); results of a closed run are dropped. */
+    _steps_refresh(run) {
+        if (!this._steps_live(run)) return;
+        if (!run.terminal && !run.events_pending && this._events_available()) {
+            run.events_pending = this._read_events(run.thread_id).then(events => {
+                if (!this._steps_live(run) || !events) return;
+                const payload = _event_calls(events, run.message_id, run.run_id, run.fresh);
+                if (!payload) return;
+                if (payload.items.length || payload.state) run.has_events = true;
+                run.event_items = payload.items;
+                this._steps_emit(run, payload.items);
+                if (payload.state && !run.terminal) {
+                    run.terminal = { state: payload.state, response_id: null };
+                    run.resolve_finished({ run: run.terminal });
+                }
+            }).catch(error => log(`steps: events not applied (${error.message})`)).finally(() => { run.events_pending = null; });
+        }
+        // the messages are read live only without events; with events they only fill gaps at the end
+        if (!this._events_available() && !run.has_events && !run.messages_pending) {
+            run.messages_pending = this._request(signal => this.client.messages(run.thread_id, { signal }), run.signal).then(messages => {
+                if (this._steps_live(run) && !run.has_events) this._steps_emit(run, _run_calls(messages, run.message_id));
+            }).catch(() => {}).finally(() => { run.messages_pending = null; });
+        }
+    }
+
+    /** Show the remaining calls of the finished run from the last events and the final messages; called before the answer is shown. */
+    _steps_finish(run, messages) {
+        if (!this._steps_live(run)) return;
+        this._steps_emit(run, run.event_items, true);
+        const calls = _run_calls(messages, run.message_id);
+        this._steps_emit(run, run.has_events ? calls.filter(call => call.has_id) : calls, true);
+        run.closed = true;
+    }
+
+    /** Abort the reads of the current chat (chat switched); late results are dropped. */
+    _reset_chat_reads() {
+        this.chat_controller.abort();
+        Object.assign(this, { chat_controller: new AbortController(), idle_credit_read: null });
+    }
+
+    // --- credits ---
+    /** Run action(signal) with the credit read time limit; aborted by any of signals. */
+    _credit_call(action, signals = []) {
+        const controller = new AbortController();
+        const sources = signals.filter(Boolean);
+        const on_abort = () => controller.abort(new StopRequested('credit read stopped'));
+        const timer = setTimeout(() => controller.abort(new Error('credit read timed out')), this.credit_read_timeout_ms);
+        timer.unref?.();
+        sources.forEach(signal => (signal.aborted ? on_abort() : signal.addEventListener('abort', on_abort, { once: true })));
+        return abortable(() => action(controller.signal), controller.signal).finally(() => {
+            clearTimeout(timer);
+            sources.forEach(signal => signal.removeEventListener('abort', on_abort));
+        });
+    }
+
+    /** Sum of creditsUsed of the given threads (thread details, no admin rights needed): {used, error}; used = null if not readable. Never rejects. */
+    async _thread_credits(ids, signals = []) {
+        try {
+            const threads = await Promise.all([...new Set(ids.filter(Boolean))].map(id => this._credit_call(signal => this.client.thread(id, { signal }), signals)));
+            return { used: threads.reduce((sum, thread) => sum + (thread?.usage?.creditsUsed || 0), 0), error: null };
+        } catch (error) {
+            return { used: null, error: error?.message || String(error) };
+        }
+    }
+
+    /** Credits of the agent thread; a read started while no agent run is active is the baseline for the next answer. */
+    _agent_credit_read(thread_id, signals) {
+        const promise = this._thread_credits([thread_id], signals);
+        if (thread_id && !this.agent_run_active) this.idle_credit_read = { thread_id, promise };
+        return promise;
+    }
+
+    /** Credits of this chat, separately for the agent thread and all co-agent threads. Returns {credits, co_credits}; never rejects. */
     async refresh_credits() {
         const refresh_index = ++this.credit_refresh_index;
         const thread_id = this.state.thread_id;
+        const signals = [this.controller?.signal, this.chat_controller.signal];
         const [agent, co_agents] = await Promise.all([
-            this._thread_credits([this.state.thread_id]),
-            this._thread_credits(Object.values(this.state.co_agents).map(co_agent => co_agent.thread_id)),
+            this._agent_credit_read(thread_id, signals),
+            this._thread_credits(Object.values(this.state.co_agents).map(co_agent => co_agent.thread_id), signals),
         ]);
         if (refresh_index !== this.credit_refresh_index || thread_id !== this.state.thread_id) return { credits: this.credits, co_credits: this.co_credits };
         Object.assign(this, { credits: agent.used, credit_error: agent.error, co_credits: co_agents.used, co_credit_error: co_agents.error, credits_at: Date.now() });
@@ -644,8 +601,39 @@ class ChatSession {
         return { credits: this.credits, co_credits: this.co_credits };
     }
 
+    /** Agent credits of one answer (agent thread after the run minus baseline): reported via ui.answer_credits and saved; never awaited. */
+    _answer_credits(thread_id, key, baseline, persist) {
+        if (!thread_id || !baseline) return;
+        const chat = this.chat_controller;
+        const after = this._agent_credit_read(thread_id, [chat.signal]);
+        Promise.all([baseline, after]).then(([before, now]) => {
+            if (chat.signal.aborted || thread_id !== this.state.thread_id || before.used === null || now.used === null) return;
+            const credits = now.used - before.used;
+            if (!Number.isFinite(credits) || credits < 0) return;
+            if (persist) this._store_answer_credits(key, credits);
+            this.ui.answer_credits?.({ thread_id, key, credits });
+        }).catch(error => log(`answer credits not shown: ${error.message}`));
+    }
+
+    _store_answer_credits(key, credits) {
+        const stored = { ...this.state.answer_credits };
+        delete stored[key];
+        stored[key] = credits;
+        this.state.answer_credits = Object.fromEntries(Object.entries(stored).slice(-max_answer_credits));
+        this._save();
+    }
+
+    /** Check the credit caps. strict (before sending): waits for the read only if a cap is set (bounded by credit_read_timeout_ms). */
     async _check_budget(strict) {
+        if (strict && !this.max_credits() && !this.max_co_credits()) {
+            this.refresh_credits();
+            return;
+        }
+        const controller = this.controller;
         await this.refresh_credits();
+        if (this.stopping) throw new StopRequested();
+        // a background check that ends after its send must not stop the next one
+        if (!strict && controller !== this.controller) return;
         const budgets = [
             ['maxCredits', 'Credits', this.credits, this.max_credits(), this.credit_error],
             ['maxCoAgentCredits', 'Co-agent credits', this.co_credits, this.max_co_credits(), this.co_credit_error],
@@ -663,9 +651,14 @@ class ChatSession {
         }
     }
 
+    /** Wait one poll interval; the periodic budget check runs in the background (one at a time) and never delays the wait. */
     async _tick() {
         if (this.stopping) throw new StopRequested();
-        if (Date.now() - this.credits_at >= this.credit_refresh_ms) await this._check_budget(false);
+        if (!this.budget_check && Date.now() - this.credits_at >= this.credit_refresh_ms) {
+            this.budget_check = this._check_budget(false).catch(error => {
+                if (!(error instanceof StopRequested)) log(`credit check failed: ${error.message}`);
+            }).finally(() => { this.budget_check = null; });
+        }
         await this.sleep(this.limits.pollInterval * 1000, this.controller.signal);
     }
 
@@ -696,20 +689,19 @@ class ChatSession {
     }
 
     async _wait_for_run(thread_id, message_id, run_info = {}) {
-        const activity_run = this._activity_start(thread_id, message_id, run_info);
+        const steps = this._steps_start(thread_id, message_id, run_info);
         let run;
         let checked_at = Date.now();
         try {
             while (true) {
-                if (activity_run?._terminal) { run = activity_run._terminal; break; }
-                this._activity_refresh(thread_id, message_id, 'running', activity_run);
+                if (steps.terminal) { run = steps.terminal; break; }
+                this._steps_refresh(steps);
                 const poll_controller = new AbortController();
                 try {
-                    const choices = [this._run_state(thread_id, message_id, poll_controller.signal).then(value => ({ run: value }), error => ({ error }))];
-                    if (activity_run) choices.push(activity_run._finished);
-                    const outcome = await this._request(() => Promise.race(choices));
+                    const status = this._run_state(thread_id, message_id, poll_controller.signal).then(value => ({ run: value }), error => ({ error }));
+                    const outcome = await this._request(() => Promise.race([status, steps.finished]));
                     if (outcome.error) throw outcome.error;
-                    run = activity_run?._terminal || outcome.run;
+                    run = steps.terminal || outcome.run;
                 } finally {
                     poll_controller.abort();
                 }
@@ -718,10 +710,10 @@ class ChatSession {
                 if (every && thread_id === this.state.thread_id && Date.now() - checked_at >= every) {
                     checked_at = Date.now();
                     const sync = this._check_superseded(thread_id, message_id);
-                    await this._request(() => activity_run ? Promise.race([sync, activity_run._finished]) : sync);
+                    await this._request(() => Promise.race([sync, steps.finished]));
                 }
                 const tick = this._tick();
-                await this._request(() => activity_run ? Promise.race([tick, activity_run._finished]) : tick);
+                await this._request(() => Promise.race([tick, steps.finished]));
             }
             let messages, answer;
             for (let attempt = 0; attempt < max_empty_polls; attempt++) {
@@ -732,14 +724,10 @@ class ChatSession {
                 await this._request(signal => this.sleep(this.limits.pollInterval * 1000, signal));
             }
             if (thread_id === this.state.thread_id) this.synced = _signature(messages);
-            this._activity_refresh(thread_id, message_id, run.state, activity_run, messages);
-            this._activity_finish(thread_id, message_id, run.state);
+            this._steps_finish(steps, messages);
             return { ...answer, state: run.state };
-        } catch (error) {
-            this._activity_finish(thread_id, message_id, this.stopping ? 'cancelled' : error instanceof Superseded ? 'waiting' : 'unknown');
-            throw error;
         } finally {
-            if (activity_run) activity_run._closed = true;
+            steps.closed = true;
             const key = `${thread_id}:${message_id}`;
             this.last_states.delete(key);
             this.empty_polls.delete(key);
@@ -758,26 +746,32 @@ class ChatSession {
     /** Send one message; context = repo context line contained in content, remembered once the message is accepted. */
     async _post(content, attachments, context = null, interrupt_id = null) {
         const started = Date.now();
-        if (this.state.thread_id) await this._activity_prepare(this.state.thread_id);
         if (this.stopping) throw new StopRequested();
         this._set_phase('agent');
-        let accepted;
-        const options = { ...this._model_options(), ...(interrupt_id ? { answerToInterruptId: interrupt_id } : {}) };
-        if (this.state.thread_id) {
-            accepted = await this._request(signal => this.client.send_message(this.state.thread_id, content, attachments, options, { signal }));
-        } else {
-            accepted = await this._request(signal => this.client.create_thread(this.agent.agentId, content, `monarch – ${this.agent.name} ${new Date().toISOString().slice(0, 16).replace('T', ' ')}`, attachments, options, { signal }));
-            accepted = { ...accepted, _new_thread: true };
-            this.state.thread_id = accepted.id;
-            if (!this.activity_baselines.has(accepted.id)) this.activity_baselines.set(accepted.id, -1);
-            this._save();
+        const thread_before = this.state.thread_id;
+        const idle = this.idle_credit_read;
+        const baseline = !thread_before ? Promise.resolve({ used: 0, error: null }) : idle?.thread_id === thread_before ? idle.promise : null;
+        this.agent_run_active = true;
+        try {
+            let accepted;
+            const options = { ...this._model_options(), ...(interrupt_id ? { answerToInterruptId: interrupt_id } : {}) };
+            if (this.state.thread_id) {
+                accepted = await this._request(signal => this.client.send_message(this.state.thread_id, content, attachments, options, { signal }));
+            } else {
+                accepted = await this._request(signal => this.client.create_thread(this.agent.agentId, content, `monarch – ${this.agent.name} ${new Date().toISOString().slice(0, 16).replace('T', ' ')}`, attachments, options, { signal }));
+                accepted = { ...accepted, _new_thread: true };
+                this.state.thread_id = accepted.id;
+                this._save();
+            }
+            if (context) {
+                this.state.context = context;
+                this._save();
+            }
+            const run = await this._wait_for_run(this.state.thread_id, await this._accepted_id(this.state.thread_id, accepted), accepted);
+            return { ...run, duration_ms: Date.now() - started, thread_id: this.state.thread_id, baseline };
+        } finally {
+            this.agent_run_active = false;
         }
-        if (context) {
-            this.state.context = context;
-            this._save();
-        }
-        const run = await this._wait_for_run(this.state.thread_id, await this._accepted_id(this.state.thread_id, accepted), accepted);
-        return { ...run, duration_ms: Date.now() - started };
     }
 
     /**
@@ -800,7 +794,7 @@ class ChatSession {
             this.ui.message({ role: 'user', text });
             while (next) next = await this._handle_answer(await this._post(next.content, next.attachments, next.context, next.interrupt_id));
         } catch (error) {
-            if (error instanceof Superseded) this.ui.info('chat continued in awork: stopped waiting, the chat is reloaded');
+            if (error instanceof Superseded) this._info('chat continued in awork: stopped waiting, the chat is reloaded');
             else if (!(error instanceof StopRequested)) throw error;
         } finally {
             this.controller?.abort();
@@ -830,12 +824,15 @@ class ChatSession {
         }
     }
 
-    async _handle_answer({ answer, run, state, duration_ms }) {
+    async _handle_answer({ answer, run, state, duration_ms, thread_id, baseline }) {
         const { text, commands } = parse_commands(answer_text(answer));
         const written = await this._write_repo_files(run);
         const questions = [...questions_of(run), ...await this._pending_questions(run)];
         const shown = _without_questions(text, questions);
-        this.ui.message({ role: 'agent', text: shown || (questions.length ? '' : state === 'completed' ? '(no answer)' : `(run ${state})`), files: written.files, warnings: written.warnings, duration_ms });
+        const message_id = [...answer].reverse().find(message => message.content)?.id;
+        const credit_key = message_id ? String(message_id) : `local-${++this.local_keys}`;
+        this.ui.message({ role: 'agent', text: shown || (questions.length ? '' : state === 'completed' ? '(no answer)' : `(run ${state})`), files: written.files, warnings: written.warnings, duration_ms, credit_key, credits: null });
+        this._answer_credits(thread_id, credit_key, baseline, Boolean(message_id));
         questions.forEach(question => this.ui.message(question));
         if (!commands.length) return null;
         this._set_phase('commands');
@@ -847,7 +844,7 @@ class ChatSession {
             results.push(await this._execute(item));
         }
         this._resolve_spawn_refs(results, spawn_context);
-        results.forEach(result => this.ui.info(`${result.ok ? 'ok' : 'refused'}: ${result.line}`));
+        results.forEach(result => this._info(`${result.ok ? 'ok' : 'refused'}: ${result.line}`));
         this._save();
         this._emit();
         const waits = results.some(result => result.ok && ['spawn', 'send', 'wait'].includes(result.action));
@@ -1207,7 +1204,7 @@ class ChatSession {
     /** Wait for co-agent answers without waking the agent. Returns the relay message or null if nothing runs. */
     async _relay_wait(results) {
         const deadline = this.limits.relayTimeout ? Date.now() + this.limits.relayTimeout * 1000 : null;
-        this.ui.info('relay: waiting for co-agents');
+        this._info('relay: waiting for co-agents');
         this._set_phase('relay');
         for (;;) {
             await this._refresh_co_agents();
@@ -1249,7 +1246,7 @@ class ChatSession {
         warnings.forEach(warning => this.ui.message({ role: 'warning', text: `${id}: ${warning}` }));
         co_agent.relayed = co_agent.message_id;
         this.answers.delete(id);
-        this.ui.info(`relay: ${id} ${co_agent.state}, ${found.length} files staged`);
+        this._info(`relay: ${id} ${co_agent.state}, ${found.length} files staged`);
         const lines = [`## ${id} (${co_agent.state})`, text || '(no answer text)'];
         if (found.length) lines.push(`files (staged, not in the repo yet): ${found.map(file => file.path).join(', ')}`);
         return [...lines, ...warnings.map(warning => `warning: ${warning}`)].join('\n');
@@ -1291,13 +1288,12 @@ class ChatSession {
     /** Emergency stop: cancel the agent run and all co-agents, close the job. */
     async stop(reason = 'manual') {
         this.stopping = true;
-        this._activity_stop();
         if (this.controller) this.controller.abort();
         const working = this._co_agents(co_agent => co_agent.state === 'working').length;
         if (this.state.thread_id) await this.client.cancel(this.state.thread_id).catch(() => {}); // finished runs cannot be cancelled
         await this._stop_co_agents();
         this._save();
-        this.ui.info(`stop (${reason}): agent and ${working} co-agents stopped`);
+        this._info(`stop (${reason}): agent and ${working} co-agents stopped`);
         this._emit();
     }
 
@@ -1305,9 +1301,7 @@ class ChatSession {
     new_chat() {
         if (this.busy) throw new Notice('Stop the agent first.');
         this.state = _new_state();
-        this.activity_data = null;
-        this.activity_baselines.clear();
-        this.activity_run_baselines.clear();
+        this._reset_chat_reads();
         this.staged_data.clear();
         this.staged_outputs.clear();
         Object.assign(this, { credits: 0, co_credits: 0 });
@@ -1318,13 +1312,8 @@ class ChatSession {
     /** Switch to a stored chat state. */
     load_state(state) {
         if (this.busy) throw new Notice('Stop the agent first.');
-        const previous_thread_id = this.state.thread_id;
         this.state = _new_state(state);
-        if (previous_thread_id !== this.state.thread_id) {
-            this.activity_data = null;
-            this.activity_baselines.clear();
-            this.activity_run_baselines.clear();
-        }
+        this._reset_chat_reads();
         this.answers.clear();
         this.staged_data.clear();
         this.staged_outputs.clear();
@@ -1341,12 +1330,13 @@ class ChatSession {
         return !this.busy && thread_id === this.state.thread_id && signature !== this.synced;
     }
 
-    /** Messages of the current chat for display: [{role, text, duration_ms?}] plus question cards. */
+    /** Messages of the current chat for display: [{role, text, duration_ms?, credit_key?, credits?}], agent steps before their answer, plus question cards. */
     async history() {
         if (!this.state.thread_id) return [];
         const messages = await this.client.messages(this.state.thread_id);
         this.synced = _signature(messages);
         const seen = new Set();
+        const step_keys = new Set();
         let asked_at = null;
         const pending_at = messages.map(_is_question).lastIndexOf(true);
         const open = pending_at >= 0 && !messages.slice(pending_at + 1).some(_is_user);
@@ -1355,17 +1345,20 @@ class ChatSession {
             if (pending && index === pending_at) return [pending];
             const role = (message.role || '').toLowerCase();
             const questions = questions_of([message], seen);
-            if (!message.content || ['tool', 'system'].includes(role)) return questions;
+            const steps = _is_user(message) || ['tool', 'system'].includes(role) ? [] : _history_steps(message, step_keys);
+            if (!message.content || ['tool', 'system'].includes(role)) return [...steps, ...questions];
             const text = files.clean_text(message.content);
             const created = Date.parse(message.createdOn || '') || null;
             if (_is_user(message)) {
                 asked_at = created;
-                return [text.startsWith(relay_prefix) ? { role: 'info', text: 'relay: co-agent update' } : { role: 'user', text: strip_context(text) }];
+                return [text.startsWith(relay_prefix) ? { role: 'step', text: relay_text('relay: co-agent update') } : { role: 'user', text: strip_context(text) }];
             }
             const shown = _without_questions(parse_commands(text).text, questions);
-            return [{ role: 'agent', text: shown, duration_ms: asked_at && created ? created - asked_at : null }, ...questions];
+            const credit_key = message.id ? String(message.id) : null;
+            const credits = credit_key ? this.state.answer_credits?.[credit_key] : null;
+            return [...steps, { role: 'agent', text: shown, duration_ms: asked_at && created ? created - asked_at : null, credit_key, credits: Number.isFinite(credits) ? credits : null }, ...questions];
         });
     }
 }
 
-module.exports = { ChatSession, Notice, StopRequested, Superseded, answer_of, answer_text, pending_question, questions_of, relay_prefix };
+module.exports = { ChatSession, Notice, StopRequested, Superseded, answer_of, answer_text, pending_question, questions_of, relay_prefix, relay_text, step_text };

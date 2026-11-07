@@ -41,11 +41,11 @@ Requirements: VS Code 1.85+ with the built-in Git extension, an awork account in
 
 ```bash
 cd monarch/vscode
-python build_vsix.py                         # -> monarch-0.18.6.vsix
-code --install-extension monarch-0.18.6.vsix
+python build_vsix.py                         # -> monarch-0.19.0.vsix
+code --install-extension monarch-0.19.0.vsix
 ```
 
-Or in VS Code: Extensions view → `…` → **Install from VSIX…**. Optional local tests: `node test/test.js` and `node test/extension_smoke.js`.
+Or in VS Code: Extensions view → `…` → **Install from VSIX…**. Optional local tests: `node test/test.js`, `node test/steps_test.js`, `node test/webview_test.js` and `node test/extension_smoke.js`.
 
 ## Setup in awork (once per workspace, by the agent owner)
 
@@ -57,7 +57,7 @@ Or in VS Code: Extensions view → `…` → **Install from VSIX…**. Optional 
 
 Every user, also the agent owner, does this once:
 
-1. **Install** `monarch-0.18.0.vsix` (see *Installation*) and reload VS Code (Command Palette → **Developer: Reload Window**).
+1. **Install** `monarch-0.19.0.vsix` (see *Installation*) and reload VS Code (Command Palette → **Developer: Reload Window**).
 2. **Sign in:** Open **monarch** in the activity bar and click **Sign in** (or Command Palette → **monarch: Sign in**). The browser opens; log in to awork and select the workspace.
 3. **Check the agents:** The agent circles at the top show the agents. If an agent shared with you is missing, set **Monarch: Agent Filter** (`monarch.agentFilter`) to `all`.
 4. **Test files:** Start a **new chat** (blue **+**) and send: `Create output/download_test.txt with three lines.`
@@ -135,10 +135,10 @@ If the agent credits cannot be read and `maxCredits` is not `0` (or the co-agent
 | Item | Display |
 |---|---|
 | Your messages | Right, in a bubble, with your awork profile picture |
-| Agent answers | Left, in a bubble (max. 85 % wide), with the agent's awork profile picture, name and answer time (e.g. `CodeZilla · 19 s`); Markdown incl. tables and code (wide code and tables scroll inside the bubble). **Copy** next to the name (on hover) copies the answer as Markdown |
+| Agent answers | Left, in a bubble (max. 85 % wide), with the agent's awork profile picture, name, answer time and the agent's credits for this answer without co-agents (e.g. `CodeZilla · 9:12 min · 50c`); the credits are added as soon as they are read and saved with the chat, older answers without a saved value show only the time; Markdown incl. tables and code (wide code and tables scroll inside the bubble). **Copy** next to the name (on hover) copies the answer as Markdown |
 | Code blocks | Language and toolbar above each block: **Copy**; **Insert** at the cursor of the active or last active editor (replaces selections); **New file** opens an unsaved file with the block's language; **Terminal** puts the code into the active terminal (or a new `monarch` terminal) without running it. Multi-line code is pasted via the clipboard, so it stays in the clipboard |
 | Questions | Questions from the agent as a card; with one single-choice question, click an option to send it or type your own answer below; with several questions or multiple choice, select the options, optionally fill in your own answer and send them together with **Send answer** |
-| Steps | Relay and command events as collapsible group (`relay · 3 events`) |
+| Steps | Relay and agent steps in chronological order in the chat, one line each, not collapsible: `Relay: spawn minizilla_1`, `Relay: minizilla_1 answered, 2 files staged`, `Relay: refused – <reason>`, `Agent step: <intent> · <tool name>` (only the tool name if there is no intent). After reloading a chat, relay steps appear summarized (`Relay: co-agent update`) and agent steps as far as awork returns the tool calls with the messages |
 | While running | Spinner with elapsed time: `<agent> is working …`, `relay is running commands …` (ORCA commands of the answer) or `waiting for <co-agents> …`; it disappears as soon as the agent and all co-agents are done |
 | Warnings | Yellow box in the middle, e.g. a co-agent file that could not be downloaded; stays until closed with ✕ |
 | Errors | Red box in the middle; hints about actions that are not possible right now (e.g. `Stop the agent first.`, attachments) disappear after 5 s; ✕ closes any error box |
