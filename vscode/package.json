@@ -1,7 +1,7 @@
 {
     "name": "monarch",
     "displayName": "monarch",
-    "version": "0.19.1",
+    "version": "0.19.2",
     "publisher": "mrtnritter",
     "description": "Chat with awork agents in VS Code. Relays work to co-agents (minizillas) without credits while waiting.",
     "license": "UNLICENSED",
@@ -153,12 +153,12 @@
                 },
                 "monarch.maxCredits": {
                     "type": "number",
-                    "default": 1000,
+                    "default": 1400,
                     "description": "Credit cap per chat for the agent only (co-agents: monarch.maxCoAgentCredits). Reaching it stops the agent and all co-agents. 0 = no cap (also needed if credits cannot be read). Can be changed per chat with − / + in the chat window."
                 },
                 "monarch.maxCoAgentCredits": {
                     "type": "number",
-                    "default": 1000,
+                    "default": 500,
                     "minimum": 0,
                     "description": "Credit cap per chat for all co-agents together. Reaching it stops the agent and all co-agents; spawn and send are refused. 0 = no cap (also needed if credits cannot be read). Can be changed per chat with − / + in the chat window."
                 },
@@ -169,8 +169,8 @@
                 },
                 "monarch.relayTimeout": {
                     "type": "number",
-                    "default": 900,
-                    "description": "Seconds the relay waits before waking the agent with the current state. 0 = no limit."
+                    "default": 600,
+                    "description": "Seconds the relay waits before waking the agent with the current state, including the progress of working co-agents. 0 = no limit."
                 },
                 "monarch.pollInterval": {
                     "type": "number",
@@ -190,7 +190,7 @@
                 },
                 "monarch.creditStep": {
                     "type": "number",
-                    "default": 100,
+                    "default": 200,
                     "minimum": 1,
                     "description": "Credits added or removed per click on − / + of the Chat and Co-Credits items (this chat only)."
                 }
