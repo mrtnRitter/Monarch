@@ -17,6 +17,9 @@ const status_pattern = /^\W*STATUS:\W*(\w+)/im;
 const max_attachments = 20;
 const attach_pattern = /^\s*ATTACH:\s*`?([^`\n]+?)`?\s*$/;
 const relay_prefix = '[monarch relay]';
+// inspect only reads files; with these commands its answer would be mixed with a relay wait or a repo write
+const inspect_conflicts = new Set(['spawn', 'send', 'wait', 'commit', 'stopzilla']);
+const repo_prefix = /^repo:\s*/i;
 
 class StopRequested extends Error {}
 /** Hint about an action that is not possible right now; shown briefly instead of as an error. */
@@ -31,6 +34,16 @@ function _is_user(message) {
 /** Short reason of a failed request: HTTP status or the start of the error text. */
 function _reason(error) {
     return error.status ? `HTTP ${error.status}` : error.message.slice(0, 120);
+}
+
+/** File name not used yet: "a.py", "a-2.py", "a-3.py" … */
+function _unique_name(name, used) {
+    const dot = name.lastIndexOf('.');
+    const [stem, ext] = dot > 0 ? [name.slice(0, dot), name.slice(dot)] : [name, ''];
+    let candidate = name;
+    for (let index = 2; used.has(candidate); index++) candidate = `${stem}-${index}${ext}`;
+    used.add(candidate);
+    return candidate;
 }
 
 function _first_line(text) {
@@ -838,15 +851,18 @@ class ChatSession {
         this._set_phase('commands');
         const results = [];
         const spawn_context = { ids: new Map(), count: commands.filter(command => command.action === 'spawn').length };
+        const conflicts = [...new Set(commands.map(command => command.action).filter(action => inspect_conflicts.has(action)))];
+        const inspect_context = { count: 0, conflicts };
         let spawn_index = 0;
         for (const command of commands) {
-            const item = command.action === 'spawn' ? { ...command, spawn_index: ++spawn_index, spawn_context } : command;
+            const item = command.action === 'spawn' ? { ...command, spawn_index: ++spawn_index, spawn_context } : command.action === 'inspect' ? { ...command, inspect_context } : command;
             results.push(await this._execute(item));
         }
         this._resolve_spawn_refs(results, spawn_context);
         results.forEach(result => this._info(`${result.ok ? 'ok' : 'refused'}: ${result.line}`));
         this._save();
         this._emit();
+        if (results.some(result => result.ok && result.action === 'inspect')) return this._inspect_relay(results);
         const waits = results.some(result => result.ok && ['spawn', 'send', 'wait'].includes(result.action));
         const relay = waits ? await this._relay_wait(results) : null;
         if (relay || results.every(result => result.ok)) return relay;
@@ -979,7 +995,69 @@ class ChatSession {
         return { content: `${content}\n\nAttached files (relative to repo root): ${paths.join(', ')}`, attachments };
     }
 
-    async _execute({ action, target, body, spawn_index, spawn_context }) {
+    /**
+     * Files of an inspect block for the agent's own review: "ATTACH: <co-agent id>" (all its staged files),
+     * "ATTACH: <repo path>" (staged version, else local repo) and "ATTACH: repo:<repo path>" (local repo version).
+     * Nothing is sent to a co-agent and nothing is written. Returns {files: [{name, path, source, upload}], missing, line}.
+     */
+    async _inspect(body, context = { count: 0 }) {
+        const entries = (body || '').split('\n').map(line => attach_pattern.exec(line)?.[1].trim()).filter(Boolean);
+        if (!entries.length) return { files: [], missing: [], line: 'inspect: no ATTACH lines' };
+        const wanted = [];
+        const missing = [];
+        const add = (path, local, from = null) => {
+            const safe = files.safe_rel_path(path);
+            if (!safe || files.is_junk(safe)) return missing.push(`${path} (unsafe path)`);
+            const source = local ? 'local repo' : `staged by ${from}`;
+            if (!wanted.some(item => item.path === safe && item.source === source)) wanted.push({ path: safe, local, source });
+        };
+        for (const entry of entries) {
+            if (repo_prefix.test(entry)) add(entry.replace(repo_prefix, ''), true);
+            else if (this.state.co_agents[entry]) {
+                const paths = Object.keys(this.state.staged).filter(path => this.state.staged[path].from === entry);
+                if (!paths.length) missing.push(`${entry} (no staged files)`);
+                paths.forEach(path => add(path, false, entry));
+            } else {
+                const path = files.safe_rel_path(entry);
+                const staged = path && this.state.staged[path];
+                add(entry, !staged, staged?.from);
+            }
+        }
+        if (context.count + wanted.length > max_attachments) return { files: [], missing, line: `inspect: max. ${max_attachments} files per message (${context.count + wanted.length} requested), split into several rounds` };
+        const found = [];
+        const names = new Set();
+        for (const item of wanted) {
+            let data;
+            try {
+                if (!item.local) data = await this._staged_file(item.path);
+                else if (!this.workspace?.read) throw new Error('no folder open');
+                else data = await this.workspace.read(item.path);
+            } catch (error) {
+                if (error instanceof StopRequested) throw error;
+                missing.push(`${item.local ? 'repo:' : ''}${item.path} (${item.local ? 'not in the local repo or not readable' : 'not downloaded'}: ${error.status ? _reason(error) : error.message.slice(0, 120)})`);
+                continue;
+            }
+            const name = _unique_name(files.basename(item.path), names);
+            found.push({ name, path: item.path, source: item.source, upload: await this._request(signal => this.client.upload_temporary_file(name, data, undefined, { signal })) });
+        }
+        context.count += found.length;
+        if (!found.length) return { files: found, missing, line: `inspect: no file attached (${missing.join('; ').slice(0, 300)})` };
+        return { files: found, missing, line: `inspect: ${found.length} files attached${missing.length ? `, not attached: ${missing.length}` : ''}` };
+    }
+
+    /** Relay message with the inspected files as attachments; returned at once, without waiting for co-agents. */
+    _inspect_relay(results) {
+        const inspected = results.filter(result => result.action === 'inspect');
+        const found = inspected.flatMap(result => result.files || []);
+        const missing = inspected.flatMap(result => result.missing || []);
+        const parts = [`${relay_prefix} inspect`, ['commands:', ...results.map(result => `- ${result.ok ? 'ok' : 'refused'}: ${result.line}`)].join('\n')];
+        if (found.length) parts.push(['attachments (file name = repo path, source):', ...found.map(file => `- ${file.name} = ${file.path}, ${file.source}`)].join('\n'));
+        if (missing.length) parts.push(['not attached:', ...missing.map(item => `- ${item}`)].join('\n'));
+        parts.push(this._status_text(this._co_agents(co_agent => ['working', 'waiting'].includes(co_agent.state)), false));
+        return { content: parts.join('\n\n'), attachments: found.map(file => ({ temporaryFileId: file.upload })) };
+    }
+
+    async _execute({ action, target, body, spawn_index, spawn_context, inspect_context }) {
         const result = (ok, line) => ({ ok, action, line });
         const co_agent = target ? this.state.co_agents[target] : null;
         try {
@@ -1046,6 +1124,11 @@ class ChatSession {
                 return result(ok, line);
             }
             if (action === 'stopzilla') return result(true, `stopzilla: ${await this._stop_co_agents()} co-agents stopped, job closed`);
+            if (action === 'inspect') {
+                if (inspect_context?.conflicts.length) return result(false, `inspect: not allowed together with ${inspect_context.conflicts.join(', ')}, send it in an answer of its own`);
+                const { files: found, missing, line } = await this._inspect(body, inspect_context);
+                return { ...result(found.length > 0, line), files: found, missing };
+            }
             return result(false, `unknown command "${action}"`);
         } catch (error) {
             if (error instanceof StopRequested) throw error;
@@ -1351,7 +1434,7 @@ class ChatSession {
             const created = Date.parse(message.createdOn || '') || null;
             if (_is_user(message)) {
                 asked_at = created;
-                return [text.startsWith(relay_prefix) ? { role: 'step', text: relay_text('relay: co-agent update') } : { role: 'user', text: strip_context(text) }];
+                return [text.startsWith(relay_prefix) ? { role: 'step', text: relay_text(`relay: ${_first_line(text.slice(relay_prefix.length)) || 'co-agent update'}`) } : { role: 'user', text: strip_context(text) }];
             }
             const shown = _without_questions(parse_commands(text).text, questions);
             const credit_key = message.id ? String(message.id) : null;

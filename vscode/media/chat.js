@@ -201,9 +201,41 @@
         node.scrollIntoView({ block: 'end' });
     }
 
-    // relay and agent steps: one line each, in arrival order, scrolling with the chat
+    // relay and agent steps between two answers: one line with the latest step and "+ x Steps"; a click shows the earlier ones
+    function step_group() {
+        let node = messages_box().lastElementChild;
+        // warning and error boxes do not split the steps into several lines
+        while (node?.matches('.message.warning, .message.error')) node = node.previousElementSibling;
+        if (node?.classList.contains('steps')) return node;
+        const group = Object.assign(document.createElement('div'), { className: 'steps' });
+        const line = Object.assign(document.createElement('div'), { className: 'step step-current', tabIndex: -1 });
+        line.setAttribute('role', 'button');
+        line.append(Object.assign(document.createElement('span'), { className: 'step-text' }), Object.assign(document.createElement('span'), { className: 'step-more', hidden: true }));
+        const toggle = () => {
+            if (!group.querySelector('.step-list').children.length) return;
+            group.classList.toggle('open');
+            line.setAttribute('aria-expanded', String(group.classList.contains('open')));
+        };
+        line.addEventListener('click', toggle);
+        line.addEventListener('keydown', event => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); toggle(); } });
+        group.append(Object.assign(document.createElement('div'), { className: 'step-list' }), line);
+        append(group);
+        return group;
+    }
+
     function add_step(text) {
-        append(Object.assign(document.createElement('div'), { className: 'step', textContent: text, title: text }));
+        const group = step_group();
+        const line = group.querySelector('.step-current');
+        const current = line.querySelector('.step-text');
+        if (current.textContent) group.querySelector('.step-list').appendChild(Object.assign(document.createElement('div'), { className: 'step', textContent: current.textContent, title: current.textContent }));
+        Object.assign(current, { textContent: text, title: text });
+        const earlier = group.querySelector('.step-list').children.length;
+        Object.assign(line.querySelector('.step-more'), { textContent: `+ ${earlier} ${earlier === 1 ? 'Step' : 'Steps'}`, hidden: !earlier });
+        line.classList.toggle('expandable', earlier > 0);
+        line.tabIndex = earlier ? 0 : -1;
+        if (earlier) line.setAttribute('aria-expanded', String(group.classList.contains('open')));
+        line.title = earlier ? `${text}\n(click to ${group.classList.contains('open') ? 'hide' : 'show'} the earlier steps)` : text;
+        line.scrollIntoView({ block: 'end' });
     }
 
     // one single-choice question: a click sends the option; otherwise answers are collected and sent together

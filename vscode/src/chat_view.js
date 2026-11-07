@@ -96,10 +96,12 @@ function merge_agents(aworks, overrides, { filter = 'all', me_id = null } = {}) 
     const find_override = agent => overrides.find(item => item && item.agentId === agent.id) || overrides.find(item => item && !item.agentId && item.name === agent.name);
     const override_of = agent => find_override(agent) || {};
     const wanted = agent => filter !== 'own' || (me_id && agent.createdBy === me_id) || Boolean(find_override(agent));
+    // without coAgentName the co-agent IDs use the co-agent's awork name, e.g. "MiniZilla" -> minizilla_1
+    const co_agent_name = id => ((id && aworks.find(agent => agent.id === id)?.name) || '').toLowerCase().replace(/[^a-z0-9]+/g, '') || 'coagent';
     const merged = aworks.filter(agent => agent.id && !agent.isArchived && wanted(agent)).map(agent => {
         const override = override_of(agent);
         const labels = override.labels || {};
-        return { agentId: agent.id, name: agent.name || 'Agent', has_image: Boolean(agent.hasImage), coAgentId: override.coAgentId || '', coAgentName: override.coAgentName || 'coagent', labels: { ...default_labels, ...labels, chat: labels.chat || labels.credits || default_labels.chat } };
+        return { agentId: agent.id, name: agent.name || 'Agent', has_image: Boolean(agent.hasImage), coAgentId: override.coAgentId || '', coAgentName: override.coAgentName || co_agent_name(override.coAgentId), labels: { ...default_labels, ...labels, chat: labels.chat || labels.credits || default_labels.chat } };
     });
     const co_agent_ids = new Set(merged.map(agent => agent.coAgentId).filter(Boolean));
     return merged.filter(agent => !co_agent_ids.has(agent.agentId)).sort((a, b) => a.name.localeCompare(b.name));

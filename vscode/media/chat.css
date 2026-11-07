@@ -159,12 +159,20 @@ span.avatar {
 .md th { background: var(--vscode-editorWidget-background); font-weight: 600; }
 .md hr { border: none; border-top: 1px solid var(--vscode-panel-border); margin: 0.6em 0; }
 
-/* steps: relay and agent steps, one line each */
+/* steps: relay and agent steps between two answers; one line with the latest step, the earlier ones open on click */
+.steps { display: flex; flex-direction: column; min-width: 0; }
 .step {
   margin-left: calc(var(--avatar) / 2); padding: 1px 0 1px 10px; border-left: 2px solid var(--vscode-panel-border);
   font-size: 0.8em; opacity: 0.7; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
-.messages > .step + .step { margin-top: -10px; }
+.step-list { display: none; flex-direction: column; }
+.steps.open .step-list { display: flex; }
+.step-current { display: flex; gap: 8px; outline: none; }
+.step-current .step-text { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.step-current .step-more { flex-shrink: 0; opacity: 0.8; }
+.step-current.expandable { cursor: pointer; }
+.step-current.expandable:hover, .step-current.expandable:focus-visible { opacity: 1; border-left-color: var(--vscode-focusBorder); }
+.step-current.expandable:hover .step-more { text-decoration: underline; }
 
 /* working indicator */
 .working { display: flex; align-items: center; gap: 8px; padding: 4px var(--pad); font-size: 0.85em; opacity: 0.8; }
