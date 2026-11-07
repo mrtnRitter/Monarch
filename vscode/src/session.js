@@ -1,6 +1,7 @@
 'use strict';
 /** One chat with an awork agent: messages, co-agent relay via ORCA commands, limits, credits (agent and co-agents separately) and stop. */
 const files = require('./files');
+const { abortable } = require('./awork');
 const { parse_commands, parse_spawn_body } = require('./orca');
 const { strip_context } = require('./repo');
 const { log } = require('./log');
@@ -237,26 +238,34 @@ function _activity_call_id(data) {
     return typeof id === 'string' || typeof id === 'number' ? String(id) : null;
 }
 
-function _activity_events(events, message_id, baseline) {
+function _activity_events(events, message_id, baseline, expected_run_id = null, fresh_thread = false) {
     if (!Array.isArray(events)) return null;
     const unique = new Map();
     for (const event of events) {
         if (!event || !Number.isFinite(event.sequence) || typeof event.eventName !== 'string') continue;
         const data = _activity_object(event);
-        if (!data) continue;
-        const marker = _activity_marker(data, event, message_id);
-        if (marker === false || (marker !== true && (!Number.isFinite(baseline) || event.sequence <= baseline))) continue;
-        if (!unique.has(event.sequence)) unique.set(event.sequence, { event, data, marker, run_id: _activity_run_id(data, event) });
+        if (data && !unique.has(event.sequence)) unique.set(event.sequence, { event, data, run_id: _activity_run_id(data, event) });
     }
-    const scoped = [...unique.values()].sort((a, b) => a.event.sequence - b.event.sequence);
-    if (!scoped.length) return null;
-    const run_ids = [...new Set(scoped.map(item => item.run_id).filter(Boolean))];
-    const selected_run_id = run_ids.at(-1) || null;
-    const selected = run_ids.length === 1
-        ? scoped
-        : selected_run_id
-            ? scoped.filter(item => item.run_id === selected_run_id || (item.run_id === null && item.marker === true))
-            : scoped;
+    const ordered = [...unique.values()].sort((a, b) => a.event.sequence - b.event.sequence);
+    let selected_run_id = expected_run_id;
+    if (!selected_run_id) {
+        const anchor = ordered.findIndex(({ event, data }) => ['USER_MESSAGE_ADDED', 'RUN_STARTED'].includes(event.eventName) && _activity_marker(data, event, message_id) === true);
+        if (anchor >= 0) {
+            const own = ordered[anchor];
+            selected_run_id = own.run_id;
+            if (!selected_run_id) {
+                const following = ordered.slice(anchor + 1);
+                const next_user = following.findIndex(item => item.event.eventName === 'USER_MESSAGE_ADDED');
+                const window = next_user < 0 ? following : following.slice(0, next_user);
+                selected_run_id = window.find(item => item.event.eventName === 'RUN_STARTED')?.run_id || null;
+            }
+        } else if (fresh_thread) {
+            selected_run_id = ordered.find(item => item.event.eventName === 'RUN_STARTED')?.run_id || null;
+        }
+    }
+    // A sequence cursor alone cannot distinguish another user's run.
+    if (!selected_run_id) return null;
+    const selected = ordered.filter(item => item.run_id === selected_run_id);
     if (!selected.length) return null;
 
     const calls = new Map();
@@ -347,11 +356,18 @@ class ChatSession {
     constructor({ client, agent, limits, store, workspace, ui, sleep, credit_refresh_ms = 10_000 }) {
         Object.assign(this, { client, agent, limits, store, workspace, ui, credit_refresh_ms });
         this.sleep = sleep || ((ms, signal) => new Promise((resolve, reject) => {
-            const timer = setTimeout(resolve, ms);
-            signal.addEventListener('abort', () => { clearTimeout(timer); reject(new StopRequested()); }, { once: true });
+            if (signal?.aborted) return reject(new StopRequested());
+            const finish = error => {
+                clearTimeout(timer);
+                signal?.removeEventListener('abort', on_abort);
+                error ? reject(error) : resolve();
+            };
+            const on_abort = () => finish(new StopRequested());
+            const timer = setTimeout(() => finish(), ms);
+            signal?.addEventListener('abort', on_abort, { once: true });
         }));
         this.state = _new_state(store.load?.());
-        Object.assign(this, { credits: null, credit_error: null, co_credits: null, co_credit_error: null, credits_at: 0, busy: false, stopping: false, controller: null, answers: new Map(), staged_outputs: new Map(), phase: null, phase_since: null, last_states: new Map(), empty_polls: new Map(), staged_data: new Map(), activity_data: null, activity_baselines: new Map(), activity_run_baselines: new Map(), activity_event_reads: new Map(), activity_events_disabled: false });
+        Object.assign(this, { credits: null, credit_error: null, co_credits: null, co_credit_error: null, credits_at: 0, busy: false, stopping: false, controller: null, answers: new Map(), staged_outputs: new Map(), phase: null, phase_since: null, last_states: new Map(), empty_polls: new Map(), staged_data: new Map(), activity_data: null, activity_baselines: new Map(), activity_run_baselines: new Map(), activity_event_reads: new Map(), activity_events_disabled: false, credit_refresh_index: 0 });
     }
 
     // --- state ---
@@ -459,40 +475,48 @@ class ChatSession {
         }
     }
 
+    async _request(action, signal = this.controller?.signal) {
+        if (this.stopping || signal?.aborted) throw new StopRequested();
+        try {
+            return await abortable(() => action(signal), signal);
+        } catch (error) {
+            if (this.stopping || signal?.aborted) throw new StopRequested();
+            throw error;
+        }
+    }
+
     async _activity_read_events(thread_id) {
-        if (this.activity_events_disabled || typeof this.client.events !== 'function' || this.activity_event_reads.has(thread_id)) return null;
-        const request = Promise.resolve().then(() => this.client.events(thread_id)).then(events => ({ events }), error => ({ error }));
+        if (this.activity_events_disabled || typeof this.client.events !== 'function') return null;
+        const pending = this.activity_event_reads.get(thread_id);
+        if (pending) return pending;
+        const request = this._request(signal => this.client.events(thread_id, { signal })).then(events => Array.isArray(events) ? events : null, error => {
+            if ([401, 403].includes(error.status)) this.activity_events_disabled = true;
+            return null;
+        }).finally(() => {
+            if (this.activity_event_reads.get(thread_id) === request) this.activity_event_reads.delete(thread_id);
+        });
         this.activity_event_reads.set(thread_id, request);
-        let timer;
-        const outcome = await Promise.race([
-            request.then(result => ({ ready: true, result })),
-            new Promise(resolve => { timer = setTimeout(() => resolve({ ready: false }), activity_read_timeout_ms); }),
-        ]);
-        clearTimeout(timer);
-        if (!outcome.ready) {
-            request.then(result => {
-                if (this.activity_event_reads.get(thread_id) === request) this.activity_event_reads.delete(thread_id);
-                if ([401, 403].includes(result.error?.status)) this.activity_events_disabled = true;
-            });
-            return null;
-        }
-        if (this.activity_event_reads.get(thread_id) === request) this.activity_event_reads.delete(thread_id);
-        if (outcome.result.error) {
-            if ([401, 403].includes(outcome.result.error?.status)) this.activity_events_disabled = true;
-            return null;
-        }
-        return Array.isArray(outcome.result.events) ? outcome.result.events : null;
+        return request;
     }
 
     async _activity_prepare(thread_id) {
         if (!thread_id || this.activity_events_disabled || typeof this.client.events !== 'function') return;
         if (Number.isFinite(this.activity_baselines.get(thread_id))) return;
-        const events = await this._activity_read_events(thread_id);
-        const sequences = Array.isArray(events) ? events.map(event => event?.sequence).filter(Number.isFinite) : [];
-        this.activity_baselines.set(thread_id, events ? sequences.reduce((max, sequence) => Math.max(max, sequence), -1) : null);
+        let timer;
+        const request = this._activity_read_events(thread_id);
+        try {
+            const events = await this._request(() => Promise.race([
+                request,
+                new Promise(resolve => { timer = setTimeout(() => resolve(null), activity_read_timeout_ms); }),
+            ]));
+            const sequences = Array.isArray(events) ? events.map(event => event?.sequence).filter(Number.isFinite) : [];
+            this.activity_baselines.set(thread_id, events ? sequences.reduce((max, sequence) => Math.max(max, sequence), -1) : null);
+        } finally {
+            clearTimeout(timer);
+        }
     }
 
-    _activity_start(thread_id, message_id) {
+    _activity_start(thread_id, message_id, run_info = {}) {
         if (thread_id !== this.state.thread_id) return null;
         if (!this.activity_data || this.activity_data.thread_id !== thread_id) this.activity_data = { thread_id, runs: [] };
         const run_key = `run-${_activity_hash(`${thread_id}\u0000${message_id}`)}`;
@@ -501,6 +525,13 @@ class ChatSession {
             run = { run_key, state: 'running', source: 'unavailable', current_key: null, items: [], _item_map: new Map() };
             this.activity_data.runs.push(run);
         }
+        run._run_id = _activity_run_id(run_info, null);
+        run._fresh_thread = Boolean(run_info._new_thread);
+        run._signal = this.controller?.signal;
+        run._closed = false;
+        run._terminal = null;
+        run._has_events = false;
+        run._finished = new Promise(resolve => { run._resolve_finished = resolve; });
         this.activity_run_baselines.set(run_key, this.activity_baselines.has(thread_id) ? this.activity_baselines.get(thread_id) : null);
         return run;
     }
@@ -533,25 +564,37 @@ class ChatSession {
         this._activity_changed(previous);
     }
 
-    async _activity_refresh(thread_id, message_id, run_state, run, known_messages = null) {
-        if (!run || thread_id !== this.state.thread_id) return;
-        let payload = null;
-        let source = 'unavailable';
-        const events = await this._activity_read_events(thread_id);
-        if (Array.isArray(events)) {
-            const sequences = events.map(event => event?.sequence).filter(Number.isFinite);
-            if (sequences.length) this.activity_baselines.set(thread_id, sequences.reduce((max, sequence) => Math.max(max, sequence), this.activity_baselines.get(thread_id) || -1));
-            payload = _activity_events(events, message_id, this.activity_run_baselines.get(run.run_key));
-            if (payload) source = 'events';
+    _activity_live(thread_id, run) {
+        return run && !run._closed && !run._signal?.aborted && thread_id === this.state.thread_id && this.activity_data?.runs.includes(run);
+    }
+
+    _activity_refresh(thread_id, message_id, run_state, run, known_messages = null) {
+        if (!this._activity_live(thread_id, run)) return;
+        const apply_messages = messages => {
+            if (!this._activity_live(thread_id, run) || run._has_events) return;
+            const payload = _activity_messages(messages, message_id, run_state || run.state);
+            this._activity_apply(run, payload, payload ? 'messages' : 'unavailable', run_state);
+        };
+        if (known_messages) apply_messages(known_messages);
+        if (!known_messages && !run._terminal && !run._events_pending && !this.activity_events_disabled) {
+            run._events_pending = this._activity_read_events(thread_id).then(events => {
+                if (!this._activity_live(thread_id, run) || !events) return;
+                const payload = _activity_events(events, message_id, this.activity_run_baselines.get(run.run_key), run._run_id, run._fresh_thread);
+                if (!payload) return;
+                const sequences = events.map(event => event?.sequence).filter(Number.isFinite);
+                if (sequences.length) this.activity_baselines.set(thread_id, sequences.reduce((max, sequence) => Math.max(max, sequence), -1));
+                run._has_events = Boolean(payload.items.length || payload.state);
+                this._activity_apply(run, payload, 'events', run_state);
+                if (['completed', 'failed', 'cancelled', 'waiting'].includes(payload.state) && !run._terminal) {
+                    run._terminal = { state: payload.state, response_id: null };
+                    run._resolve_finished({ run: run._terminal });
+                }
+            }).catch(() => {}).finally(() => { run._events_pending = null; });
         }
-        if (!payload) {
-            try {
-                const messages = known_messages || await this.client.messages(thread_id);
-                payload = _activity_messages(messages, message_id, run_state || run.state);
-                if (payload) source = 'messages';
-            } catch {}
+        if (!known_messages && !run._has_events && !run._messages_pending) {
+            run._messages_pending = this._request(signal => this.client.messages(thread_id, { signal }), run._signal)
+                .then(apply_messages).catch(() => {}).finally(() => { run._messages_pending = null; });
         }
-        this._activity_apply(run, payload, source, run_state);
     }
 
     _activity_finish(thread_id, message_id, state) {
@@ -577,19 +620,23 @@ class ChatSession {
     /** Sum of creditsUsed of the given threads (thread details, no admin rights needed): {used, error}; used = null if not readable. */
     async _thread_credits(ids) {
         try {
-            const threads = await Promise.all([...new Set(ids.filter(Boolean))].map(id => this.client.thread(id)));
+            const threads = await Promise.all([...new Set(ids.filter(Boolean))].map(id => this._request(signal => this.client.thread(id, { signal }))));
             return { used: threads.reduce((sum, thread) => sum + (thread.usage?.creditsUsed || 0), 0), error: null };
         } catch (error) {
+            if (error instanceof StopRequested) throw error;
             return { used: null, error: error.message };
         }
     }
 
     /** Credits of this chat, separately for the agent thread and all co-agent threads. Returns {credits, co_credits}. */
     async refresh_credits() {
+        const refresh_index = ++this.credit_refresh_index;
+        const thread_id = this.state.thread_id;
         const [agent, co_agents] = await Promise.all([
             this._thread_credits([this.state.thread_id]),
             this._thread_credits(Object.values(this.state.co_agents).map(co_agent => co_agent.thread_id)),
         ]);
+        if (refresh_index !== this.credit_refresh_index || thread_id !== this.state.thread_id) return { credits: this.credits, co_credits: this.co_credits };
         Object.assign(this, { credits: agent.used, credit_error: agent.error, co_credits: co_agents.used, co_credit_error: co_agents.error, credits_at: Date.now() });
         this._emit();
         return { credits: this.credits, co_credits: this.co_credits };
@@ -621,8 +668,8 @@ class ChatSession {
     }
 
     // --- runs ---
-    async _run_state(thread_id, message_id) {
-        const status = await this.client.message_status(thread_id, message_id);
+    async _run_state(thread_id, message_id, signal = this.controller?.signal) {
+        const status = await this._request(request_signal => this.client.message_status(thread_id, message_id, { signal: request_signal }), signal);
         const state = (status.status || '').toLowerCase();
         const key = `${thread_id}:${message_id}`;
         if (this.last_states.get(key) !== state) log(`run ${key}: status "${state}"${status.hasAgentResponse ? ' with response' : ''}${status.error ? `, error: ${status.error}` : ''}`);
@@ -642,38 +689,64 @@ class ChatSession {
 
     async _accepted_id(thread_id, accepted) {
         if (accepted.acceptedMessageId) return accepted.acceptedMessageId;
-        const messages = await this.client.messages(thread_id);
+        const messages = await this._request(signal => this.client.messages(thread_id, { signal }));
         return [...messages].reverse().find(_is_user)?.id;
     }
 
-    async _wait_for_run(thread_id, message_id) {
-        const activity_run = this._activity_start(thread_id, message_id);
+    async _wait_for_run(thread_id, message_id, run_info = {}) {
+        const activity_run = this._activity_start(thread_id, message_id, run_info);
         let run;
         let checked_at = Date.now();
         try {
-            while (!(run = await this._run_state(thread_id, message_id)).state) {
-                await this._activity_refresh(thread_id, message_id, 'running', activity_run);
+            while (true) {
+                if (activity_run?._terminal) { run = activity_run._terminal; break; }
+                this._activity_refresh(thread_id, message_id, 'running', activity_run);
+                const poll_controller = new AbortController();
+                try {
+                    const choices = [this._run_state(thread_id, message_id, poll_controller.signal).then(value => ({ run: value }), error => ({ error }))];
+                    if (activity_run) choices.push(activity_run._finished);
+                    const outcome = await this._request(() => Promise.race(choices));
+                    if (outcome.error) throw outcome.error;
+                    run = activity_run?._terminal || outcome.run;
+                } finally {
+                    poll_controller.abort();
+                }
+                if (run.state) break;
                 const every = (this.limits.syncInterval || 0) * 1000;
                 if (every && thread_id === this.state.thread_id && Date.now() - checked_at >= every) {
                     checked_at = Date.now();
-                    await this._check_superseded(thread_id, message_id);
+                    const sync = this._check_superseded(thread_id, message_id);
+                    await this._request(() => activity_run ? Promise.race([sync, activity_run._finished]) : sync);
                 }
-                await this._tick();
+                const tick = this._tick();
+                await this._request(() => activity_run ? Promise.race([tick, activity_run._finished]) : tick);
             }
-            const messages = await this.client.messages(thread_id);
+            let messages, answer;
+            for (let attempt = 0; attempt < max_empty_polls; attempt++) {
+                messages = await this._request(signal => this.client.messages(thread_id, { signal }));
+                await this._check_superseded(thread_id, message_id, messages);
+                answer = answer_of(messages, message_id, run.response_id);
+                if (run.state !== 'completed' || answer.answer.some(message => message.content && !message.isStreaming) || attempt === max_empty_polls - 1) break;
+                await this._request(signal => this.sleep(this.limits.pollInterval * 1000, signal));
+            }
             if (thread_id === this.state.thread_id) this.synced = _signature(messages);
-            await this._activity_refresh(thread_id, message_id, run.state, activity_run, messages);
+            this._activity_refresh(thread_id, message_id, run.state, activity_run, messages);
             this._activity_finish(thread_id, message_id, run.state);
-            return { ...answer_of(messages, message_id, run.response_id), state: run.state };
+            return { ...answer, state: run.state };
         } catch (error) {
             this._activity_finish(thread_id, message_id, this.stopping ? 'cancelled' : error instanceof Superseded ? 'waiting' : 'unknown');
             throw error;
+        } finally {
+            if (activity_run) activity_run._closed = true;
+            const key = `${thread_id}:${message_id}`;
+            this.last_states.delete(key);
+            this.empty_polls.delete(key);
         }
     }
 
     /** Throw Superseded if a newer user message (written elsewhere) follows message_id. */
-    async _check_superseded(thread_id, message_id) {
-        const messages = await this.client.messages(thread_id);
+    async _check_superseded(thread_id, message_id, known_messages = null) {
+        const messages = known_messages || await this._request(signal => this.client.messages(thread_id, { signal }));
         const index = messages.findIndex(message => message.id === message_id);
         if (index < 0 || !messages.slice(index + 1).some(_is_user)) return;
         log(`chat ${thread_id}: continued elsewhere, stop waiting for ${message_id}`);
@@ -689,9 +762,10 @@ class ChatSession {
         let accepted;
         const options = { ...this._model_options(), ...(interrupt_id ? { answerToInterruptId: interrupt_id } : {}) };
         if (this.state.thread_id) {
-            accepted = await this.client.send_message(this.state.thread_id, content, attachments, options);
+            accepted = await this._request(signal => this.client.send_message(this.state.thread_id, content, attachments, options, { signal }));
         } else {
-            accepted = await this.client.create_thread(this.agent.agentId, content, `monarch – ${this.agent.name} ${new Date().toISOString().slice(0, 16).replace('T', ' ')}`, attachments, options);
+            accepted = await this._request(signal => this.client.create_thread(this.agent.agentId, content, `monarch – ${this.agent.name} ${new Date().toISOString().slice(0, 16).replace('T', ' ')}`, attachments, options, { signal }));
+            accepted = { ...accepted, _new_thread: true };
             this.state.thread_id = accepted.id;
             if (!this.activity_baselines.has(accepted.id)) this.activity_baselines.set(accepted.id, -1);
             this._save();
@@ -700,7 +774,7 @@ class ChatSession {
             this.state.context = context;
             this._save();
         }
-        const run = await this._wait_for_run(this.state.thread_id, await this._accepted_id(this.state.thread_id, accepted));
+        const run = await this._wait_for_run(this.state.thread_id, await this._accepted_id(this.state.thread_id, accepted), accepted);
         return { ...run, duration_ms: Date.now() - started };
     }
 
@@ -727,14 +801,16 @@ class ChatSession {
             if (error instanceof Superseded) this.ui.info('chat continued in awork: stopped waiting, the chat is reloaded');
             else if (!(error instanceof StopRequested)) throw error;
         } finally {
+            this.controller?.abort();
             Object.assign(this, { busy: false, controller: null, phase: null, phase_since: null });
-            await this.refresh_credits();
+            this._emit();
+            this.refresh_credits().catch(error => { if (!(error instanceof StopRequested)) log(`credits refresh failed: ${error.message}`); });
         }
     }
 
     async _upload(uploads) {
         const attachments = [];
-        for (const { name, data, mime_type } of uploads) attachments.push({ temporaryFileId: await this.client.upload_temporary_file(name, data, mime_type) });
+        for (const { name, data, mime_type } of uploads) attachments.push({ temporaryFileId: await this._request(signal => this.client.upload_temporary_file(name, data, mime_type, { signal })) });
         return attachments;
     }
 
@@ -742,10 +818,11 @@ class ChatSession {
     async _pending_questions(messages) {
         if (!this.state.thread_id || !messages.some(_is_question)) return [];
         try {
-            const card = pending_question(await this.client.events(this.state.thread_id));
+            const card = pending_question(await this._request(signal => this.client.events(this.state.thread_id, { signal })));
             if (!card) log('question: no open question found in the run events');
             return card ? [card] : [];
         } catch (error) {
+            if (error instanceof StopRequested) throw error;
             log(`question: answer options not readable (${_reason(error)})`);
             return [];
         }
