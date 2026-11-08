@@ -301,9 +301,9 @@ class ChatView {
 <div class="input-area">
 <div id="splitter" class="splitter" title="Drag to resize the input"></div>
 <div class="input-toolbar" id="statusbar">
-<div class="menu-wrap"><button id="attach" class="icon-btn" title="Attach"><svg viewBox="0 0 16 16" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M8 3.5v9M3.5 8h9"/></svg></button><div id="attach_menu" class="menu up hidden"></div></div>
-<span id="credits" class="badge"></span><span id="co_credits" class="badge"></span><span id="co_agents" class="badge"></span>
-<div class="menu-wrap"><button id="model" class="picker-btn" title="Model for this chat"></button><div id="model_menu" class="menu up hidden"></div></div>
+<div class="menu-wrap attach-wrap"><button id="attach" class="icon-btn" title="Attach"><svg viewBox="0 0 16 16" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M8 3.5v9M3.5 8h9"/></svg></button><div id="attach_menu" class="menu hidden"></div></div>
+<div class="toolbar-status"><span id="credits" class="badge"></span><span id="co_credits" class="badge"></span><span id="co_agents" class="badge"></span></div>
+<div class="menu-wrap model-wrap"><button id="model" class="picker-btn" title="Model for this chat"></button><div id="model_menu" class="menu up right hidden"></div></div>
 </div>
 <div id="attachments" class="attachments"></div>
 <div class="input-editor-wrap"><textarea id="input" rows="3" placeholder="Message …"></textarea></div>
