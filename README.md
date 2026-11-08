@@ -41,8 +41,8 @@ Requirements: VS Code 1.85+ with the built-in Git extension, an awork account in
 
 ```bash
 cd monarch/vscode
-python build_vsix.py                         # -> monarch-0.20.1.vsix
-code --install-extension monarch-0.20.1.vsix
+python build_vsix.py                         # -> monarch-0.20.0.vsix
+code --install-extension monarch-0.20.0.vsix
 ```
 
 Or in VS Code: Extensions view → `…` → **Install from VSIX…**. Optional local tests: `node test/test.js`, `node test/steps_test.js`, `node test/webview_test.js`, `node test/extension_smoke.js`, `node test/relay_plan_progress_test.js` and `node test/chat_view_test.js`.
@@ -119,7 +119,7 @@ All settings are optional. The agent list comes from awork (see `monarch.agentFi
 | Chat | Credits of the agent in this chat (without co-agents) against `maxCredits`. Hover to show − on the left, the current limit in the middle, and + on the right; clicks change only this chat’s limit by `creditStep`, saved with the chat. The limit cannot go below credits already used. `0` = no limit and no buttons. Turns warning-colored at 90%. |
 | Co-Credits | Credits of all co-agents of this chat against `maxCoAgentCredits`. − / + and limit as for Chat (steps of `creditStep`, not below the co-agent credits already used, saved with the chat). `0` = no limit and no buttons. Turns warning-colored at 90%. |
 | Co-agents | Co-agents of the current job against `maxCoAgents`, incl. how many are working. Hover to show − on the left, the current limit in the middle, and + on the right; clicks change only this chat’s limit by 1. Minimum is the number of active co-agents, and at least 1. `0` = no limit and no buttons. |
-| Model | Opens its menu above the button, aligned to its right edge. Model and reasoning level for the next messages of this chat; **Agent default** uses the agent's settings. Saved with the chat; co-agents keep their own model. |
+| Model | Opens its menu above the button, aligned to its right edge: **Agent default** (uses the agent's settings) at the top, below **Reasoning** with the levels of the selected model in one line, below **AI models** with model name, credit factor (e.g. `3×`, in one column) and provider. Model and reasoning level apply to the next messages of this chat and are saved with the chat; co-agents keep their own model. |
 | Send / Stop | **Send** sends the message. While the agent works, **Stop** replaces Send: it stops the agent and all co-agents and closes the job. When the agent is idle, use **monarch: Stop agent and co-agents** to stop waiting co-agents |
 | Line above the input | Drag up/down to resize the input (min. 3 lines, max. 70 % of the panel); the height is kept |
 | Enter / Shift+Enter | Send / new line |

@@ -86,6 +86,17 @@
         return item;
     }
 
+    function model_item(model, checked, on_click) {
+        const item = document.createElement('div');
+        const has_factor = model.factor !== null && model.factor !== undefined;
+        const factor = has_factor ? `${model.factor}×` : '';
+        item.className = `menu-item model-row${checked ? ' selected' : ''}`;
+        item.innerHTML = `<span class="check">${escape_html(checked ? '✓' : '')}</span><span class="item-label">${escape_html(model.display || '')}</span><span class="item-factor">${escape_html(factor)}</span><span class="item-meta">${escape_html(model.provider_name || '')}</span>`;
+        if (has_factor) item.title = `Credit factor ${escape_html(model.factor)}`;
+        item.addEventListener('click', event => { event.stopPropagation(); on_click(event); });
+        return item;
+    }
+
     function render_attach_menu() {
         const menu = element('attach_menu');
         const items = [['Current file', 'current'], ['Files', 'files'], ['Folder', 'folder']].map(([label, kind]) => menu_item(label, '', false, () => {
@@ -141,13 +152,11 @@
         const override = state.status?.model || null;
         const fallback = state.models.default || {};
         const fallback_model = model_of(fallback);
-        const nodes = [header_node('AI models')];
-        nodes.push(menu_item('Agent default', `${fallback_model?.display || fallback.name || ''}${fallback.reasoning ? ` · ${level_name(fallback.reasoning)}` : ''}`, !override, () => { close_menus(); set_model(null); }));
+        const nodes = [menu_item('Agent default', `${fallback_model?.display || fallback.name || ''}${fallback.reasoning ? ` · ${level_name(fallback.reasoning)}` : ''}`, !override, () => { close_menus(); set_model(null); })];
         const levels = model_of(choice)?.levels || [];
         if (levels.length) {
             const row = document.createElement('div');
             row.className = 'levels';
-            row.insertAdjacentHTML('beforeend', '<span class="levels-label">Reasoning</span>');
             for (const level of levels) {
                 const button = document.createElement('button');
                 button.className = `level${level === choice.reasoning ? ' selected' : ''}`;
@@ -158,19 +167,21 @@
                 });
                 row.appendChild(button);
             }
-            nodes.push(row);
+            nodes.push(separator_node(), header_node('Reasoning'), row);
         }
-        nodes.push(separator_node());
-        for (const model of state.models.models) {
-            const checked = Boolean(override) && override.provider === model.provider && override.name === model.name;
-            const item = menu_item(model.display, model.provider_name, checked, () => {
-                close_menus();
-                set_model({ provider: model.provider, name: model.name, reasoning: model.levels.includes(choice.reasoning) ? choice.reasoning : null });
-            });
-            if (model.factor !== null) item.title = `Credit factor ${model.factor}`;
-            nodes.push(item);
-        }
-        if (!state.models.models.length) nodes.push(note_node('No models available.'));
+        nodes.push(separator_node(), header_node('AI models'));
+        if (state.models.models.length) {
+            const table = document.createElement('div');
+            table.className = 'model-table';
+            for (const model of state.models.models) {
+                const checked = Boolean(override) && override.provider === model.provider && override.name === model.name;
+                table.appendChild(model_item(model, checked, () => {
+                    close_menus();
+                    set_model({ provider: model.provider, name: model.name, reasoning: model.levels.includes(choice.reasoning) ? choice.reasoning : null });
+                }));
+            }
+            nodes.push(table);
+        } else nodes.push(note_node('No models available.'));
         menu.replaceChildren(...nodes);
     }
 
