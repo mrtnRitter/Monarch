@@ -41,11 +41,11 @@ Requirements: VS Code 1.85+ with the built-in Git extension, an awork account in
 
 ```bash
 cd monarch/vscode
-python build_vsix.py                         # -> monarch-0.19.2.vsix
-code --install-extension monarch-0.19.2.vsix
+python build_vsix.py                         # -> monarch-0.20.0.vsix
+code --install-extension monarch-0.20.0.vsix
 ```
 
-Or in VS Code: Extensions view → `…` → **Install from VSIX…**. Optional local tests: `node test/test.js`, `node test/steps_test.js`, `node test/webview_test.js`, `node test/extension_smoke.js` and `node test/relay_plan_progress_test.js`.
+Or in VS Code: Extensions view → `…` → **Install from VSIX…**. Optional local tests: `node test/test.js`, `node test/steps_test.js`, `node test/webview_test.js`, `node test/extension_smoke.js`, `node test/relay_plan_progress_test.js` and `node test/chat_view_test.js`.
 
 ## Setup in awork (once per workspace, by the agent owner)
 
@@ -57,7 +57,7 @@ Or in VS Code: Extensions view → `…` → **Install from VSIX…**. Optional 
 
 Every user, also the agent owner, does this once:
 
-1. **Install** `monarch-0.19.0.vsix` (see *Installation*) and reload VS Code (Command Palette → **Developer: Reload Window**).
+1. **Install** `monarch-0.20.0.vsix` (see *Installation*) and reload VS Code (Command Palette → **Developer: Reload Window**).
 2. **Sign in:** Open **monarch** in the activity bar and click **Sign in** (or Command Palette → **monarch: Sign in**). The browser opens; log in to awork and select the workspace.
 3. **Check the agents:** The agent circles at the top show the agents. If an agent shared with you is missing, set **Monarch: Agent Filter** (`monarch.agentFilter`) to `all`.
 4. **Test files:** Start a **new chat** (blue **+**) and send: `Create output/download_test.txt with three lines.`
@@ -114,12 +114,13 @@ All settings are optional. The agent list comes from awork (see `monarch.agentFi
 | Agent circles | Agents according to `monarch.agentFilter`, with their profile pictures; click to select. If they do not fit into the panel, a dropdown is shown instead. |
 | History (clock) | Chats of the selected agent from all repos (max. 100), newest first, with repo name and date; click to continue a chat, ✕ removes it from the list (the chat stays in awork) |
 | New chat (blue +) | Start a new conversation with the selected agent. **Ctrl+click** (Mac: Cmd+click) takes over an existing chat instead (workaround, e.g. for chats started in the awork web app): paste its link (`https://<workspace>.awork.com/ai/thread/<id>`) or id; the chat must belong to the selected agent and be readable with your login. It opens and is added to the history. |
+| Row above the input | From left to right: **+** (attachments), **Chat**, **Co-Credits**, **Co-agents** and **Model** (details below); the row wraps in narrow panels |
+| **+** | Opens a menu: **Current file** attaches the file of the active editor tab (also Markdown preview, images, notebooks, diffs), otherwise the last active file, as single file. **Files** and **Folder** open the file dialog for files or folders. Everything picked with **Files** and **Folder** is sent together as one `attachments.zip` with paths relative to the repo root (files outside the repo under their file name; folders without `.git`, `node_modules`, `__pycache__`, `.venv`, `*.pyc` and `files.exclude`). Attachments appear as chips above the input; click a chip to remove it. Max. 20 attachments and `maxFolderMB` per file or folder |
 | Chat | Credits of the agent in this chat (without co-agents) against `maxCredits`. Hover to show − on the left, the current limit in the middle, and + on the right; clicks change only this chat’s limit by `creditStep`, saved with the chat. The limit cannot go below credits already used. `0` = no limit and no buttons. Turns warning-colored at 90%. |
 | Co-Credits | Credits of all co-agents of this chat against `maxCoAgentCredits`. − / + and limit as for Chat (steps of `creditStep`, not below the co-agent credits already used, saved with the chat). `0` = no limit and no buttons. Turns warning-colored at 90%. |
 | Co-agents | Co-agents of the current job against `maxCoAgents`, incl. how many are working. Hover to show − on the left, the current limit in the middle, and + on the right; clicks change only this chat’s limit by 1. Minimum is the number of active co-agents, and at least 1. `0` = no limit and no buttons. |
 | Model | Model and reasoning level for the next messages of this chat; **Agent default** uses the agent's settings. Saved with the chat; co-agents keep their own model. |
-| Stop | Stops the agent and all co-agents and closes the job |
-| **Current file** / **Files** / **Folder** | Attach repo files to the next message; **Current file** takes the file of the active editor tab (also Markdown preview, images, notebooks, diffs), otherwise the last active file; folders are sent as ZIP (without `.git`, `node_modules`, `__pycache__`, `.venv`, `*.pyc` and `files.exclude`); max. 20 attachments and `maxFolderMB` per file or folder |
+| Send / Stop | **Send** sends the message. While the agent works, **Stop** replaces Send: it stops the agent and all co-agents and closes the job. When the agent is idle, use **monarch: Stop agent and co-agents** to stop waiting co-agents |
 | Line above the input | Drag up/down to resize the input (min. 3 lines, max. 70 % of the panel); the height is kept |
 | Enter / Shift+Enter | Send / new line |
 | Ctrl+C / Cmd+C | Copies the selected text of the chat (or of the input) |
@@ -138,8 +139,8 @@ If the agent credits cannot be read and `maxCredits` is not `0` (or the co-agent
 | Agent answers | Left, in a bubble (max. 85 % wide), with the agent's awork profile picture, name, answer time and the agent's credits for this answer without co-agents (e.g. `CodeZilla · 9:12 min · 50c`); the credits are added as soon as they are read and saved with the chat, older answers without a saved value show only the time; Markdown incl. tables and code (wide code and tables scroll inside the bubble). **Copy** next to the name (on hover) copies the answer as Markdown |
 | Code blocks | Language and toolbar above each block: **Copy**; **Insert** at the cursor of the active or last active editor (replaces selections); **New file** opens an unsaved file with the block's language; **Terminal** puts the code into the active terminal (or a new `monarch` terminal) without running it. Multi-line code is pasted via the clipboard, so it stays in the clipboard |
 | Questions | Questions from the agent as a card; with one single-choice question, click an option to send it or type your own answer below; with several questions or multiple choice, select the options, optionally fill in your own answer and send them together with **Send answer** |
-| Steps | Relay and agent steps between two messages as one line with the latest step, e.g. `Relay: minizilla_1 answered, 2 files staged  + 4 Steps`; click the line (or Enter) to show or hide the earlier steps in chronological order above it. Steps: `Relay: spawn minizilla_1`, `Relay: refused – <reason>`, `Agent step: <intent> · <tool name>` (only the tool name if there is no intent). Warning boxes do not split the line. After reloading a chat, relay messages appear summarized (`Relay: co-agent update`, `Relay: inspect`) and agent steps as far as awork returns the tool calls with the messages |
-| While running | Spinner with elapsed time: `<agent> is working …`, `relay is running commands …` (ORCA commands of the answer) or `waiting for <co-agents> …`; it disappears as soon as the agent and all co-agents are done |
+| Steps | Relay and agent steps between two messages as one line with the latest step, e.g. `Relay: minizilla_1 answered, 2 files staged  + 4 Steps`; click the line (or Enter) to show or hide the earlier steps in chronological order above it. While the steps are shown, `+ 4 Steps` is hidden. Steps: `Relay: spawn minizilla_1`, `Relay: refused – <reason>`, `Agent step: <intent>` (tool calls without intent are not shown). Warning boxes do not split the line. After reloading a chat, relay messages appear summarized (`Relay: co-agent update`, `Relay: inspect`) and agent steps as far as awork returns the tool calls with the messages |
+| While running | Spinner with the elapsed time of the current phase on its right, behind the latest step (before any step: in its own line at the end of the chat); it disappears as soon as the agent and all co-agents are done |
 | Warnings | Yellow box in the middle, e.g. a co-agent file that could not be downloaded; stays until closed with ✕ |
 | Errors | Red box in the middle; hints about actions that are not possible right now (e.g. `Stop the agent first.`, attachments) disappear after 5 s; ✕ closes any error box |
 
