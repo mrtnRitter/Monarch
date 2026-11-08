@@ -181,8 +181,12 @@ function _parse_args(value) {
     return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : null;
 }
 
-/** Display line of an agent step: "Agent step: <intent> · <tool name>"; null without both. */
-function step_text(intent, tool_name) {
+/** Display line of an agent step: "Agent step: <intent>"; null without intent. */
+function step_text(intent) {
+    return _tool_step_text(intent);
+}
+
+function _tool_step_text(intent, tool_name) {
     const parts = [intent, tool_name].filter(Boolean);
     if (!parts.length) return null;
     const text = `Agent step: ${parts.join(' · ')}`;
@@ -337,7 +341,7 @@ function _message_calls(messages, prefix = 'message') {
 
 /** Step items of one message's tool calls, each call once per history. */
 function _history_steps(message, keys) {
-    return _message_calls([message], `${message.id}`).filter(call => !keys.has(call.key) && keys.add(call.key)).map(call => step_text(call.intent, call.tool_name)).filter(Boolean).map(text => ({ role: 'step', text }));
+    return _message_calls([message], `${message.id}`).filter(call => !keys.has(call.key) && keys.add(call.key)).map(call => step_text(call.intent)).filter(Boolean).map(text => ({ role: 'step', text }));
 }
 
 /** Tool calls of the run started by the user message message_id. */
@@ -525,7 +529,7 @@ class ChatSession {
             if (run.emitted.has(item.key)) continue;
             if (!final && !item.ready && index === ordered.length - 1) break;
             run.emitted.add(item.key);
-            this._step(step_text(item.intent, item.tool_name));
+            this._step(step_text(item.intent));
         }
     }
 
@@ -1359,7 +1363,7 @@ class ChatSession {
             const events = await this._read_events(co_agent.thread_id);
             const payload = events && _event_calls(events, co_agent.message_id, null, co_agent.message_id === co_agent.first_message_id);
             if (!payload) return unreadable(id);
-            const steps = payload.items.map(item => step_text(item.intent, item.tool_name)?.replace(/^Agent step: /, '')).filter(Boolean);
+            const steps = payload.items.map(item => _tool_step_text(item.intent, item.tool_name)?.replace(/^Agent step: /, '')).filter(Boolean);
             return `- ${id}: ${steps.length} steps${steps.length ? `, last: ${steps.slice(-progress_steps).join(' | ')}` : ''}`;
         };
         let timer;

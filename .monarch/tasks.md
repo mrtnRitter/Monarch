@@ -17,8 +17,8 @@
 | T1 | Agent-Schritte ohne Toolnamen | vscode/src/session.js, vscode/test/steps_test.js | – | direct | A | fertig (Sachprüfung bestanden) |
 | T2 | HTML-Layout, ZIP-Bündel, Version | vscode/src/chat_view.js, vscode/package.json, vscode/test/chat_view_test.js | – | direct | A | fertig (Sachprüfung bestanden; package.json HTTP 403, Martin trägt Version ein) |
 | T3 | Eingabezeile: +-Menü, Menüs nach oben, Send/Stop | vscode/media/chat.js, vscode/media/chat.css, vscode/test/webview_test.js | – | direct | A | fertig (Sachprüfung bestanden, CSS-Korrekturen in T4 enthalten) |
-| T4 | Spinner + Laufzeit in Statusmeldungen, Zähler beim Aufklappen | vscode/media/chat.js, vscode/media/chat.css, vscode/test/webview_test.js | T3 | plan-first | B | Prüfung (Sachprüfung bestanden, Reviewer läuft) |
-| T5 | Integrations-Review | alle bereitgehaltenen Dateien | T1–T4 | – | B | läuft (Reviewer, zusammen mit T4) |
+| T4 | Spinner + Laufzeit in Statusmeldungen, Zähler beim Aufklappen | vscode/media/chat.js, vscode/media/chat.css, vscode/test/webview_test.js | T3 | plan-first | B | fertig (Sachprüfung bestanden, VERDICT: pass minizilla_5) |
+| T5 | Integrations-Review | alle bereitgehaltenen Dateien | T1–T4 | – | B | fertig (VERDICT: pass minizilla_5) |
 
 ## Entscheidungen
 - T2: Files und Folder als eine `attachments.zip` mit Repo-Pfaden – Martins Vorgabe „immer als Zip“, ein Archiv hält die Struktur zusammen
@@ -32,3 +32,4 @@
 - T2: Keine Zeitlimits für lokale Dateilesezugriffe – Verhalten unverändert gegenüber 0.19.2, nicht Teil des Facelifts
 - T4/T5: Ein Reviewer prüft T4 (Stufe B) und die Integration aller Pakete gemeinsam – gleiche Dateien, spart einen Durchlauf
 - test/test.js hängt schon am Basisstand im Test „budget: unreadable credits …“ – Ergebnis vorher/nachher identisch (10 ok, 2 bekannte FAIL)
+- Abschluss: commit aller bereitgehaltenen Dateien, stopzilla; offen: vscode/package.json Version 0.20.0 (HTTP 403), .monarch/base/ kann gelöscht werden

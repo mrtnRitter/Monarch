@@ -1,7 +1,8 @@
 'use strict';
-/** Webview chat window: agents from awork, chat history, model choice, status (agent credits, co-agent credits, co-agents, stop), messages and attachments. */
+/** Webview chat window: agents from awork, chat history, model choice, messages and attachments; status below the input. */
 const vscode = require('vscode');
 const crypto = require('crypto');
+const { safe_rel_path, basename } = require('./files');
 const { ChatSession, Notice } = require('./session');
 const { log } = require('./log');
 const { create_zip } = require('./zip');
@@ -296,17 +297,17 @@ class ChatView {
 <div class="menu-wrap"><button id="history" class="icon-btn" title="Chat history"><svg viewBox="0 0 16 16" width="21" height="21" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 8a5.5 5.5 0 1 0 1.6-3.9"/><path d="M2.5 2.4v2.7h2.7"/><path d="M8 5v3.2l2.2 1.4"/></svg></button><div id="history_menu" class="menu right hidden"></div></div>
 <button id="new_chat" class="icon-btn primary" title="New chat"><svg viewBox="0 0 16 16" width="21" height="21" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M8 3.5v9M3.5 8h9"/></svg></button>
 </div>
-<div class="statusbar" id="statusbar"><span id="credits" class="badge"></span><span id="co_credits" class="badge"></span><span id="co_agents" class="badge"></span><span class="spacer"></span>
-<div class="menu-wrap"><button id="model" class="picker-btn" title="Model for this chat"></button><div id="model_menu" class="menu right hidden"></div></div>
-<button id="stop" class="stop-btn"></button></div>
 <div class="messages" id="messages"></div>
-<div id="working" class="working hidden"><span class="spinner"></span><span id="working_text"></span></div>
 <div class="input-area">
 <div id="splitter" class="splitter" title="Drag to resize the input"></div>
-<div class="input-toolbar"><button id="attach_current" class="picker-btn" title="Attach the open file">📄 Current file</button><button id="attach_files" class="picker-btn" title="Attach files">📎 Files</button><button id="attach_folder" class="picker-btn" title="Attach a folder as ZIP">📁 Folder</button></div>
+<div class="input-toolbar" id="statusbar">
+<div class="menu-wrap"><button id="attach" class="icon-btn" title="Attach"><svg viewBox="0 0 16 16" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M8 3.5v9M3.5 8h9"/></svg></button><div id="attach_menu" class="menu up hidden"></div></div>
+<span id="credits" class="badge"></span><span id="co_credits" class="badge"></span><span id="co_agents" class="badge"></span>
+<div class="menu-wrap"><button id="model" class="picker-btn" title="Model for this chat"></button><div id="model_menu" class="menu up hidden"></div></div>
+</div>
 <div id="attachments" class="attachments"></div>
 <div class="input-editor-wrap"><textarea id="input" rows="3" placeholder="Message …"></textarea></div>
-<div class="input-send-row"><span class="hint">Enter = send · Shift+Enter = new line</span><button id="send" class="send-btn">Send</button></div>
+<div class="input-send-row"><span class="hint">Enter = send · Shift+Enter = new line</span><button id="send" class="send-btn">Send</button><button id="stop" class="stop-btn hidden"></button></div>
 </div>
 <script nonce="${nonce}" src="${asset('markdown.js')}"></script>
 <script nonce="${nonce}" src="${asset('chat.js')}"></script></body></html>`;
@@ -519,7 +520,7 @@ class ChatView {
                 if (this.attachments.length >= max_attachments) throw new Notice(`Max. ${max_attachments} attachments per message.`);
                 const rel = vscode.workspace.asRelativePath(uri, false);
                 if (!folder && (await vscode.workspace.fs.stat(uri)).size > limit_mb * 1024 * 1024) throw new Notice(`File ${rel} exceeds monarch.maxFolderMB (${limit_mb} MB).`);
-                this.attachments.push({ id: crypto.randomUUID(), uri, folder, rel, label: folder ? `${rel}/` : rel });
+                this.attachments.push({ id: crypto.randomUUID(), uri, folder, rel, label: folder ? `${rel}/` : rel, bundle: kind !== 'current' });
             }
         } finally {
             this._post_attachments();
@@ -529,32 +530,47 @@ class ChatView {
     async _uploads() {
         const uploads = [];
         const notes = [];
-        for (const { uri, folder, rel } of this.attachments) {
-            const name = uri.path.split('/').pop();
-            if (folder) {
-                uploads.push({ name: `${name}.zip`, data: await this._zip_folder(uri, name), mime_type: 'application/zip' });
-                notes.push(`folder ${rel}/ as ${name}.zip`);
-            } else {
+        const bundle_entries = [];
+        const bundle_names = [];
+        const seen_names = new Set();
+        for (const { uri, folder, rel, bundle, label } of this.attachments) {
+            const name = basename(uri.path);
+            if (!bundle) {
                 uploads.push({ name, data: await vscode.workspace.fs.readFile(uri), mime_type: mime_types[name.slice(name.lastIndexOf('.'))] || 'application/octet-stream' });
                 notes.push(rel);
+                continue;
             }
+            const prefix = safe_rel_path(rel) || basename(uri.path);
+            const entries = folder ? await this._folder_entries(uri, prefix) : [{ name: prefix, data: await vscode.workspace.fs.readFile(uri), mtime: new Date((await vscode.workspace.fs.stat(uri)).mtime) }];
+            for (const entry of entries) {
+                if (seen_names.has(entry.name)) continue;
+                seen_names.add(entry.name);
+                bundle_entries.push(entry);
+            }
+            bundle_names.push(label || (folder ? `${prefix}/` : prefix));
+        }
+        if (bundle_entries.length) {
+            uploads.push({ name: 'attachments.zip', data: create_zip(bundle_entries), mime_type: 'application/zip' });
+            notes.push(`attachments.zip (${bundle_names.join(', ')})`);
         }
         return { uploads, note: notes.length ? `\n\nAttached (relative to repo root): ${notes.join(', ')}` : '' };
     }
 
-    async _zip_folder(folder_uri, name) {
-        const limit = _config().get('maxFolderMB') * 1024 * 1024;
+    async _folder_entries(folder_uri, prefix) {
+        const max_mb = _config().get('maxFolderMB');
+        const limit = max_mb * 1024 * 1024;
         const found = await vscode.workspace.findFiles(new vscode.RelativePattern(folder_uri, '**/*'), _exclude_glob());
         const entries = [];
         let total = 0;
         for (const uri of found) {
             const stat = await vscode.workspace.fs.stat(uri);
             total += stat.size;
-            if (total > limit) throw new Notice(`Folder ${name} exceeds monarch.maxFolderMB (${_config().get('maxFolderMB')} MB).`);
-            entries.push({ name: `${name}/${uri.path.slice(folder_uri.path.replace(/\/$/, '').length + 1)}`, data: await vscode.workspace.fs.readFile(uri), mtime: new Date(stat.mtime) });
+            if (total > limit) throw new Notice(`Folder ${prefix} exceeds monarch.maxFolderMB (${max_mb} MB).`);
+            const relative_path = uri.path.slice(folder_uri.path.replace(/\/$/, '').length + 1);
+            entries.push({ name: `${prefix}/${relative_path}`, data: await vscode.workspace.fs.readFile(uri), mtime: new Date(stat.mtime) });
         }
-        if (!entries.length) throw new Notice(`Folder ${name} has no files to attach (only folders inside the open workspace are supported).`);
-        return create_zip(entries);
+        if (!entries.length) throw new Notice(`Folder ${prefix} has no files to attach (only folders inside the open workspace are supported).`);
+        return entries;
     }
 
     // --- code block actions (like Copilot chat) ---

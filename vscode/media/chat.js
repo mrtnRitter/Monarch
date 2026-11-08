@@ -63,7 +63,7 @@
 
     // --- menus ---
     function close_menus(except) {
-        for (const id of ['history_menu', 'model_menu']) if (id !== except) element(id).classList.add('hidden');
+        for (const id of ['history_menu', 'model_menu', 'attach_menu']) if (id !== except) element(id).classList.add('hidden');
     }
 
     function toggle_menu(id, render) {
@@ -84,6 +84,15 @@
         if (extra) item.appendChild(extra);
         item.addEventListener('click', event => { event.stopPropagation(); on_click(event); });
         return item;
+    }
+
+    function render_attach_menu() {
+        const menu = element('attach_menu');
+        const items = [['Current file', 'current'], ['Files', 'files'], ['Folder', 'folder']].map(([label, kind]) => menu_item(label, '', false, () => {
+            close_menus();
+            vscode.postMessage({ type: 'attach', kind });
+        }));
+        menu.replaceChildren(...items);
     }
 
     function render_history() {
@@ -212,9 +221,12 @@
         line.setAttribute('role', 'button');
         line.append(Object.assign(document.createElement('span'), { className: 'step-text' }), Object.assign(document.createElement('span'), { className: 'step-more', hidden: true }));
         const toggle = () => {
-            if (!group.querySelector('.step-list').children.length) return;
+            const earlier = group.querySelector('.step-list').children.length;
+            if (!earlier) return;
             group.classList.toggle('open');
-            line.setAttribute('aria-expanded', String(group.classList.contains('open')));
+            const open = group.classList.contains('open');
+            line.querySelector('.step-more').hidden = open || !earlier;
+            line.setAttribute('aria-expanded', String(open));
         };
         line.addEventListener('click', toggle);
         line.addEventListener('keydown', event => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); toggle(); } });
@@ -230,7 +242,7 @@
         if (current.textContent) group.querySelector('.step-list').appendChild(Object.assign(document.createElement('div'), { className: 'step', textContent: current.textContent, title: current.textContent }));
         Object.assign(current, { textContent: text, title: text });
         const earlier = group.querySelector('.step-list').children.length;
-        Object.assign(line.querySelector('.step-more'), { textContent: `+ ${earlier} ${earlier === 1 ? 'Step' : 'Steps'}`, hidden: !earlier });
+        Object.assign(line.querySelector('.step-more'), { textContent: `+ ${earlier} ${earlier === 1 ? 'Step' : 'Steps'}`, hidden: !earlier || group.classList.contains('open') });
         line.classList.toggle('expandable', earlier > 0);
         line.tabIndex = earlier ? 0 : -1;
         if (earlier) line.setAttribute('aria-expanded', String(group.classList.contains('open')));
@@ -414,7 +426,10 @@
         const co_agents = element('co_agents');
         co_agents.className = 'badge adjustable';
         co_agents.innerHTML = `${co_controls.less}${co_controls.value}<span class="badge-content"><span class="label">${escape_html(state.labels.coAgents)}</span> ${escape_html(String(status.co_agents))} / ${escape_html(String(status.max_co_agents || '∞'))}${status.working ? ` · ${escape_html(String(status.working))} working` : ''}</span>${co_controls.more}`;
-        element('send').disabled = status.busy;
+        const send_button = element('send');
+        send_button.disabled = status.busy;
+        send_button.classList.toggle('hidden', status.busy);
+        element('stop').classList.toggle('hidden', !status.busy);
         element('model').textContent = `${model_label()} ▾`;
         if (!element('model_menu').classList.contains('hidden')) render_model_menu();
         update_working();
@@ -427,18 +442,39 @@
     });
 
     function update_working() {
+        const messages = messages_box();
         const status = state.status;
-        const active = status && status.busy && status.phase;
-        element('working').classList.toggle('hidden', !active);
-        if (!active) return;
-        const elapsed = format_duration(Date.now() - status.phase_since);
-        const texts = { relay: `waiting for ${state.labels.coAgents.toLowerCase()} …`, commands: 'relay is running commands …' };
-        element('working_text').textContent = `${texts[status.phase] || `${state.agent_name} is working …`} ${elapsed}`;
+        const active = Boolean(status?.busy);
+        let wrappers = [...messages.querySelectorAll('.step-spinner')];
+        if (!active) {
+            wrappers.forEach(node => node.remove());
+            [...messages.querySelectorAll('.steps')].forEach(group => {
+                if (!group.querySelector('.step-text')?.textContent && !group.querySelector('.step-list')?.children.length) group.remove();
+            });
+            return;
+        }
+
+        const group = step_group();
+        const line = group.querySelector('.step-current');
+        const more = line.querySelector('.step-more');
+        let spinner = group.querySelector('.step-spinner') || wrappers.shift();
+        wrappers.filter(node => node !== spinner).forEach(node => node.remove());
+        if (!spinner) {
+            spinner = document.createElement('span');
+            spinner.className = 'step-spinner';
+            spinner.append(Object.assign(document.createElement('span'), { className: 'spinner' }), Object.assign(document.createElement('span'), { className: 'step-elapsed' }));
+        }
+        const elapsed = spinner.querySelector('.step-elapsed');
+        elapsed.textContent = status.phase_since == null ? '' : format_duration(Date.now() - status.phase_since);
+        if (spinner.parentNode !== line || Array.from(line.children).indexOf(spinner) !== Array.from(line.children).indexOf(more) - 1) line.insertBefore(spinner, more);
+        [...messages.querySelectorAll('.steps')].forEach(other => {
+            if (other !== group && !other.querySelector('.step-text')?.textContent && !other.querySelector('.step-list')?.children.length) other.remove();
+        });
     }
     setInterval(update_working, 1000);
 
     function set_enabled(enabled) {
-        for (const id of ['history', 'new_chat', 'model', 'stop', 'send', 'attach_current', 'attach_files', 'attach_folder']) element(id).disabled = !enabled;
+        for (const id of ['history', 'new_chat', 'model', 'stop', 'send', 'attach']) element(id).disabled = !enabled;
         element('input').disabled = !enabled;
     }
 
@@ -448,6 +484,8 @@
             const labels = data.labels || {};
             Object.assign(state, { agents: data.agents, agent: data.current, agent_name: data.current_name, labels: { ...state.labels, ...labels, chat: labels.chat || labels.credits || state.labels.chat }, user: data.user, signed_in: data.signed_in, chats: [], models: { default: {}, models: [] }, status: null, active_thread_id: null });
             element('stop').textContent = state.labels.stop;
+            element('stop').classList.add('hidden');
+            element('send').classList.remove('hidden');
             element('model').textContent = 'Model ▾';
             render_agents();
             set_enabled(Boolean(data.current));
@@ -459,8 +497,10 @@
             open_cards.length = 0;
             show_empty_state();
             data.items.forEach(add_message);
+            update_working();
         } else if (data.type === 'message') {
             add_message(data.item);
+            update_working();
         } else if (data.type === 'answer_credits') {
             update_turn_credits(data);
         } else if (data.type === 'status') {
@@ -484,6 +524,7 @@
             }));
         } else if (data.type === 'error') {
             add_message({ role: 'error', text: data.text, transient: data.transient });
+            update_working();
         }
     });
 
@@ -532,7 +573,7 @@
     element('new_chat').addEventListener('click', event => vscode.postMessage({ type: event.ctrlKey || event.metaKey ? 'import_chat' : 'new_chat' }));
     element('history').addEventListener('click', event => { event.stopPropagation(); toggle_menu('history_menu', render_history); });
     element('model').addEventListener('click', event => { event.stopPropagation(); toggle_menu('model_menu', render_model_menu); });
+    element('attach').addEventListener('click', event => { event.stopPropagation(); toggle_menu('attach_menu', render_attach_menu); });
     element('agent').addEventListener('change', event => vscode.postMessage({ type: 'select_agent', id: event.target.value }));
-    for (const kind of ['current', 'files', 'folder']) element(`attach_${kind}`).addEventListener('click', () => vscode.postMessage({ type: 'attach', kind }));
     vscode.postMessage({ type: 'ready' });
 })();
