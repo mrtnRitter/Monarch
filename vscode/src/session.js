@@ -846,7 +846,6 @@ class ChatSession {
     async _handle_answer({ answer, run, state, duration_ms, thread_id, baseline }) {
         const { text, commands } = parse_commands(answer_text(answer));
         const written = await this._write_repo_files(run);
-        log(`answer: ${run.length} run message(s), question message ${run.some(_is_question)}`);
         const questions = [...questions_of(run), ...await this._pending_questions(run)];
         const shown = _without_questions(text, questions);
         const message_id = [...answer].reverse().find(message => message.content)?.id;
