@@ -41,8 +41,8 @@ Requirements: VS Code 1.85+ with the built-in Git extension, an awork account in
 
 ```bash
 cd monarch/vscode
-python build_vsix.py                         # -> monarch-0.21.0.vsix
-code --install-extension monarch-0.21.0.vsix
+python build_vsix.py                         # -> monarch-0.21.1.vsix
+code --install-extension monarch-0.21.1.vsix
 ```
 
 Or in VS Code: Extensions view → `…` → **Install from VSIX…**. Optional local tests: `node test/test.js`, `node test/steps_test.js`, `node test/webview_test.js`, `node test/extension_smoke.js`, `node test/relay_plan_progress_test.js`, `node test/chat_view_test.js` and `node test/notes_test.js`; `test/webview_notes_test.js` needs jsdom (`NODE_PATH=<folder>/node_modules node test/webview_notes_test.js`).
