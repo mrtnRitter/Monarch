@@ -133,6 +133,32 @@ class OAuth {
     }
 }
 
+/** Run an action with cancellation, including implementations that ignore the signal.
+ * @template T
+ * @param {() => Promise<T>|T} action
+ * @param {AbortSignal|null|undefined} signal
+ * @returns {Promise<T>}
+ */
+function abortable(action, signal) {
+    if (!signal) return Promise.resolve().then(action);
+    return new Promise((resolve, reject) => {
+        let settled = false;
+        const finish = (callback, value) => {
+            if (settled) return;
+            settled = true;
+            signal.removeEventListener('abort', on_abort);
+            callback(value);
+        };
+        const on_abort = () => finish(reject, signal.reason || new Error('Request aborted'));
+        if (signal.aborted) return on_abort();
+        signal.addEventListener('abort', on_abort, { once: true });
+        Promise.resolve().then(() => {
+            if (signal.aborted) throw signal.reason || new Error('Request aborted');
+            return action();
+        }).then(value => finish(resolve, value), error => finish(reject, error));
+    });
+}
+
 class AworkClient {
     /**
      * Minimal client for the awork agents API.
@@ -150,33 +176,52 @@ class AworkClient {
         return base + (base_path && route.startsWith(`${base_path}/`) ? route.slice(base_path.length) : route);
     }
 
-    /** Send a request with the OAuth token. Throws AworkError on non-2xx. */
-    async request(method, route, { json, body, raw = false } = {}) {
-        const token = await this.get_token();
-        const headers = { Authorization: `Bearer ${token}`, ...(json !== undefined ? { 'Content-Type': 'application/json' } : {}) };
-        const response = await this.fetch(this._url(route), { method, headers, body: json !== undefined ? JSON.stringify(json) : body, signal: AbortSignal.timeout(request_timeout_ms) });
-        if (!response.ok) throw new AworkError(`awork API ${method} ${route} failed with ${response.status}: ${(await response.text()).slice(0, 300)}`, response.status);
-        if (raw) return Buffer.from(await response.arrayBuffer());
-        const text = await response.text();
-        return text ? JSON.parse(text) : {};
+    /** Send an authenticated request; caller cancellation also covers token and body reads. */
+    async request(method, route, { json, body, raw = false, signal = null } = {}) {
+        const controller = new AbortController();
+        const on_abort = () => controller.abort(signal.reason);
+        if (signal?.aborted) on_abort();
+        else signal?.addEventListener('abort', on_abort, { once: true });
+        const timer = setTimeout(() => controller.abort(new AworkError('Request timed out')), request_timeout_ms);
+        timer.unref?.();
+        try {
+            return await abortable(async () => {
+                const token = await this.get_token();
+                if (controller.signal.aborted) throw controller.signal.reason;
+                const headers = { Authorization: `Bearer ${token}`, ...(json !== undefined ? { 'Content-Type': 'application/json' } : {}) };
+                const response = await this.fetch(this._url(route), { method, headers, body: json !== undefined ? JSON.stringify(json) : body, signal: controller.signal });
+                if (!response.ok) throw new AworkError(`awork API ${method} ${route} failed with ${response.status}: ${(await response.text()).slice(0, 300)}`, response.status);
+                if (raw) return Buffer.from(await response.arrayBuffer());
+                const text = await response.text();
+                return text ? JSON.parse(text) : {};
+            }, controller.signal);
+        } finally {
+            clearTimeout(timer);
+            signal?.removeEventListener('abort', on_abort);
+        }
     }
 
     /**
      * Create a custom-agent thread with a first message. Returns the thread incl. acceptedMessageId.
      * options: optional {modelProvider, modelName, reasoningLevel} override for this message.
      */
-    create_thread(agent_id, content, title, attachments = [], options = {}) {
-        return this.request('POST', '/agents/threads', { json: { type: 'custom-agent', agentId: agent_id, title, content, ...(attachments.length ? { attachments } : {}), ...options } });
+    create_thread(agent_id, content, title, attachments = [], options = {}, request_options = {}) {
+        return this.request('POST', '/agents/threads', { json: { type: 'custom-agent', agentId: agent_id, title, content, ...(attachments.length ? { attachments } : {}), ...options }, ...request_options });
     }
 
     /** Submit a message to a thread. Returns the acceptance incl. acceptedMessageId. options as in create_thread. */
-    send_message(thread_id, content, attachments = [], options = {}) {
-        return this.request('POST', `/agents/threads/${thread_id}/messages`, { json: { content, ...(attachments.length ? { attachments } : {}), ...options } });
+    send_message(thread_id, content, attachments = [], options = {}, request_options = {}) {
+        return this.request('POST', `/agents/threads/${thread_id}/messages`, { json: { content, ...(attachments.length ? { attachments } : {}), ...options }, ...request_options });
     }
 
     /** Thread details incl. title and usage.creditsUsed. */
-    thread(thread_id) {
-        return this.request('GET', `/agents/threads/${thread_id}`);
+    thread(thread_id, options = {}) {
+        return this.request('GET', `/agents/threads/${thread_id}`, options);
+    }
+
+    /** Run events of a thread, as loaded by the awork web app (not in the public API docs): [{sequence, eventName, dataJson}]. */
+    async events(thread_id, options = {}) {
+        return (await this.request('GET', `/agents/threads/${thread_id}/events`, options)) || [];
     }
 
     /** Custom agents visible to the signed-in user. */
@@ -189,13 +234,13 @@ class AworkClient {
         return this.request('GET', `/agents/defaults?type=custom-agent&agentId=${agent_id}`);
     }
 
-    message_status(thread_id, message_id) {
-        return this.request('GET', `/agents/threads/${thread_id}/messages/${message_id}/status`);
+    message_status(thread_id, message_id, options = {}) {
+        return this.request('GET', `/agents/threads/${thread_id}/messages/${message_id}/status`, options);
     }
 
     /** Return all messages of a thread in conversation order. */
-    async messages(thread_id) {
-        const items = (await this.request('GET', `/agents/threads/${thread_id}/messages`)) || [];
+    async messages(thread_id, options = {}) {
+        const items = (await this.request('GET', `/agents/threads/${thread_id}/messages`, options)) || [];
         return [...items].sort((a, b) => (a.messageOrder || 0) - (b.messageOrder || 0));
     }
 
@@ -204,15 +249,15 @@ class AworkClient {
     }
 
     /** Upload bytes as temporary file and return its id for message attachments. */
-    async upload_temporary_file(name, data, mime_type = 'application/octet-stream') {
+    async upload_temporary_file(name, data, mime_type = 'application/octet-stream', options = {}) {
         const form = new FormData();
         form.append('file', new Blob([data], { type: mime_type }), name);
-        return (await this.request('POST', '/temporaryfiles', { body: form })).id;
+        return (await this.request('POST', '/temporaryfiles', { body: form, ...options })).id;
     }
 
     /** Download an agent output file by its downloadUrl (relative to the API base URL). */
-    download(download_url) {
-        return this.request('GET', download_url, { raw: true });
+    download(download_url, options = {}) {
+        return this.request('GET', download_url, { raw: true, ...options });
     }
 
     /** Signed-in user incl. id, firstName and lastName. */
@@ -226,4 +271,4 @@ class AworkClient {
     }
 }
 
-module.exports = { AworkClient, AworkError, OAuth };
+module.exports = { AworkClient, AworkError, OAuth, abortable };

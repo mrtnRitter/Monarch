@@ -6,7 +6,7 @@
     const level_names = { minimal: 'Minimal', low: 'Low', medium: 'Medium', high: 'High', xhigh: 'Extra high', max: 'Maximum', maximum: 'Maximum' };
     const state = {
         agents: [], agent: null, agent_name: null, labels: { chat: 'Chat', coCredits: 'Co-Credits', coAgents: 'Co-Agenten', stop: 'Stop' },
-        user: null, signed_in: false, status: null, steps: null, chats: [], models: { default: {}, models: [] },
+        user: null, signed_in: false, status: null, chats: [], models: { default: {}, models: [] }, active_thread_id: null,
     };
 
     const level_name = level => level_names[level] || (level ? level[0].toUpperCase() + level.slice(1) : '');
@@ -23,6 +23,11 @@
     function format_duration(ms) {
         const seconds = Math.round(ms / 1000);
         return seconds < 60 ? `${seconds} s` : `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')} min`;
+    }
+
+    // at most one decimal: 50 -> 50c, 0.46 -> 0.5c
+    function format_credits(credits) {
+        return `${Math.round(credits * 10) / 10}c`;
     }
 
     function format_date(ms) {
@@ -58,7 +63,7 @@
 
     // --- menus ---
     function close_menus(except) {
-        for (const id of ['history_menu', 'model_menu']) if (id !== except) element(id).classList.add('hidden');
+        for (const id of ['history_menu', 'model_menu', 'attach_menu']) if (id !== except) element(id).classList.add('hidden');
     }
 
     function toggle_menu(id, render) {
@@ -79,6 +84,26 @@
         if (extra) item.appendChild(extra);
         item.addEventListener('click', event => { event.stopPropagation(); on_click(event); });
         return item;
+    }
+
+    function model_item(model, checked, on_click) {
+        const item = document.createElement('div');
+        const has_factor = model.factor !== null && model.factor !== undefined;
+        const factor = has_factor ? `${model.factor}×` : '';
+        item.className = `menu-item model-row${checked ? ' selected' : ''}`;
+        item.innerHTML = `<span class="check">${escape_html(checked ? '✓' : '')}</span><span class="item-label">${escape_html(model.display || '')}</span><span class="item-factor">${escape_html(factor)}</span><span class="item-meta">${escape_html(model.provider_name || '')}</span>`;
+        if (has_factor) item.title = `Credit factor ${escape_html(model.factor)}`;
+        item.addEventListener('click', event => { event.stopPropagation(); on_click(event); });
+        return item;
+    }
+
+    function render_attach_menu() {
+        const menu = element('attach_menu');
+        const items = [['Current file', 'current'], ['Files', 'files'], ['Folder', 'folder']].map(([label, kind]) => menu_item(label, '', false, () => {
+            close_menus();
+            vscode.postMessage({ type: 'attach', kind });
+        }));
+        menu.replaceChildren(...items);
     }
 
     function render_history() {
@@ -127,13 +152,11 @@
         const override = state.status?.model || null;
         const fallback = state.models.default || {};
         const fallback_model = model_of(fallback);
-        const nodes = [header_node('AI models')];
-        nodes.push(menu_item('Agent default', `${fallback_model?.display || fallback.name || ''}${fallback.reasoning ? ` · ${level_name(fallback.reasoning)}` : ''}`, !override, () => { close_menus(); set_model(null); }));
+        const nodes = [menu_item('Agent default', `${fallback_model?.display || fallback.name || ''}${fallback.reasoning ? ` · ${level_name(fallback.reasoning)}` : ''}`, !override, () => { close_menus(); set_model(null); })];
         const levels = model_of(choice)?.levels || [];
         if (levels.length) {
             const row = document.createElement('div');
             row.className = 'levels';
-            row.insertAdjacentHTML('beforeend', '<span class="levels-label">Reasoning</span>');
             for (const level of levels) {
                 const button = document.createElement('button');
                 button.className = `level${level === choice.reasoning ? ' selected' : ''}`;
@@ -144,19 +167,21 @@
                 });
                 row.appendChild(button);
             }
-            nodes.push(row);
+            nodes.push(separator_node(), header_node('Reasoning'), row);
         }
-        nodes.push(separator_node());
-        for (const model of state.models.models) {
-            const checked = Boolean(override) && override.provider === model.provider && override.name === model.name;
-            const item = menu_item(model.display, model.provider_name, checked, () => {
-                close_menus();
-                set_model({ provider: model.provider, name: model.name, reasoning: model.levels.includes(choice.reasoning) ? choice.reasoning : null });
-            });
-            if (model.factor !== null) item.title = `Credit factor ${model.factor}`;
-            nodes.push(item);
-        }
-        if (!state.models.models.length) nodes.push(note_node('No models available.'));
+        nodes.push(separator_node(), header_node('AI models'));
+        if (state.models.models.length) {
+            const table = document.createElement('div');
+            table.className = 'model-table';
+            for (const model of state.models.models) {
+                const checked = Boolean(override) && override.provider === model.provider && override.name === model.name;
+                table.appendChild(model_item(model, checked, () => {
+                    close_menus();
+                    set_model({ provider: model.provider, name: model.name, reasoning: model.levels.includes(choice.reasoning) ? choice.reasoning : null });
+                }));
+            }
+            nodes.push(table);
+        } else nodes.push(note_node('No models available.'));
         menu.replaceChildren(...nodes);
     }
 
@@ -196,21 +221,44 @@
         node.scrollIntoView({ block: 'end' });
     }
 
+    // relay and agent steps between two answers: one line with the latest step and "+ x Steps"; a click shows the earlier ones
+    function step_group() {
+        let node = messages_box().lastElementChild;
+        // warning and error boxes do not split the steps into several lines
+        while (node?.matches('.message.warning, .message.error')) node = node.previousElementSibling;
+        if (node?.classList.contains('steps')) return node;
+        const group = Object.assign(document.createElement('div'), { className: 'steps' });
+        const line = Object.assign(document.createElement('div'), { className: 'step step-current', tabIndex: -1 });
+        line.setAttribute('role', 'button');
+        line.append(Object.assign(document.createElement('span'), { className: 'step-text' }), Object.assign(document.createElement('span'), { className: 'step-more', hidden: true }));
+        const toggle = () => {
+            const earlier = group.querySelector('.step-list').children.length;
+            if (!earlier) return;
+            group.classList.toggle('open');
+            const open = group.classList.contains('open');
+            line.querySelector('.step-more').hidden = open || !earlier;
+            line.setAttribute('aria-expanded', String(open));
+        };
+        line.addEventListener('click', toggle);
+        line.addEventListener('keydown', event => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); toggle(); } });
+        group.append(Object.assign(document.createElement('div'), { className: 'step-list' }), line);
+        append(group);
+        return group;
+    }
+
     function add_step(text) {
-        if (!state.steps || messages_box().lastElementChild !== state.steps) {
-            state.steps = document.createElement('details');
-            state.steps.className = 'steps';
-            state.steps.appendChild(document.createElement('summary'));
-            append(state.steps);
-        }
-        const step = document.createElement('div');
-        step.className = 'step';
-        step.textContent = text;
-        state.steps.appendChild(step);
-        const items = [...state.steps.querySelectorAll('.step')];
-        const relay = items.some(item => item.textContent.startsWith('relay'));
-        state.steps.querySelector('summary').textContent = `${relay ? 'relay · ' : ''}${items.length} ${items.length === 1 ? 'event' : 'events'}`;
-        state.steps.scrollIntoView({ block: 'end' });
+        const group = step_group();
+        const line = group.querySelector('.step-current');
+        const current = line.querySelector('.step-text');
+        if (current.textContent) group.querySelector('.step-list').appendChild(Object.assign(document.createElement('div'), { className: 'step', textContent: current.textContent, title: current.textContent }));
+        Object.assign(current, { textContent: text, title: text });
+        const earlier = group.querySelector('.step-list').children.length;
+        Object.assign(line.querySelector('.step-more'), { textContent: `+ ${earlier} ${earlier === 1 ? 'Step' : 'Steps'}`, hidden: !earlier || group.classList.contains('open') });
+        line.classList.toggle('expandable', earlier > 0);
+        line.tabIndex = earlier ? 0 : -1;
+        if (earlier) line.setAttribute('aria-expanded', String(group.classList.contains('open')));
+        line.title = earlier ? `${text}\n(click to ${group.classList.contains('open') ? 'hide' : 'show'} the earlier steps)` : text;
+        line.scrollIntoView({ block: 'end' });
     }
 
     // one single-choice question: a click sends the option; otherwise answers are collected and sent together
@@ -220,9 +268,10 @@
         const questions = item.questions || [];
         const instant = questions.length === 1 && !questions[0].multi && questions[0].options.length > 0;
         const lock = () => card.querySelectorAll('button, input').forEach(node => { node.disabled = true; });
+        open_cards.push({ lock, interrupt_id: item.interrupt_id });
         const submit = Object.assign(document.createElement('button'), { className: 'question-send', type: 'button', textContent: 'Send answer', disabled: true });
         const update = () => { submit.disabled = !parts.every(part => part.answers().length); };
-        const on_send = option => send_text(option) && (lock(), true);
+        const on_send = option => send_text(option);
         const parts = questions.map(question => question_part(card, question, instant, instant ? on_send : update));
         if (instant) {
             if (questions[0].custom) card.insertAdjacentHTML('beforeend', '<div class="question-hint">or type your own answer below</div>');
@@ -259,7 +308,7 @@
     }
 
     function add_message(item) {
-        if (item.role === 'info') return add_step(item.text);
+        if (item.role === 'step' || item.role === 'info') return add_step(item.text);
         if (item.role === 'question') return append(question_card(item));
         // warnings (e.g. files not downloaded) stay until closed
         if (item.role === 'error' || item.role === 'warning') {
@@ -283,10 +332,14 @@
         }
         const turn = document.createElement('div');
         turn.className = 'turn';
+        if (item.credit_key) turn.dataset.creditKey = item.credit_key;
         const head = document.createElement('div');
         head.className = 'turn-head';
         head.appendChild(avatar(agent_avatar()));
-        head.insertAdjacentHTML('beforeend', `<span class="name">${escape_html(state.agent_name || 'Agent')}</span>${item.duration_ms ? `<span class="meta">· ${format_duration(item.duration_ms)}</span>` : ''}`);
+        head.appendChild(Object.assign(document.createElement('span'), { className: 'name', textContent: state.agent_name || 'Agent' }));
+        if (item.duration_ms) head.appendChild(Object.assign(document.createElement('span'), { className: 'meta', textContent: `· ${format_duration(item.duration_ms)}` }));
+        head.appendChild(Object.assign(document.createElement('span'), { className: 'meta credits', hidden: true }));
+        show_turn_credits(head, item.credits);
         if (item.text) {
             const copy = Object.assign(document.createElement('button'), { className: 'code-btn turn-copy', textContent: 'Copy', title: 'Copy answer (Markdown)' });
             copy.addEventListener('click', () => { vscode.postMessage({ type: 'copy', text: item.text }); flash(copy); });
@@ -310,6 +363,19 @@
         }
         turn.append(head, body);
         append(turn);
+    }
+
+    function show_turn_credits(head, credits) {
+        if (typeof credits !== 'number' || !Number.isFinite(credits)) return;
+        const node = head.querySelector('.credits');
+        Object.assign(node, { textContent: `· ${format_credits(credits)}`, hidden: false });
+    }
+
+    // credits of an answer arrive after the answer; other chats and unknown answers are ignored
+    function update_turn_credits({ thread_id, key, credits }) {
+        if (!key || (thread_id && state.active_thread_id && thread_id !== state.active_thread_id)) return;
+        const turn = [...messages_box().querySelectorAll('.turn')].find(node => node.dataset.creditKey === key);
+        if (turn) show_turn_credits(turn.querySelector('.turn-head'), credits);
     }
 
     // --- code block actions: one handler for all blocks, also for blocks from the history ---
@@ -371,7 +437,10 @@
         const co_agents = element('co_agents');
         co_agents.className = 'badge adjustable';
         co_agents.innerHTML = `${co_controls.less}${co_controls.value}<span class="badge-content"><span class="label">${escape_html(state.labels.coAgents)}</span> ${escape_html(String(status.co_agents))} / ${escape_html(String(status.max_co_agents || '∞'))}${status.working ? ` · ${escape_html(String(status.working))} working` : ''}</span>${co_controls.more}`;
-        element('send').disabled = status.busy;
+        const send_button = element('send');
+        send_button.disabled = status.busy;
+        send_button.classList.toggle('hidden', status.busy);
+        element('stop').classList.toggle('hidden', !status.busy);
         element('model').textContent = `${model_label()} ▾`;
         if (!element('model_menu').classList.contains('hidden')) render_model_menu();
         update_working();
@@ -384,17 +453,39 @@
     });
 
     function update_working() {
+        const messages = messages_box();
         const status = state.status;
-        const active = status && status.busy && status.phase;
-        element('working').classList.toggle('hidden', !active);
-        if (!active) return;
-        const elapsed = format_duration(Date.now() - status.phase_since);
-        element('working_text').textContent = status.phase === 'relay' ? `waiting for ${state.labels.coAgents.toLowerCase()} … ${elapsed}` : `${state.agent_name} is working … ${elapsed}`;
+        const active = Boolean(status?.busy);
+        let wrappers = [...messages.querySelectorAll('.step-spinner')];
+        if (!active) {
+            wrappers.forEach(node => node.remove());
+            [...messages.querySelectorAll('.steps')].forEach(group => {
+                if (!group.querySelector('.step-text')?.textContent && !group.querySelector('.step-list')?.children.length) group.remove();
+            });
+            return;
+        }
+
+        const group = step_group();
+        const line = group.querySelector('.step-current');
+        const more = line.querySelector('.step-more');
+        let spinner = group.querySelector('.step-spinner') || wrappers.shift();
+        wrappers.filter(node => node !== spinner).forEach(node => node.remove());
+        if (!spinner) {
+            spinner = document.createElement('span');
+            spinner.className = 'step-spinner';
+            spinner.append(Object.assign(document.createElement('span'), { className: 'spinner' }), Object.assign(document.createElement('span'), { className: 'step-elapsed' }));
+        }
+        const elapsed = spinner.querySelector('.step-elapsed');
+        elapsed.textContent = status.phase_since == null ? '' : format_duration(Date.now() - status.phase_since);
+        if (spinner.parentNode !== line || Array.from(line.children).indexOf(spinner) !== Array.from(line.children).indexOf(more) - 1) line.insertBefore(spinner, more);
+        [...messages.querySelectorAll('.steps')].forEach(other => {
+            if (other !== group && !other.querySelector('.step-text')?.textContent && !other.querySelector('.step-list')?.children.length) other.remove();
+        });
     }
     setInterval(update_working, 1000);
 
     function set_enabled(enabled) {
-        for (const id of ['history', 'new_chat', 'model', 'stop', 'send', 'attach_current', 'attach_files', 'attach_folder']) element(id).disabled = !enabled;
+        for (const id of ['history', 'new_chat', 'model', 'stop', 'send', 'attach']) element(id).disabled = !enabled;
         element('input').disabled = !enabled;
     }
 
@@ -402,8 +493,10 @@
         if (data.agent && data.agent !== state.agent) return;
         if (data.type === 'init') {
             const labels = data.labels || {};
-            Object.assign(state, { agents: data.agents, agent: data.current, agent_name: data.current_name, labels: { ...state.labels, ...labels, chat: labels.chat || labels.credits || state.labels.chat }, user: data.user, signed_in: data.signed_in, steps: null, chats: [], models: { default: {}, models: [] }, status: null });
+            Object.assign(state, { agents: data.agents, agent: data.current, agent_name: data.current_name, labels: { ...state.labels, ...labels, chat: labels.chat || labels.credits || state.labels.chat }, user: data.user, signed_in: data.signed_in, chats: [], models: { default: {}, models: [] }, status: null, active_thread_id: null });
             element('stop').textContent = state.labels.stop;
+            element('stop').classList.add('hidden');
+            element('send').classList.remove('hidden');
             element('model').textContent = 'Model ▾';
             render_agents();
             set_enabled(Boolean(data.current));
@@ -411,12 +504,19 @@
             close_menus();
             show_empty_state();
         } else if (data.type === 'history') {
-            state.steps = null;
+            state.active_thread_id = typeof data.thread_id === 'string' ? data.thread_id : null;
+            open_cards.length = 0;
             show_empty_state();
             data.items.forEach(add_message);
+            update_working();
         } else if (data.type === 'message') {
             add_message(data.item);
+            update_working();
+        } else if (data.type === 'answer_credits') {
+            update_turn_credits(data);
         } else if (data.type === 'status') {
+            // a new chat gets its thread with the first message; no history message follows
+            if (state.active_thread_id === null && data.status.thread_id) state.active_thread_id = data.status.thread_id;
             show_status(data.status);
         } else if (data.type === 'chats') {
             state.chats = data.items;
@@ -435,12 +535,17 @@
             }));
         } else if (data.type === 'error') {
             add_message({ role: 'error', text: data.text, transient: data.transient });
+            update_working();
         }
     });
 
+    // a sent message answers the latest open question card; all open cards are closed afterwards
+    const open_cards = [];
     function send_text(text) {
         if (!text.trim() || state.status?.busy) return false;
-        vscode.postMessage({ type: 'send', text });
+        const interrupt_id = [...open_cards].reverse().find(card => card.interrupt_id)?.interrupt_id;
+        vscode.postMessage({ type: 'send', text, ...(interrupt_id ? { interrupt_id } : {}) });
+        open_cards.splice(0).forEach(card => card.lock());
         return true;
     }
     const send = () => {
@@ -479,7 +584,7 @@
     element('new_chat').addEventListener('click', event => vscode.postMessage({ type: event.ctrlKey || event.metaKey ? 'import_chat' : 'new_chat' }));
     element('history').addEventListener('click', event => { event.stopPropagation(); toggle_menu('history_menu', render_history); });
     element('model').addEventListener('click', event => { event.stopPropagation(); toggle_menu('model_menu', render_model_menu); });
+    element('attach').addEventListener('click', event => { event.stopPropagation(); toggle_menu('attach_menu', render_attach_menu); });
     element('agent').addEventListener('change', event => vscode.postMessage({ type: 'select_agent', id: event.target.value }));
-    for (const kind of ['current', 'files', 'folder']) element(`attach_${kind}`).addEventListener('click', () => vscode.postMessage({ type: 'attach', kind }));
     vscode.postMessage({ type: 'ready' });
 })();

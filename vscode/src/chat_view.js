@@ -1,7 +1,8 @@
 'use strict';
-/** Webview chat window: agents from awork, chat history, model choice, status (agent credits, co-agent credits, co-agents, stop), messages and attachments. */
+/** Webview chat window: agents from awork, chat history, model choice, messages and attachments; status below the input. */
 const vscode = require('vscode');
 const crypto = require('crypto');
+const { safe_rel_path, basename } = require('./files');
 const { ChatSession, Notice } = require('./session');
 const { log } = require('./log');
 const { create_zip } = require('./zip');
@@ -96,10 +97,12 @@ function merge_agents(aworks, overrides, { filter = 'all', me_id = null } = {}) 
     const find_override = agent => overrides.find(item => item && item.agentId === agent.id) || overrides.find(item => item && !item.agentId && item.name === agent.name);
     const override_of = agent => find_override(agent) || {};
     const wanted = agent => filter !== 'own' || (me_id && agent.createdBy === me_id) || Boolean(find_override(agent));
+    // without coAgentName the co-agent IDs use the co-agent's awork name, e.g. "MiniZilla" -> minizilla_1
+    const co_agent_name = id => ((id && aworks.find(agent => agent.id === id)?.name) || '').toLowerCase().replace(/[^a-z0-9]+/g, '') || 'coagent';
     const merged = aworks.filter(agent => agent.id && !agent.isArchived && wanted(agent)).map(agent => {
         const override = override_of(agent);
         const labels = override.labels || {};
-        return { agentId: agent.id, name: agent.name || 'Agent', has_image: Boolean(agent.hasImage), coAgentId: override.coAgentId || '', coAgentName: override.coAgentName || 'coagent', labels: { ...default_labels, ...labels, chat: labels.chat || labels.credits || default_labels.chat } };
+        return { agentId: agent.id, name: agent.name || 'Agent', has_image: Boolean(agent.hasImage), coAgentId: override.coAgentId || '', coAgentName: override.coAgentName || co_agent_name(override.coAgentId), labels: { ...default_labels, ...labels, chat: labels.chat || labels.credits || default_labels.chat } };
     });
     const co_agent_ids = new Set(merged.map(agent => agent.coAgentId).filter(Boolean));
     return merged.filter(agent => !co_agent_ids.has(agent.agentId)).sort((a, b) => a.name.localeCompare(b.name));
@@ -244,6 +247,7 @@ class ChatView {
                 message: item => this._post({ type: 'message', item, agent: agent.agentId }),
                 info: text => this._post({ type: 'message', item: { role: 'info', text }, agent: agent.agentId }),
                 status: status => this._post({ type: 'status', status, agent: agent.agentId }),
+                answer_credits: ({ thread_id, key, credits }) => this._post({ type: 'answer_credits', thread_id, key, credits, agent: agent.agentId }),
             };
             this.sessions.set(agent.agentId, new ChatSession({ client: this.client, agent, limits: this._limits(), store: this._store(agent), workspace: workspace_adapter, ui }));
         }
@@ -293,17 +297,17 @@ class ChatView {
 <div class="menu-wrap"><button id="history" class="icon-btn" title="Chat history"><svg viewBox="0 0 16 16" width="21" height="21" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 8a5.5 5.5 0 1 0 1.6-3.9"/><path d="M2.5 2.4v2.7h2.7"/><path d="M8 5v3.2l2.2 1.4"/></svg></button><div id="history_menu" class="menu right hidden"></div></div>
 <button id="new_chat" class="icon-btn primary" title="New chat"><svg viewBox="0 0 16 16" width="21" height="21" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M8 3.5v9M3.5 8h9"/></svg></button>
 </div>
-<div class="statusbar" id="statusbar"><span id="credits" class="badge"></span><span id="co_credits" class="badge"></span><span id="co_agents" class="badge"></span><span class="spacer"></span>
-<div class="menu-wrap"><button id="model" class="picker-btn" title="Model for this chat"></button><div id="model_menu" class="menu right hidden"></div></div>
-<button id="stop" class="stop-btn"></button></div>
 <div class="messages" id="messages"></div>
-<div id="working" class="working hidden"><span class="spinner"></span><span id="working_text"></span></div>
 <div class="input-area">
 <div id="splitter" class="splitter" title="Drag to resize the input"></div>
-<div class="input-toolbar"><button id="attach_current" class="picker-btn" title="Attach the open file">📄 Current file</button><button id="attach_files" class="picker-btn" title="Attach files">📎 Files</button><button id="attach_folder" class="picker-btn" title="Attach a folder as ZIP">📁 Folder</button></div>
+<div class="input-toolbar" id="statusbar">
+<div class="menu-wrap attach-wrap"><button id="attach" class="icon-btn" title="Attach"><svg viewBox="0 0 16 16" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M8 3.5v9M3.5 8h9"/></svg></button><div id="attach_menu" class="menu hidden"></div></div>
+<div class="toolbar-status"><span id="credits" class="badge"></span><span id="co_credits" class="badge"></span><span id="co_agents" class="badge"></span></div>
+<div class="menu-wrap model-wrap"><button id="model" class="picker-btn" title="Model for this chat"></button><div id="model_menu" class="menu up right hidden"></div></div>
+</div>
 <div id="attachments" class="attachments"></div>
 <div class="input-editor-wrap"><textarea id="input" rows="3" placeholder="Message …"></textarea></div>
-<div class="input-send-row"><span class="hint">Enter = send · Shift+Enter = new line</span><button id="send" class="send-btn">Send</button></div>
+<div class="input-send-row"><span class="hint">Enter = send · Shift+Enter = new line</span><button id="send" class="send-btn">Send</button><button id="stop" class="stop-btn hidden"></button></div>
 </div>
 <script nonce="${nonce}" src="${asset('markdown.js')}"></script>
 <script nonce="${nonce}" src="${asset('chat.js')}"></script></body></html>`;
@@ -323,7 +327,7 @@ class ChatView {
                 await this.context.workspaceState.update('monarch.agent', message.id);
                 await this.refresh();
             },
-            send: () => this._send(message.text),
+            send: () => this._send(message.text, message.interrupt_id),
             stop: () => this.stop(),
             new_chat: () => this.new_chat(),
             open_chat: () => this._open_chat(message.thread_id),
@@ -395,18 +399,23 @@ class ChatView {
     }
 
     async _show_history(session, agent) {
+        const requested_thread_id = session.state.thread_id;
         try {
-            this._post({ type: 'history', items: await session.history(), agent: agent.agentId });
+            const items = await session.history();
+            if (session.state.thread_id !== requested_thread_id) return;
+            this._post({ type: 'history', items, thread_id: requested_thread_id, agent: agent.agentId });
         } catch (error) {
+            if (session.state.thread_id !== requested_thread_id) return;
             if (error.status !== 404) {
-                this._post({ type: 'history', items: [{ role: 'info', text: `history not loaded: ${error.message}` }], agent: agent.agentId });
+                this._post({ type: 'history', items: [{ role: 'info', text: `history not loaded: ${error.message}` }], thread_id: requested_thread_id, agent: agent.agentId });
                 return;
             }
             // chat was deleted in awork
-            const thread_id = session.state.thread_id;
             session.new_chat();
-            await this._drop_chat(agent, thread_id);
-            this._post({ type: 'history', items: [{ role: 'error', text: 'This chat no longer exists in awork and was removed from the history.' }], agent: agent.agentId });
+            const new_thread_id = session.state.thread_id;
+            await this._drop_chat(agent, requested_thread_id);
+            if (session.state.thread_id !== new_thread_id) return;
+            this._post({ type: 'history', items: [{ role: 'error', text: 'This chat no longer exists in awork and was removed from the history.' }], thread_id: new_thread_id, agent: agent.agentId });
         }
     }
 
@@ -461,13 +470,13 @@ class ChatView {
         await this._drop_chat(agent, thread_id);
     }
 
-    async _send(text) {
+    async _send(text, interrupt_id = null) {
         if (!text.trim()) return;
         const session = this._session();
         const { uploads, note } = await this._uploads();
         this.attachments = [];
         this._post_attachments();
-        await session.send(text + note, uploads, await this._context());
+        await session.send(text + note, uploads, await this._context(), interrupt_id);
     }
 
     /** Context line for the agent: open repo, online link, branch, kind of local changes. */
@@ -511,7 +520,7 @@ class ChatView {
                 if (this.attachments.length >= max_attachments) throw new Notice(`Max. ${max_attachments} attachments per message.`);
                 const rel = vscode.workspace.asRelativePath(uri, false);
                 if (!folder && (await vscode.workspace.fs.stat(uri)).size > limit_mb * 1024 * 1024) throw new Notice(`File ${rel} exceeds monarch.maxFolderMB (${limit_mb} MB).`);
-                this.attachments.push({ id: crypto.randomUUID(), uri, folder, rel, label: folder ? `${rel}/` : rel });
+                this.attachments.push({ id: crypto.randomUUID(), uri, folder, rel, label: folder ? `${rel}/` : rel, bundle: kind !== 'current' });
             }
         } finally {
             this._post_attachments();
@@ -521,32 +530,47 @@ class ChatView {
     async _uploads() {
         const uploads = [];
         const notes = [];
-        for (const { uri, folder, rel } of this.attachments) {
-            const name = uri.path.split('/').pop();
-            if (folder) {
-                uploads.push({ name: `${name}.zip`, data: await this._zip_folder(uri, name), mime_type: 'application/zip' });
-                notes.push(`folder ${rel}/ as ${name}.zip`);
-            } else {
+        const bundle_entries = [];
+        const bundle_names = [];
+        const seen_names = new Set();
+        for (const { uri, folder, rel, bundle, label } of this.attachments) {
+            const name = basename(uri.path);
+            if (!bundle) {
                 uploads.push({ name, data: await vscode.workspace.fs.readFile(uri), mime_type: mime_types[name.slice(name.lastIndexOf('.'))] || 'application/octet-stream' });
                 notes.push(rel);
+                continue;
             }
+            const prefix = safe_rel_path(rel) || basename(uri.path);
+            const entries = folder ? await this._folder_entries(uri, prefix) : [{ name: prefix, data: await vscode.workspace.fs.readFile(uri), mtime: new Date((await vscode.workspace.fs.stat(uri)).mtime) }];
+            for (const entry of entries) {
+                if (seen_names.has(entry.name)) continue;
+                seen_names.add(entry.name);
+                bundle_entries.push(entry);
+            }
+            bundle_names.push(label || (folder ? `${prefix}/` : prefix));
+        }
+        if (bundle_entries.length) {
+            uploads.push({ name: 'attachments.zip', data: create_zip(bundle_entries), mime_type: 'application/zip' });
+            notes.push(`attachments.zip (${bundle_names.join(', ')})`);
         }
         return { uploads, note: notes.length ? `\n\nAttached (relative to repo root): ${notes.join(', ')}` : '' };
     }
 
-    async _zip_folder(folder_uri, name) {
-        const limit = _config().get('maxFolderMB') * 1024 * 1024;
+    async _folder_entries(folder_uri, prefix) {
+        const max_mb = _config().get('maxFolderMB');
+        const limit = max_mb * 1024 * 1024;
         const found = await vscode.workspace.findFiles(new vscode.RelativePattern(folder_uri, '**/*'), _exclude_glob());
         const entries = [];
         let total = 0;
         for (const uri of found) {
             const stat = await vscode.workspace.fs.stat(uri);
             total += stat.size;
-            if (total > limit) throw new Notice(`Folder ${name} exceeds monarch.maxFolderMB (${_config().get('maxFolderMB')} MB).`);
-            entries.push({ name: `${name}/${uri.path.slice(folder_uri.path.replace(/\/$/, '').length + 1)}`, data: await vscode.workspace.fs.readFile(uri), mtime: new Date(stat.mtime) });
+            if (total > limit) throw new Notice(`Folder ${prefix} exceeds monarch.maxFolderMB (${max_mb} MB).`);
+            const relative_path = uri.path.slice(folder_uri.path.replace(/\/$/, '').length + 1);
+            entries.push({ name: `${prefix}/${relative_path}`, data: await vscode.workspace.fs.readFile(uri), mtime: new Date(stat.mtime) });
         }
-        if (!entries.length) throw new Notice(`Folder ${name} has no files to attach (only folders inside the open workspace are supported).`);
-        return create_zip(entries);
+        if (!entries.length) throw new Notice(`Folder ${prefix} has no files to attach (only folders inside the open workspace are supported).`);
+        return entries;
     }
 
     // --- code block actions (like Copilot chat) ---
