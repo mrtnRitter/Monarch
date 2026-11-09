@@ -47,6 +47,7 @@ function activate(context) {
         vscode.commands.registerCommand('monarch.stop', run(() => view.stop())),
         vscode.workspace.onDidChangeConfiguration(event => {
             if (event.affectsConfiguration('monarch.agents') || event.affectsConfiguration('monarch.agentFilter')) view.refresh({ reload_agents: true });
+            if (event.affectsConfiguration('monarch.notesPosition')) view.post_notes_position();
         }),
     );
 }

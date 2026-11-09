@@ -7,7 +7,19 @@
     const state = {
         agents: [], agent: null, agent_name: null, labels: { chat: 'Chat', coCredits: 'Co-Credits', coAgents: 'Co-Agenten', stop: 'Stop' },
         user: null, signed_in: false, status: null, chats: [], models: { default: {}, models: [] }, active_thread_id: null,
+        notes_rev: null, notes_visible: false,
     };
+
+    function apply_notes_position(position) {
+        document.body.classList.toggle('notes-left', position === 'left');
+        document.body.classList.toggle('notes-right', position === 'right');
+    }
+
+    function apply_notes_visible() {
+        element('notes_pane').classList.toggle('hidden', !state.notes_visible);
+        element('notes_toggle').classList.toggle('active', state.notes_visible);
+        element('notes_toggle').setAttribute('aria-pressed', String(state.notes_visible));
+    }
 
     const level_name = level => level_names[level] || (level ? level[0].toUpperCase() + level.slice(1) : '');
     const current_agent = () => state.agents.find(agent => agent.id === state.agent) || null;
@@ -92,7 +104,6 @@
         const factor = has_factor ? `${model.factor}×` : '';
         item.className = `menu-item model-row${checked ? ' selected' : ''}`;
         item.innerHTML = `<span class="check">${escape_html(checked ? '✓' : '')}</span><span class="item-label">${escape_html(model.display || '')}</span><span class="item-factor">${escape_html(factor)}</span><span class="item-meta">${escape_html(model.provider_name || '')}</span>`;
-        if (has_factor) item.title = `Credit factor ${escape_html(model.factor)}`;
         item.addEventListener('click', event => { event.stopPropagation(); on_click(event); });
         return item;
     }
@@ -485,7 +496,7 @@
     setInterval(update_working, 1000);
 
     function set_enabled(enabled) {
-        for (const id of ['history', 'new_chat', 'model', 'stop', 'send', 'attach']) element(id).disabled = !enabled;
+        for (const id of ['history', 'new_chat', 'model', 'stop', 'send', 'attach', 'notes_toggle', 'notes']) element(id).disabled = !enabled;
         element('input').disabled = !enabled;
     }
 
@@ -493,7 +504,10 @@
         if (data.agent && data.agent !== state.agent) return;
         if (data.type === 'init') {
             const labels = data.labels || {};
-            Object.assign(state, { agents: data.agents, agent: data.current, agent_name: data.current_name, labels: { ...state.labels, ...labels, chat: labels.chat || labels.credits || state.labels.chat }, user: data.user, signed_in: data.signed_in, chats: [], models: { default: {}, models: [] }, status: null, active_thread_id: null });
+            Object.assign(state, { agents: data.agents, agent: data.current, agent_name: data.current_name, labels: { ...state.labels, ...labels, chat: labels.chat || labels.credits || state.labels.chat }, user: data.user, signed_in: data.signed_in, chats: [], models: { default: {}, models: [] }, status: null, active_thread_id: null, notes_rev: null, notes_visible: Boolean(data.notes_visible) });
+            element('notes').value = '';
+            apply_notes_position(data.notes_position);
+            apply_notes_visible();
             element('stop').textContent = state.labels.stop;
             element('stop').classList.add('hidden');
             element('send').classList.remove('hidden');
@@ -503,6 +517,11 @@
             if (data.input_height) set_input_height(data.input_height);
             close_menus();
             show_empty_state();
+        } else if (data.type === 'notes') {
+            state.notes_rev = data.rev;
+            if (element('notes').value !== data.text) element('notes').value = data.text;
+        } else if (data.type === 'notes_position') {
+            apply_notes_position(data.position);
         } else if (data.type === 'history') {
             state.active_thread_id = typeof data.thread_id === 'string' ? data.thread_id : null;
             open_cards.length = 0;
@@ -586,5 +605,14 @@
     element('model').addEventListener('click', event => { event.stopPropagation(); toggle_menu('model_menu', render_model_menu); });
     element('attach').addEventListener('click', event => { event.stopPropagation(); toggle_menu('attach_menu', render_attach_menu); });
     element('agent').addEventListener('change', event => vscode.postMessage({ type: 'select_agent', id: event.target.value }));
+    element('notes').addEventListener('input', () => {
+        if (state.notes_rev !== null) vscode.postMessage({ type: 'set_notes', text: element('notes').value, rev: state.notes_rev });
+    });
+    element('notes_toggle').addEventListener('click', () => {
+        state.notes_visible = !state.notes_visible;
+        apply_notes_visible();
+        vscode.postMessage({ type: 'notes_visible', visible: state.notes_visible });
+        if (state.notes_visible) element('notes').focus();
+    });
     vscode.postMessage({ type: 'ready' });
 })();

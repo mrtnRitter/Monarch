@@ -41,11 +41,11 @@ Requirements: VS Code 1.85+ with the built-in Git extension, an awork account in
 
 ```bash
 cd monarch/vscode
-python build_vsix.py                         # -> monarch-0.20.1.vsix
-code --install-extension monarch-0.20.1.vsix
+python build_vsix.py                         # -> monarch-0.21.0.vsix
+code --install-extension monarch-0.21.0.vsix
 ```
 
-Or in VS Code: Extensions view → `…` → **Install from VSIX…**. Optional local tests: `node test/test.js`, `node test/steps_test.js`, `node test/webview_test.js`, `node test/extension_smoke.js`, `node test/relay_plan_progress_test.js` and `node test/chat_view_test.js`.
+Or in VS Code: Extensions view → `…` → **Install from VSIX…**. Optional local tests: `node test/test.js`, `node test/steps_test.js`, `node test/webview_test.js`, `node test/extension_smoke.js`, `node test/relay_plan_progress_test.js`, `node test/chat_view_test.js` and `node test/notes_test.js`; `test/webview_notes_test.js` needs jsdom (`NODE_PATH=<folder>/node_modules node test/webview_notes_test.js`).
 
 ## Setup in awork (once per workspace, by the agent owner)
 
@@ -57,7 +57,7 @@ Or in VS Code: Extensions view → `…` → **Install from VSIX…**. Optional 
 
 Every user, also the agent owner, does this once:
 
-1. **Install** `monarch-0.20.0.vsix` (see *Installation*) and reload VS Code (Command Palette → **Developer: Reload Window**).
+1. **Install** `monarch-0.21.0.vsix` (see *Installation*) and reload VS Code (Command Palette → **Developer: Reload Window**).
 2. **Sign in:** Open **monarch** in the activity bar and click **Sign in** (or Command Palette → **monarch: Sign in**). The browser opens; log in to awork and select the workspace.
 3. **Check the agents:** The agent circles at the top show the agents. If an agent shared with you is missing, set **Monarch: Agent Filter** (`monarch.agentFilter`) to `all`.
 4. **Test files:** Start a **new chat** (blue **+**) and send: `Create output/download_test.txt with three lines.`
@@ -102,6 +102,7 @@ All settings are optional. The agent list comes from awork (see `monarch.agentFi
 | `monarch.relayTimeout` | `600` | Seconds the relay waits before waking the agent with the current state, including the progress of working co-agents; `0` = no limit |
 | `monarch.pollInterval` | `3` | Seconds between status checks |
 | `monarch.maxFolderMB` | `20` | Max. size of a folder or file attachment |
+| `monarch.notesPosition` | `right` | Side of the notes pane next to the chat: `left` or `right` |
 | `monarch.syncInterval` | `4` | Seconds between checks for new messages of the current chat written elsewhere (e.g. awork web app) while the chat window is visible; while the agent is working, a newer message of yours written elsewhere ends the wait; `0` = off |
 
 ## Usage
@@ -112,6 +113,7 @@ All settings are optional. The agent list comes from awork (see `monarch.agentFi
 | Element | Function |
 |---|---|
 | Agent circles | Agents according to `monarch.agentFilter`, with their profile pictures; click to select. If they do not fit into the panel, a dropdown is shown instead. |
+| Notes (note sheet) | Left of the history button: shows or hides the notes pane of the current chat (full height of the window, left or right of the chat according to `monarch.notesPosition`); shown or hidden stays as set for all chats |
 | History (clock) | Chats of the selected agent from all repos (max. 100), newest first, with repo name and date; click to continue a chat, ✕ removes it from the list (the chat stays in awork) |
 | New chat (blue +) | Start a new conversation with the selected agent. **Ctrl+click** (Mac: Cmd+click) takes over an existing chat instead (workaround, e.g. for chats started in the awork web app): paste its link (`https://<workspace>.awork.com/ai/thread/<id>`) or id; the chat must belong to the selected agent and be readable with your login. It opens and is added to the history. |
 | Row above the input | **+** (attachments) on the left, **Chat**, **Co-Credits** and **Co-agents** in the middle, **Model** on the right (details below) |
@@ -146,6 +148,12 @@ If the agent credits cannot be read and `maxCredits` is not `0` (or the co-agent
 
 Profile pictures are loaded once per VS Code session; without a picture, initials are shown.
 
+### Notes
+
+Free text for ideas and open points of the current chat, outside the repo. Type into the notes pane; the text is saved with the chat in the history and comes back when the chat is continued. A new chat starts with empty notes; notes typed in a new chat before its first message are lost when you switch to another chat. **✕** in the history removes the notes of that chat as well.
+
+The agent sees the notes: when they changed since the last message to the agent (also relay messages), monarch adds them at the end of the next message as a `[monarch notes] … [/monarch notes]` block, before the context line; the block is not shown in the chat. The agent replaces the notes with `### ORCA: notes` (see *Co-agents*); the pane shows the new text at once. If you changed the notes after the agent's last message, the command is refused and the agent gets your current notes.
+
 ### "This repo" (repo context)
 
 The first message of a chat gets a context line at the end that is not shown in the chat. It tells the agent which repo is open in VS Code (the first workspace folder), the browser link of its git remote (`origin` or the upstream of the branch, without credentials), the branch and whether there are uncommitted changes or commits not pushed. Without a remote it says that the repo is not online. Later messages only get the line again when it changes (other repo, link or branch, or local changes appear or disappear). The agent reads the repo via this link (only the pushed state); attached files take precedence over the link. Requires the built-in VS Code Git extension.
@@ -177,6 +185,7 @@ An agent with `coAgentId` controls co-agents with blocks at the end of its answe
 | `### ORCA: cancel <id>` | Stop one co-agent |
 | `### ORCA: wait` | Keep waiting |
 | `### ORCA: inspect` + `ATTACH:` lines | Send files to the agent for its own review, at once: `ATTACH: <co-agent id>` (all its staged files), `ATTACH: <repo path>` (staged version, else local repo), `ATTACH: repo:<repo path>` (local repo version, e.g. the base of a staged file); max. 20 files per answer. Wakes no co-agent and writes nothing. Not allowed in the same answer as `spawn`, `send`, `wait`, `commit` or `stopzilla` |
+| `### ORCA: notes` + complete new notes | Replace the notes of this chat (empty = clear); refused if the user changed them after the agent's last message, then the agent is woken with the current notes. Wakes no co-agent, works without `coAgentId` |
 | `### ORCA: commit` | Write all staged co-agent files into the repo; failed ones stay staged |
 | `### ORCA: stopzilla` | Stop all co-agents, close the job |
 

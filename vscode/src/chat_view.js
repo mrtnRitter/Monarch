@@ -191,6 +191,10 @@ class ChatView {
         return agents.find(agent => agent.agentId === stored || agent.name === stored) || agents[0] || null;
     }
 
+    _notes_position() {
+        return _config().get('notesPosition') === 'left' ? 'left' : 'right';
+    }
+
     _limits() {
         const config = _config();
         return Object.fromEntries(['maxCredits', 'maxCoAgentCredits', 'maxCoAgents', 'creditStep', 'relayTimeout', 'pollInterval', 'syncInterval', 'maxFolderMB'].map(key => [key, config.get(key)]));
@@ -248,6 +252,7 @@ class ChatView {
                 info: text => this._post({ type: 'message', item: { role: 'info', text }, agent: agent.agentId }),
                 status: status => this._post({ type: 'status', status, agent: agent.agentId }),
                 answer_credits: ({ thread_id, key, credits }) => this._post({ type: 'answer_credits', thread_id, key, credits, agent: agent.agentId }),
+                notes: ({ text, rev }) => this._post({ type: 'notes', text, rev, agent: agent.agentId }),
             };
             this.sessions.set(agent.agentId, new ChatSession({ client: this.client, agent, limits: this._limits(), store: this._store(agent), workspace: workspace_adapter, ui }));
         }
@@ -292,8 +297,11 @@ class ChatView {
         view.webview.html = `<!DOCTYPE html><html><head><meta charset="UTF-8">
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${view.webview.cspSource}; img-src data:; script-src 'nonce-${nonce}';">
 <link rel="stylesheet" href="${asset('chat.css')}"></head><body>
+<div id="notes_pane" class="notes-pane hidden"><textarea id="notes" placeholder="Notes for this chat …" spellcheck="false"></textarea></div>
+<div class="chat" id="chat">
 <div class="header" id="header">
 <div class="agents" id="agents"></div><select id="agent" class="agent-select hidden" title="Agent"></select>
+<button id="notes_toggle" class="icon-btn" title="Show or hide notes" aria-pressed="false"><svg viewBox="0 0 16 16" width="21" height="21" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M3.5 2.5h6l3 3v8h-9z"/><path d="M9.5 2.5v3h3"/><path d="M5.5 8.5h5M5.5 11h3.5"/></svg></button>
 <div class="menu-wrap"><button id="history" class="icon-btn" title="Chat history"><svg viewBox="0 0 16 16" width="21" height="21" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 8a5.5 5.5 0 1 0 1.6-3.9"/><path d="M2.5 2.4v2.7h2.7"/><path d="M8 5v3.2l2.2 1.4"/></svg></button><div id="history_menu" class="menu right hidden"></div></div>
 <button id="new_chat" class="icon-btn primary" title="New chat"><svg viewBox="0 0 16 16" width="21" height="21" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M8 3.5v9M3.5 8h9"/></svg></button>
 </div>
@@ -309,6 +317,7 @@ class ChatView {
 <div class="input-editor-wrap"><textarea id="input" rows="3" placeholder="Message …"></textarea></div>
 <div class="input-send-row"><span class="hint">Enter = send · Shift+Enter = new line</span><button id="send" class="send-btn">Send</button><button id="stop" class="stop-btn hidden"></button></div>
 </div>
+</div>
 <script nonce="${nonce}" src="${asset('markdown.js')}"></script>
 <script nonce="${nonce}" src="${asset('chat.js')}"></script></body></html>`;
         view.webview.onDidReceiveMessage(message => this._on_message(message).catch(error => this._post({ type: 'error', text: error.message, transient: error instanceof Notice })));
@@ -317,6 +326,10 @@ class ChatView {
 
     _post(message) {
         if (this.view) this.view.webview.postMessage(message);
+    }
+
+    post_notes_position() {
+        this._post({ type: 'notes_position', position: this._notes_position() });
     }
 
     async _on_message(message) {
@@ -334,6 +347,8 @@ class ChatView {
             remove_chat: () => this._remove_chat(message.thread_id),
             import_chat: () => this._import_chat(),
             set_model: () => this._session().set_model(message.model),
+            set_notes: () => { this._session().set_notes(String(message.text ?? ''), message.rev); },
+            notes_visible: () => this.context.globalState.update('monarch.notesVisible', Boolean(message.visible)),
             adjust: () => {
                 const session = this._session();
                 const adjust = { credits: 'adjust_credits', co_credits: 'adjust_co_credits', co_agents: 'adjust_co_agents' }[message.item];
@@ -367,10 +382,11 @@ class ChatView {
         }
         const agent = signed_in ? this._agent() : null;
         const agent_items = await Promise.all(agents.map(async item => ({ id: item.agentId, name: item.name, avatar: await this._avatar('agents', item.agentId, item.name, item.has_image) })));
-        this._post({ type: 'init', agents: agent_items, current: agent?.agentId || null, current_name: agent?.name || null, labels: agent?.labels || default_labels, signed_in, user: signed_in ? await this._user() : { image: null, initials: 'Du' }, input_height: this.context.globalState.get('monarch.inputHeight') || null });
+        this._post({ type: 'init', agents: agent_items, current: agent?.agentId || null, current_name: agent?.name || null, labels: agent?.labels || default_labels, signed_in, user: signed_in ? await this._user() : { image: null, initials: 'Du' }, input_height: this.context.globalState.get('monarch.inputHeight') || null, notes_visible: Boolean(this.context.globalState.get('monarch.notesVisible')), notes_position: this._notes_position() });
         this._post_attachments();
         if (!agent) return;
         const session = this._session(agent);
+        this._post({ type: 'notes', ...session.notes(), agent: agent.agentId });
         this._post({ type: 'status', status: session.status(), agent: agent.agentId });
         this._post_chats(agent);
         this._post({ type: 'models', agent: agent.agentId, ...(await this._models(agent)) });

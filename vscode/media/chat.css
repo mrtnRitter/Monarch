@@ -7,8 +7,20 @@
 * { box-sizing: border-box; margin: 0; padding: 0; }
 body {
   font-family: var(--vscode-font-family); font-size: var(--vscode-font-size); color: var(--vscode-foreground);
-  background: var(--vscode-sideBar-background); display: flex; flex-direction: column; height: 100vh; overflow: hidden;
+  background: var(--vscode-sideBar-background); display: flex; flex-direction: row; height: 100vh; overflow: hidden;
 }
+.chat { display: flex; flex-direction: column; flex: 1; min-width: 0; height: 100%; }
+.notes-pane {
+  display: flex; flex: 0 0 40%; min-width: 120px; height: 100%; order: 1;
+  border-left: 1px solid var(--vscode-panel-border); background: var(--vscode-editorWidget-background);
+}
+body.notes-left .notes-pane { order: -1; border-left: none; border-right: 1px solid var(--vscode-panel-border); }
+#notes {
+  width: 100%; height: 100%; resize: none; border: none; padding: var(--pad);
+  background: transparent; color: var(--vscode-input-foreground);
+  font-family: var(--vscode-editor-font-family); font-size: var(--vscode-font-size);
+}
+#notes:focus { outline: 1px solid var(--vscode-focusBorder); outline-offset: -1px; }
 .hidden { display: none !important; }
 button { font-family: var(--vscode-font-family); font-size: var(--vscode-font-size); cursor: pointer; border: none; }
 button:disabled { opacity: 0.5; cursor: not-allowed; }
@@ -236,6 +248,7 @@ span.avatar {
   background: transparent; color: var(--vscode-foreground); opacity: 0.85;
 }
 .icon-btn:hover { background: var(--vscode-toolbar-hoverBackground); opacity: 1; }
+.icon-btn.active { opacity: 1; background: var(--vscode-toolbar-activeBackground); }
 .icon-btn.primary { background: var(--vscode-button-background); color: var(--vscode-button-foreground); opacity: 1; }
 .icon-btn.primary:hover { background: var(--vscode-button-hoverBackground); }
 .icon-btn svg { display: block; }

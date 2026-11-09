@@ -4,6 +4,7 @@ const files = require('./files');
 const { abortable } = require('./awork');
 const { parse_commands, parse_spawn_body } = require('./orca');
 const { strip_context } = require('./repo');
+const { notes_block, strip_notes } = require('./notes');
 const { log } = require('./log');
 
 // any other status ends the wait, so an unknown final status cannot block the chat
@@ -140,13 +141,14 @@ function _signature(messages) {
 
 /** Chat state with defaults: thread, title, model override, last sent repo context, staged co-agent files {path: {from, url}}, job (co-agents), agent credits per answer {message id: credits}. */
 function _new_state(state) {
-    return { thread_id: null, title: null, model: null, context: null, staged: {}, next_index: 1, co_agents: {}, answer_credits: {}, extra_credits: 0, extra_co_credits: 0, extra_co_agents: 0, ...(state || {}) };
+    return { thread_id: null, title: null, model: null, context: null, notes: '', notes_sent: '', staged: {}, next_index: 1, co_agents: {}, answer_credits: {}, extra_credits: 0, extra_co_credits: 0, extra_co_agents: 0, ...(state || {}) };
 }
 
 const terminal_states = new Set(['completed', 'failed', 'cancelled', 'waiting']);
 const max_step_chars = 200;
 const progress_steps = 3;
 const max_answer_credits = 500;
+let notes_revision = 0;
 
 function _redact(text) {
     return text
@@ -378,10 +380,22 @@ class ChatSession {
             signal?.addEventListener('abort', on_abort, { once: true });
         }));
         this.state = _new_state(store.load?.());
+        this.notes_rev = ++notes_revision;
         Object.assign(this, { credits: null, credit_error: null, co_credits: null, co_credit_error: null, credits_at: 0, busy: false, stopping: false, controller: null, answers: new Map(), staged_outputs: new Map(), phase: null, phase_since: null, last_states: new Map(), empty_polls: new Map(), staged_data: new Map(), event_reads: new Map(), events_disabled: false, credit_refresh_index: 0, agent_run_active: false, idle_credit_read: null, budget_check: null, local_keys: 0, chat_controller: new AbortController() });
     }
 
     // --- state ---
+    notes() {
+        return { text: this.state.notes, rev: this.notes_rev };
+    }
+
+    set_notes(text, rev) {
+        if (rev !== this.notes_rev) return false;
+        this.state.notes = String(text);
+        this._save();
+        return true;
+    }
+
     _co_agents(filter = () => true) {
         return Object.entries(this.state.co_agents).filter(([, co_agent]) => filter(co_agent)).map(([id]) => id);
     }
@@ -764,6 +778,9 @@ class ChatSession {
 
     /** Send one message; context = repo context line contained in content, remembered once the message is accepted. */
     async _post(content, attachments, context = null, interrupt_id = null) {
+        const snapshot = this.state.notes;
+        const notes_part = snapshot !== this.state.notes_sent ? notes_block(snapshot) : '';
+        const body = [content, notes_part, context].filter(Boolean).join('\n\n');
         const started = Date.now();
         if (this.stopping) throw new StopRequested();
         this._set_phase('agent');
@@ -775,11 +792,15 @@ class ChatSession {
             let accepted;
             const options = { ...this._model_options(), ...(interrupt_id ? { answerToInterruptId: interrupt_id } : {}) };
             if (this.state.thread_id) {
-                accepted = await this._request(signal => this.client.send_message(this.state.thread_id, content, attachments, options, { signal }));
+                accepted = await this._request(signal => this.client.send_message(this.state.thread_id, body, attachments, options, { signal }));
             } else {
-                accepted = await this._request(signal => this.client.create_thread(this.agent.agentId, content, `monarch – ${this.agent.name} ${new Date().toISOString().slice(0, 16).replace('T', ' ')}`, attachments, options, { signal }));
+                accepted = await this._request(signal => this.client.create_thread(this.agent.agentId, body, `monarch – ${this.agent.name} ${new Date().toISOString().slice(0, 16).replace('T', ' ')}`, attachments, options, { signal }));
                 accepted = { ...accepted, _new_thread: true };
                 this.state.thread_id = accepted.id;
+                this._save();
+            }
+            if (notes_part) {
+                this.state.notes_sent = snapshot;
                 this._save();
             }
             if (context) {
@@ -809,7 +830,7 @@ class ChatSession {
             await this._check_budget(true);
             if (!this.state.thread_id && !this.state.title) this.state.title = _first_line(text);
             const fresh = context && context !== this.state.context ? context : null;
-            let next = { content: fresh ? `${text}\n\n${fresh}` : text, attachments: await this._upload(uploads), context: fresh, interrupt_id };
+            let next = { content: text, attachments: await this._upload(uploads), context: fresh, interrupt_id };
             this.ui.message({ role: 'user', text });
             while (next) next = await this._handle_answer(await this._post(next.content, next.attachments, next.context, next.interrupt_id));
         } catch (error) {
@@ -1067,6 +1088,15 @@ class ChatSession {
         const result = (ok, line) => ({ ok, action, line });
         const co_agent = target ? this.state.co_agents[target] : null;
         try {
+            if (action === 'notes') {
+                if (this.state.notes !== this.state.notes_sent) return result(false, 'notes: not changed, the user edited the notes after your last message; the current notes are in this message');
+                this.state.notes = this.state.notes_sent = body;
+                this.notes_rev = ++notes_revision;
+                this._save();
+                this.ui.notes?.({ text: this.state.notes, rev: this.notes_rev });
+                const n = body ? body.split('\n').length : 0;
+                return result(true, `notes: updated (${n} lines)`);
+            }
             if (action === 'spawn') {
                 const parsed = parse_spawn_body(body, this.agent.coAgentName || 'coagent');
                 if (parsed.invalid_after.length) return result(false, `spawn: invalid ${parsed.invalid_after.join(', ')}`);
@@ -1423,6 +1453,8 @@ class ChatSession {
     new_chat() {
         if (this.busy) throw new Notice('Stop the agent first.');
         this.state = _new_state();
+        this.notes_rev = ++notes_revision;
+        this.ui.notes?.({ text: this.state.notes, rev: this.notes_rev });
         this._reset_chat_reads();
         this.staged_data.clear();
         this.staged_outputs.clear();
@@ -1435,6 +1467,8 @@ class ChatSession {
     load_state(state) {
         if (this.busy) throw new Notice('Stop the agent first.');
         this.state = _new_state(state);
+        this.notes_rev = ++notes_revision;
+        this.ui.notes?.({ text: this.state.notes, rev: this.notes_rev });
         this._reset_chat_reads();
         this.answers.clear();
         this.staged_data.clear();
@@ -1473,7 +1507,7 @@ class ChatSession {
             const created = Date.parse(message.createdOn || '') || null;
             if (_is_user(message)) {
                 asked_at = created;
-                return [text.startsWith(relay_prefix) ? { role: 'step', text: relay_text(`relay: ${_first_line(text.slice(relay_prefix.length)) || 'co-agent update'}`) } : { role: 'user', text: strip_context(text) }];
+                return [text.startsWith(relay_prefix) ? { role: 'step', text: relay_text(`relay: ${_first_line(text.slice(relay_prefix.length)) || 'co-agent update'}`) } : { role: 'user', text: strip_notes(strip_context(text)) }];
             }
             const shown = _without_questions(parse_commands(text).text, questions);
             const credit_key = message.id ? String(message.id) : null;
