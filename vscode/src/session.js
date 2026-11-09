@@ -384,7 +384,10 @@ class ChatSession {
     async _pending_questions(messages) {
         if (!this.state.thread_id || !messages.some(_is_question)) return [];
         try {
-            const card = pending_question(await this.client.thread(this.state.thread_id));
+            const thread = await this.client.thread(this.state.thread_id);
+            // temporary diagnostic: what awork reports for the open question
+            log(`question: awaiting action ${thread?.isAwaitingAction}, pendingUserQuestion ${JSON.stringify(thread?.pendingUserQuestion ?? null).slice(0, 600)}`);
+            const card = pending_question(thread);
             return card ? [card] : [];
         } catch (error) {
             log(`question: answer options not readable (${_reason(error)})`);
@@ -395,6 +398,7 @@ class ChatSession {
     async _handle_answer({ answer, run, state, duration_ms }) {
         const { text, commands } = parse_commands(answer_text(answer));
         const written = await this._write_repo_files(run);
+        log(`answer: ${run.length} run message(s), question message ${run.some(_is_question)}`);
         const questions = [...questions_of(run), ...await this._pending_questions(run)];
         const shown = _without_questions(text, questions);
         this.ui.message({ role: 'agent', text: shown || (questions.length ? '' : state === 'completed' ? '(no answer)' : `(run ${state})`), files: written.files, warnings: written.warnings, duration_ms });
