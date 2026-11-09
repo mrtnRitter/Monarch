@@ -124,6 +124,7 @@ All settings are optional. The agent list comes from awork (see `monarch.agentFi
 | Model | Opens its menu above the button, aligned to its right edge: **Agent default** (uses the agent's settings) at the top, below **Reasoning** with the levels of the selected model in one line, below **AI models** with model name, credit factor (e.g. `3×`, in one column) and provider. Model and reasoning level apply to the next messages of this chat and are saved with the chat; co-agents keep their own model. |
 | Send / Stop | **Send** sends the message. While the agent works, **Stop** replaces Send: it stops the agent and all co-agents and closes the job. When the agent is idle, use **monarch: Stop agent and co-agents** to stop waiting co-agents |
 | Line above the input | Drag up/down to resize the input (min. 3 lines, max. 70 % of the panel); the height is kept |
+| Line between chat and notes | Drag left/right to resize the notes pane (min. 120 px, max. 70 % of the panel); the width is kept |
 | Enter / Shift+Enter | Send / new line |
 | Ctrl+C / Cmd+C | Copies the selected text of the chat (or of the input) |
 

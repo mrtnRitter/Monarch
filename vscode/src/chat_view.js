@@ -297,7 +297,7 @@ class ChatView {
         view.webview.html = `<!DOCTYPE html><html><head><meta charset="UTF-8">
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${view.webview.cspSource}; img-src data:; script-src 'nonce-${nonce}';">
 <link rel="stylesheet" href="${asset('chat.css')}"></head><body>
-<div id="notes_pane" class="notes-pane hidden"><textarea id="notes" placeholder="Notes for this chat …" spellcheck="false"></textarea></div>
+<div id="notes_pane" class="notes-pane hidden"><div id="notes_splitter" class="notes-splitter"></div><textarea id="notes" placeholder="Notes for this chat …" spellcheck="false"></textarea></div>
 <div class="chat" id="chat">
 <div class="header" id="header">
 <div class="agents" id="agents"></div><select id="agent" class="agent-select hidden" title="Agent"></select>
@@ -365,6 +365,7 @@ class ChatView {
             copy: () => vscode.env.clipboard.writeText(String(message.text || '')),
             code_action: () => this._code_action(message.action, String(message.code || ''), message.language),
             input_height: () => this.context.globalState.update('monarch.inputHeight', Math.round(Number(message.height)) || null),
+            notes_width: () => { const width = Math.round(Number(message.width)); return this.context.globalState.update('monarch.notesWidth', Number.isFinite(width) && width > 0 ? width : null); },
         };
         await (handlers[message.type] || (() => {}))();
     }
@@ -382,7 +383,7 @@ class ChatView {
         }
         const agent = signed_in ? this._agent() : null;
         const agent_items = await Promise.all(agents.map(async item => ({ id: item.agentId, name: item.name, avatar: await this._avatar('agents', item.agentId, item.name, item.has_image) })));
-        this._post({ type: 'init', agents: agent_items, current: agent?.agentId || null, current_name: agent?.name || null, labels: agent?.labels || default_labels, signed_in, user: signed_in ? await this._user() : { image: null, initials: 'Du' }, input_height: this.context.globalState.get('monarch.inputHeight') || null, notes_visible: Boolean(this.context.globalState.get('monarch.notesVisible')), notes_position: this._notes_position() });
+        this._post({ type: 'init', agents: agent_items, current: agent?.agentId || null, current_name: agent?.name || null, labels: agent?.labels || default_labels, signed_in, user: signed_in ? await this._user() : { image: null, initials: 'Du' }, input_height: this.context.globalState.get('monarch.inputHeight') || null, notes_width: this.context.globalState.get('monarch.notesWidth') || null, notes_visible: Boolean(this.context.globalState.get('monarch.notesVisible')), notes_position: this._notes_position() });
         this._post_attachments();
         if (!agent) return;
         const session = this._session(agent);

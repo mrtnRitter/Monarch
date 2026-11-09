@@ -515,6 +515,7 @@
             render_agents();
             set_enabled(Boolean(data.current));
             if (data.input_height) set_input_height(data.input_height);
+            if (data.notes_width) set_notes_width(data.notes_width);
             close_menus();
             show_empty_state();
         } else if (data.type === 'notes') {
@@ -593,6 +594,39 @@
             set_input_height(element('input').offsetHeight);
             vscode.postMessage({ type: 'input_height', height: input_height });
         }, { once: true });
+    });
+    // --- notes width: drag the line between chat and notes ---
+    let notes_width = null;
+    function set_notes_width(width) {
+        notes_width = width;
+        element('notes_pane').style.flexBasis = `${Math.min(width, Math.round(window.innerWidth * 0.7))}px`;
+    }
+    window.addEventListener('resize', () => { if (notes_width !== null) set_notes_width(notes_width); });
+    element('notes_splitter').addEventListener('pointerdown', event => {
+        const splitter = element('notes_splitter');
+        const [start_x, start_width] = [event.clientX, element('notes_pane').offsetWidth];
+        const sign = document.body.classList.contains('notes-left') ? 1 : -1;
+        const move = moved => set_notes_width(Math.max(0, start_width + sign * (moved.clientX - start_x)));
+        let finished = false;
+        const finish = () => {
+            if (finished) return;
+            finished = true;
+            splitter.removeEventListener('pointermove', move);
+            splitter.removeEventListener('pointerup', finish);
+            splitter.removeEventListener('pointercancel', finish);
+            splitter.removeEventListener('lostpointercapture', finish);
+            splitter.classList.remove('dragging');
+            const width = element('notes_pane').offsetWidth;
+            set_notes_width(width);
+            vscode.postMessage({ type: 'notes_width', width });
+        };
+        event.preventDefault();
+        splitter.setPointerCapture(event.pointerId);
+        splitter.classList.add('dragging');
+        splitter.addEventListener('pointermove', move);
+        splitter.addEventListener('lostpointercapture', finish, { once: true });
+        splitter.addEventListener('pointerup', finish, { once: true });
+        splitter.addEventListener('pointercancel', finish, { once: true });
     });
     element('send').addEventListener('click', send);
     element('input').addEventListener('keydown', event => {

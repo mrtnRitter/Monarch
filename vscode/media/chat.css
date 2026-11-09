@@ -11,10 +11,14 @@ body {
 }
 .chat { display: flex; flex-direction: column; flex: 1; min-width: 0; height: 100%; }
 .notes-pane {
-  display: flex; flex: 0 0 40%; min-width: 120px; height: 100%; order: 1;
-  border-left: 1px solid var(--vscode-panel-border); background: var(--vscode-editorWidget-background);
+  display: flex; flex: 0 0 40%; min-width: 120px; height: 100%; order: 1; position: relative;
+  border-left: 1px solid var(--vscode-panel-border); background: var(--vscode-sideBar-background);
 }
 body.notes-left .notes-pane { order: -1; border-left: none; border-right: 1px solid var(--vscode-panel-border); }
+.notes-splitter { position: absolute; top: 0; bottom: 0; width: 7px; left: -4px; cursor: ew-resize; touch-action: none; z-index: 2; display: flex; justify-content: center; }
+.notes-splitter::before { content: ''; width: 3px; background: transparent; }
+.notes-splitter:hover::before, .notes-splitter.dragging::before { background: var(--vscode-sash-hoverBorder, var(--vscode-focusBorder)); }
+body.notes-left .notes-splitter { left: auto; right: -4px; }
 #notes {
   width: 100%; height: 100%; resize: none; border: none; padding: var(--pad);
   background: transparent; color: var(--vscode-input-foreground);

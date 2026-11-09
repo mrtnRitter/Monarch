@@ -1,7 +1,7 @@
 {
     "name": "monarch",
     "displayName": "monarch",
-    "version": "0.21.0",
+    "version": "0.21.1",
     "publisher": "mrtnritter",
     "description": "Chat with awork agents in VS Code. Relays work to co-agents without credits while waiting.",
     "license": "UNLICENSED",
@@ -92,7 +92,7 @@
                 "monarch.notesPosition": {
                     "type": "string",
                     "enum": ["left", "right"],
-                    "default": "right",
+                    "default": "left",
                     "enumDescriptions": ["Notes left of the chat", "Notes right of the chat"],
                     "description": "Side of the notes pane next to the chat; show or hide it with the notes button in the chat window."
                 },
