@@ -30,10 +30,15 @@ monarch/
 │   ├── media/              # chat window (webview), styles adapted from vscode-acp (MIT)
 │   ├── test/               # local tests (node, no network)
 │   └── build_vsix.py       # builds monarch-<version>.vsix
+├── skills/                 # awork skills with all monarch rules for the agents
+│   ├── monarch-main-agent/SKILL.md   # main agent: ORCA commands, repo context, notes, files, delegation, review
+│   └── monarch-co-agent/SKILL.md     # co-agent: briefing, delivery, worker/reviewer, answer formats
 └── zillas/
-│   ├── codezilla.md        # system prompt for CodeZilla
-│   └── minizilla.md        # system prompt for minizilla
+    ├── codezilla.md        # system prompt for CodeZilla (without the monarch rules)
+    └── minizilla.md        # system prompt for minizilla (without the monarch rules)
 ```
+
+The monarch rules live in the two skills only, so they are maintained in one place and can be reused by other agents. The prompts in `zillas/` contain the agent's own role, coding style and security rules plus a short pointer that tells the agent when to load its skill.
 
 ## Installation
 
@@ -50,14 +55,26 @@ Or in VS Code: Extensions view → `…` → **Install from VSIX…**. Optional 
 ## Setup in awork (once per workspace, by the agent owner)
 
 1. **Client app for sign-in:** Settings → Integrations → add a client application of type **Public** with the name `monarch`. Redirect URI: `http://localhost:8765/callback` (port = `monarch.redirectPort`). If the client ID is not `monarch`, every user enters it in `monarch.clientId`.
-2. **Agents:** Create **CodeZilla** with `zillas/codezilla.md` and a high model preset (e.g. `deep`), **minizilla** with `zillas/minizilla.md` and a medium model preset; a low preset (e.g. `fast`) works only with fully specified briefs. Enter the agent IDs in `monarch.agents` (`agentId` = CodeZilla, `coAgentId` = minizilla) if they differ from the default. After a change of a file in `zillas/`, copy it into the agent again.
-3. **Sharing:** Share the agents with the colleagues who use monarch.
+2. **Skills:** In awork open **Library → Skills → + Skill → Skill importieren** and import `skills/monarch-main-agent/SKILL.md` and `skills/monarch-co-agent/SKILL.md` (one Markdown file each). Share both skills with the colleagues who use monarch (**Teilen → Lesen und verwenden**). After a change of a `SKILL.md`, import it again or paste the changed text into the existing skill.
+3. **Agents:** Create **CodeZilla** with `zillas/codezilla.md` and a high model preset (e.g. `deep`), **minizilla** with `zillas/minizilla.md` and a medium model preset; a low preset (e.g. `fast`) works only with fully specified briefs. In the agent details, **Skills → + Hinzufügen → Vorhandenen Skill hinzufügen**: add `monarch-main-agent` to CodeZilla and `monarch-co-agent` to minizilla. Enter the agent IDs in `monarch.agents` (`agentId` = CodeZilla, `coAgentId` = minizilla) if they differ from the default. After a change of a file in `zillas/`, copy it into the agent again.
+4. **Sharing:** Share the agents with the colleagues who use monarch.
+
+### Using monarch with your own agents
+
+Any awork agent can work with monarch:
+
+1. Import both skills (see above) and add `monarch-main-agent` to your main agent and `monarch-co-agent` to your co-agent.
+2. Add this paragraph to the prompt of the main agent (and the same with `monarch-co-agent` to the prompt of the co-agent): *“All rules for working through monarch are in the skill `monarch-main-agent`. Load it with `load_skill` before you answer a message containing `[monarch context]`, `[monarch relay]` or `[monarch notes]`, output ORCA blocks, delegate to or review co-agents, or save files for the repo in `/workspace/output/`. Load it again when its content is no longer visible in the conversation. If the skill is not available, tell the user; output no ORCA blocks and do not claim that co-agents were started.”*
+3. Add the agents to `monarch.agents` (`agentId`, `coAgentId`, optionally `coAgentName`, see *Settings*). Without `coAgentId` the agent works without co-agents; the skill rules for repo context, notes and files still apply.
+4. Run the test from *Setup per user*.
+
+The skills use the neutral terms *main agent* and *co-agent* and the placeholder `<co_agent_name>_N` for co-agent IDs (e.g. `minizilla_1`). Role, coding style and security rules of your agents stay in their own prompts.
 
 ## Setup per user (step by step)
 
 Every user, also the agent owner, does this once:
 
-1. **Install** `monarch-0.21.0.vsix` (see *Installation*) and reload VS Code (Command Palette → **Developer: Reload Window**).
+1. **Install** `monarch-0.21.1.vsix` (see *Installation*) and reload VS Code (Command Palette → **Developer: Reload Window**).
 2. **Sign in:** Open **monarch** in the activity bar and click **Sign in** (or Command Palette → **monarch: Sign in**). The browser opens; log in to awork and select the workspace.
 3. **Check the agents:** The agent circles at the top show the agents. If an agent shared with you is missing, set **Monarch: Agent Filter** (`monarch.agentFilter`) to `all`.
 4. **Test files:** Start a **new chat** (blue **+**) and send: `Create output/download_test.txt with three lines.`
@@ -163,7 +180,7 @@ The first message of a chat gets a context line at the end that is not shown in 
 [monarch context] "this repo" = the repo open in VS Code: Monarch · online: https://github.com/mrtnRitter/Monarch · branch: main
 ```
 
-The agent prompts in `zillas/` contain the matching rule; copy them into the agents in awork after a change.
+The matching rule is part of the skill `monarch-main-agent` (`skills/monarch-main-agent/SKILL.md`); update the skill in awork after a change.
 
 ### Files written into the repo
 
