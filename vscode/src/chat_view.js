@@ -7,6 +7,7 @@ const { ChatSession, Notice } = require('./session');
 const { log } = require('./log');
 const { create_zip } = require('./zip');
 const { context_line, git_info } = require('./repo');
+const git = require('./git');
 
 const fixed_excludes = ['**/.git/**', '**/node_modules/**', '**/__pycache__/**', '**/.venv/**', '**/*.pyc'];
 const default_labels = { chat: 'Chat', coCredits: 'Co-Credits', coAgents: 'Co-Agenten', stop: 'Stop' };
@@ -119,6 +120,27 @@ function parse_models(defaults) {
 
 /** Repo access for the session: reads files (max. maxFolderMB), writes text as undoable edit, binary directly. */
 const workspace_adapter = {
+    async exists(path) {
+        const root = _root();
+        if (!root) return false;
+        const uri = vscode.Uri.joinPath(root, ...path.split('/'));
+        try {
+            await vscode.workspace.fs.stat(uri);
+            return true;
+        } catch {
+            return false;
+        }
+    },
+    async eol_default({ signal } = {}) {
+        const root = _root();
+        if (!root) return null;
+        return git.eol_default(root.fsPath, { signal });
+    },
+    async repo_state({ signal } = {}) {
+        const root = _root();
+        if (!root) throw new Error('no folder open');
+        return git.repo_state(root.fsPath, { signal });
+    },
     async read(path) {
         const root = _root();
         if (!root) throw new Error('no folder open');
@@ -197,7 +219,7 @@ class ChatView {
 
     _limits() {
         const config = _config();
-        return Object.fromEntries(['maxCredits', 'maxCoAgentCredits', 'maxCoAgents', 'creditStep', 'relayTimeout', 'pollInterval', 'syncInterval', 'maxFolderMB'].map(key => [key, config.get(key)]));
+        return Object.fromEntries(['maxCredits', 'maxCoAgentCredits', 'maxCoAgents', 'creditStep', 'relayTimeout', 'pollInterval', 'syncInterval', 'maxFolderMB', 'autoSnapshot', 'maxSnapshotMB', 'normalizeSuffixCopies', 'normalizeLineEndings', 'relayDiff', 'relayDiffMaxKB'].map(key => [key, config.get(key)]));
     }
 
     async _models(agent) {

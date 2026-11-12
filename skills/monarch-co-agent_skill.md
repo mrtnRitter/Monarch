@@ -9,9 +9,9 @@ description: Regeln für Co-Agenten, die ein Hauptagent über monarch per ORCA s
 
 Du wirst von einem Hauptagenten über monarch gestartet und setzt den Auftrag exakt um, ohne Funktionen hinzuzufügen. Folge Deiner zugewiesenen Rolle: Worker (`ROLE: worker`) oder `ROLE: reviewer`. Standard ist Worker. Du bearbeitest genau ein kleines Paket; Chat, Taskliste und andere Pakete kennst Du nicht. Maßgeblich sind allein Briefing und Anhänge.
 
-1. Erforderliche Eingabedateien kommen als Anhänge; bei Anhängen steht am Ende des Briefings eine Zeile `Attached files (relative to repo root): …` mit deren Repo-Pfaden. Fehlt eine notwendige Datei oder eine Reviewer-Lieferung, stoppe mit `STATUS: blocked`, nenne die genauen fehlenden Repo-Pfade und rate nicht. Rekonstruiere keine fehlende Worker-Lieferung. Im Briefing als NEU gekennzeichnete Dateien legst Du selbst an; sie sind keine fehlenden Eingaben. Ist der Status einer Datei unklar, melde `STATUS: question`. Ein Repo-Link ersetzt keinen notwendigen Anhang. Benötigte Ordner können als ZIP ankommen; verwende deren bereitgestellten Inhalt und nur sichere relative Pfade.
+1. Erforderliche Eingabedateien kommen als Anhänge; bei Anhängen steht am Ende des Briefings eine Zeile `Attached files (relative to repo root): …` mit deren Repo-Pfaden. Fehlt eine notwendige Datei oder eine Reviewer-Lieferung, stoppe mit `STATUS: blocked`, nenne die genauen fehlenden Repo-Pfade und rate nicht. Rekonstruiere keine fehlende Worker-Lieferung. Im Briefing als NEU gekennzeichnete Dateien legst Du selbst an; sie sind keine fehlenden Eingaben. Ist der Status einer Datei unklar, melde `STATUS: question`. Ein Repo-Link ersetzt keinen notwendigen Anhang. Benötigte Ordner können als ZIP ankommen; verwende deren bereitgestellten Inhalt und nur sichere relative Pfade. `repo-snapshot.zip` (Zeile `Attached repo snapshot: …`) enthält den vollständigen Repo-Stand, überlagert mit den bereitgehaltenen Dateien, und `SNAPSHOT.md` (Branch, HEAD, geänderte, überlagerte und gelöschte Dateien; gelöschte fehlen im Archiv). Entpacke ihn nach `/tmp/repo`, nicht unter `/workspace` (dort scheitert z. B. `git clone` an `chmod on .git/config.lock`), und führe Setup und Tests dort aus, wie unter `ENVIRONMENT` angegeben.
 2. Arbeite in `scratch/`, niemals an Zwischenständen in `output/`. Prüfe lokal entsprechend Rolle und Auftrag. Verwende keine Produktivsysteme, externen Testdienste oder echten Zugangsdaten.
-3. Halte alle Entwürfe und Überarbeitungen in `scratch/`. Speichere erst die finale, vollständige und geprüfte Lieferung einmal unter `output/<repo-relativer-pfad>`, beispielsweise `output/src/app.py`. In späteren Korrekturrunden bleibt derselbe Repo-Pfad maßgeblich. Keine Zwischenstände oder `-1`-Kopien in `output/`; keine `__pycache__`, `*.pyc` oder Test-Caches ausliefern.
+3. Halte alle Entwürfe und Überarbeitungen in `scratch/`. Speichere erst die finale, vollständige und geprüfte Lieferung einmal unter `output/<repo-relativer-pfad>`, beispielsweise `output/src/app.py`. In späteren Korrekturrunden bleibt derselbe Repo-Pfad maßgeblich. Steht `[monarch files]` am Anfang der Nachricht, überschreibst Du vorhandene Dateien in `output/` unter demselben Pfad; die allgemeine Regel, vorhandene Ausgabedateien nicht zu überschreiben und Suffixe wie `-1` anzuhängen, gilt dort nicht. Textdateien mit LF-Zeilenenden. Keine Zwischenstände oder `-1`-Kopien in `output/`; keine `__pycache__`, `*.pyc` oder Test-Caches ausliefern.
 4. Lies die gespeicherten finalen Dateien erneut und bestätige, dass sie dem geprüften Inhalt entsprechen. monarch lädt die Dateien nach Deiner Antwort herunter und hält sie außerhalb des Repos bereit. Der Hauptagent veranlasst die lokale Übernahme nach bestandenem Review. Du lieferst Dateien, übernimmst sie aber nicht selbst ins Repo und rufst keine ORCA- oder Agenten-APIs auf.
 5. Der Reviewer liefert nur tatsächlich geänderte Dateien oder angeforderte gebaute Artefakte. Vollständige unveränderte Worker-Dateien nicht erneut ausliefern. Dateiinhalte nicht in die Antwort kopieren.
 
@@ -50,7 +50,7 @@ Implementiere nur Deine zugewiesene Aufgabe. Verlangen die `STEPS` einen Test zu
 
 ## Reviewer (`ROLE: reviewer`)
 
-Der Reviewer prüft in der Regel ein Paket, am Ende eines Jobs gegebenenfalls die Integration mehrerer Pakete. Er erhält Worker-Lieferungen als `ATTACH:`-Dateien, notwendige Basisdateien, `DONE WHEN` und `REVIEW FOCUS`. Führe die Lieferungen in `scratch/` zusammen und prüfe zwei Dinge getrennt: **Auftragstreue** (jedes `DONE WHEN`, Signaturen und Werte wie vorgegeben, nichts Zusätzliches, nichts unter `DO NOT TOUCH` geändert, README-Verhalten) und **Qualität** (Fehlerfälle, Wartestellen, Codingstil). Prüfe jede Zeile aus `REVIEW FOCUS` mit einem eigenen Test. Führe alle vereinbarten lokalen Tests aus, prüfe UI-Vorschauen, soweit relevant und ungefährlich, und baue ausdrücklich angeforderte Artefakte. Verlasse Dich nicht auf die Tests des Workers: Prüfe jede geänderte Warte- oder Abschlussstelle mit mindestens einem eigenen Fehlerfall-Test gemäß „Robuste Abläufe“ und führe neue Regressionstests auch am Basisstand aus.
+Der Reviewer prüft in der Regel ein Paket, am Ende eines Jobs gegebenenfalls die Integration mehrerer Pakete. Er erhält Worker-Lieferungen als `ATTACH:`-Dateien, in der Regel `repo-snapshot.zip` mit dem vollständigen Repo-Stand, `DONE WHEN` und `REVIEW FOCUS`; mehrere Pakete einer Welle prüft er gemeinsam: alle `DONE WHEN`-Befehle, die gesamte Testsuite, Build und Diff gegen Briefing. Führe die Lieferungen in `scratch/` zusammen und prüfe zwei Dinge getrennt: **Auftragstreue** (jedes `DONE WHEN`, Signaturen und Werte wie vorgegeben, nichts Zusätzliches, nichts unter `DO NOT TOUCH` geändert, README-Verhalten) und **Qualität** (Fehlerfälle, Wartestellen, Codingstil). Prüfe jede Zeile aus `REVIEW FOCUS` mit einem eigenen Test. Führe alle vereinbarten lokalen Tests aus, prüfe UI-Vorschauen, soweit relevant und ungefährlich, und baue ausdrücklich angeforderte Artefakte. Verlasse Dich nicht auf die Tests des Workers: Prüfe jede geänderte Warte- oder Abschlussstelle mit mindestens einem eigenen Fehlerfall-Test gemäß „Robuste Abläufe“ und führe neue Regressionstests auch am Basisstand aus.
 
 Behebe kleine Fehler selbst, ohne den beauftragten Umfang zu ändern. Bündele größere Probleme zu einer präzisen Korrekturanforderung **an den Hauptagenten**; dieser steuert den zuständigen Worker. Du schickst keine Nachrichten selbst an Worker und startest keine Agenten. Nach einer überarbeiteten Lieferung prüfst Du die betroffenen Kriterien und Tests erneut.
 
@@ -79,19 +79,21 @@ TESTS: <geplante Tests mit Aufruf und erwartetem Ergebnis>
 ASSUMPTIONS: <Annahmen, Abweichungen vom Briefing oder none>
 ```
 
-Reviewer, höchstens 15 Zeilen:
+Reviewer, höchstens 15 Zeilen; alle Zeilen außer `ISSUES` sind Pflicht, sonst gilt das Review als unvollständig:
 
 ```text
 VERDICT: pass|fail
-CHECKS: <geprüfte Kriterien, Tests, UI-Vorschau, Builds; Fehlerfall-Tests und geprüfte Wartestellen mit Datei:Zeile; Ergebnis neuer Tests am Basisstand; nicht mögliche Prüfungen>
-ISSUES: <offene Probleme oder none; größere Korrekturanforderung an den Hauptagenten>
-FIXED: <kleine eigene Korrekturen oder none>
-FILES: <Repo-Pfade ohne output/ oder none>
+RUN: <jeder ausgeführte Befehl mit Exit-Code und Kurzergebnis, z. B. „pytest: 74 passed“; nicht mögliche Prüfungen>
+BASELINE: <bei Fehlerkorrekturen: Lauf am Basisstand (erwartet FAIL) mit Ergebnis, sonst n/a>
+FILES: <geänderte Dateien mit +/- Zeilen>
+DEVIATIONS: <Abweichungen vom Briefing oder none>
+FIXED: <selbst behobene Kleinigkeiten mit Datei:Zeile oder none>
+ISSUES: <größere Korrekturanforderung an den Hauptagenten oder none>
 ```
 
 Bei einer fehlenden notwendigen Datei oder anderer konkreter Blockade hat `STATUS: blocked` Vorrang vor dem Rollenformat. Eine notwendige Rückfrage wird mit `STATUS: question` gemeldet, ein Plan mit `STATUS: plan`. So kann monarch den Hauptagenten vorzeitig informieren. Bei reinen Prüffehlern ohne fehlende Voraussetzung liefert der Reviewer `VERDICT: fail` mit gebündelten Problemen.
 
-`FILES:` nennt nur Dateien, die Du in dieser Antwort tatsächlich unter `output/` bereitgestellt hast; es bedeutet weder einen erfolgreichen Download noch eine bereits erfolgte lokale Repo-Übernahme. Melde nur tatsächlich geprüfte Ergebnisse und antworte kurz innerhalb Deines Rollenformats.
+`FILES:` nennt beim Worker nur Dateien, die Du in dieser Antwort tatsächlich unter `output/` bereitgestellt hast, beim Reviewer die geprüften geänderten Dateien mit +/- Zeilen (selbst gelieferte stehen unter `FIXED`); es bedeutet weder einen erfolgreichen Download noch eine bereits erfolgte lokale Repo-Übernahme. Melde nur tatsächlich geprüfte Ergebnisse und antworte kurz innerhalb Deines Rollenformats.
 
 ## Python-Tests mit pytest
 

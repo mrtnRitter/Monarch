@@ -46,11 +46,11 @@ Requirements: VS Code 1.85+ with the built-in Git extension, an awork account in
 
 ```bash
 cd monarch/vscode
-python build_vsix.py                         # -> monarch-0.21.1.vsix
-code --install-extension monarch-0.21.1.vsix
+python build_vsix.py                         # -> monarch-0.22.0.vsix
+code --install-extension monarch-0.22.0.vsix
 ```
 
-Or in VS Code: Extensions view → `…` → **Install from VSIX…**. Optional local tests: `node test/test.js`, `node test/steps_test.js`, `node test/webview_test.js`, `node test/extension_smoke.js`, `node test/relay_plan_progress_test.js`, `node test/chat_view_test.js` and `node test/notes_test.js`; `test/webview_notes_test.js` needs jsdom (`NODE_PATH=<folder>/node_modules node test/webview_notes_test.js`).
+Or in VS Code: Extensions view → `…` → **Install from VSIX…**. Optional local tests: `node test/test.js`, `node test/steps_test.js`, `node test/webview_test.js`, `node test/extension_smoke.js`, `node test/relay_plan_progress_test.js`, `node test/chat_view_test.js`, `node test/notes_test.js`, `node test/git_test.js` (needs git), `node test/staging_test.js`, `node test/snapshot_test.js` and `node test/relay_diff_test.js`; `test/webview_notes_test.js` needs jsdom (`NODE_PATH=<folder>/node_modules node test/webview_notes_test.js`).
 
 ## Setup in awork (once per workspace, by the agent owner)
 
@@ -74,7 +74,7 @@ The skills use the neutral terms *main agent* and *co-agent* and the placeholder
 
 Every user, also the agent owner, does this once:
 
-1. **Install** `monarch-0.21.1.vsix` (see *Installation*) and reload VS Code (Command Palette → **Developer: Reload Window**).
+1. **Install** `monarch-0.22.0.vsix` (see *Installation*) and reload VS Code (Command Palette → **Developer: Reload Window**).
 2. **Sign in:** Open **monarch** in the activity bar and click **Sign in** (or Command Palette → **monarch: Sign in**). The browser opens; log in to awork and select the workspace.
 3. **Check the agents:** The agent circles at the top show the agents. If an agent shared with you is missing, set **Monarch: Agent Filter** (`monarch.agentFilter`) to `all`.
 4. **Test files:** Start a **new chat** (blue **+**) and send: `Create output/download_test.txt with three lines.`
@@ -119,6 +119,12 @@ All settings are optional. The agent list comes from awork (see `monarch.agentFi
 | `monarch.relayTimeout` | `600` | Seconds the relay waits before waking the agent with the current state, including the progress of working co-agents; `0` = no limit |
 | `monarch.pollInterval` | `3` | Seconds between status checks |
 | `monarch.maxFolderMB` | `20` | Max. size of a folder or file attachment |
+| `monarch.autoSnapshot` | `off` | `spawn`: attach the repo snapshot to every `ORCA: spawn` (once, also if the brief has `ATTACH: repo-snapshot`); `off`: only on `ATTACH: repo-snapshot` |
+| `monarch.maxSnapshotMB` | `20` | Max. size of the repo snapshot (sum of the uncompressed files); larger snapshots refuse the command and name the 5 largest top-level folders; `0` = no cap |
+| `monarch.normalizeSuffixCopies` | `true` | A co-agent file `X-<n>.<ext>` (n ≥ 1) is staged as `X.<ext>` if `X.<ext>` is in the repo, staged or in the same answer; with several copies in one answer the highest `n` wins |
+| `monarch.normalizeLineEndings` | `false` | `true`: co-agent text files with CRLF are converted to LF when LF is expected; otherwise only a warning |
+| `monarch.relayDiff` | `inline` | Diffs of newly staged co-agent files in the relay: `inline`, `attach` (always as `<name>.diff` attachment) or `off` |
+| `monarch.relayDiffMaxKB` | `40` | Max. total size of inline diffs per relay; the largest diffs beyond it are attached instead |
 | `monarch.notesPosition` | `right` | Side of the notes pane next to the chat: `left` or `right` |
 | `monarch.syncInterval` | `4` | Seconds between checks for new messages of the current chat written elsewhere (e.g. awork web app) while the chat window is visible; while the agent is working, a newer message of yours written elsewhere ends the wait; `0` = off |
 
@@ -188,6 +194,8 @@ The agent saves its files in `/workspace/output/` with their repo path (e.g. `/w
 
 Co-agent files are not written directly: monarch downloads them when the co-agent answers and keeps them staged outside the repo (latest version per path) until the agent sends `### ORCA: commit`. Failed downloads of co-agent files are shown as yellow warning box and reported to the agent. A new chat discards staged files.
 
+Every message to a co-agent starts with a fixed line `[monarch files] …`: deliver each file complete under `/workspace/output/<repo path>` with LF line endings, overwrite existing files under the same path, no suffix copies. If a co-agent still delivers `X-<n>.<ext>` (n ≥ 1) and `X.<ext>` exists in the repo, is staged or comes in the same answer, monarch stages it as `X.<ext>` and reports `warning: X-<n>.<ext> mapped to X.<ext>` (`monarch.normalizeSuffixCopies`); with several copies in one answer the highest `n` wins, the other copies and a delivered `X.<ext>` are dropped with `warning: <path> ignored (X-<n>.<ext> mapped to X.<ext>)`. A text file with CRLF where LF is expected (repo version with LF, or a new file and `.gitattributes` or the majority of the repo files use LF) gives `warning: CRLF in <path>`; with `monarch.normalizeLineEndings` it is converted to LF. Files of the agent itself are written unchanged.
+
 ### Log
 
 **Output → monarch** shows the run status reported by awork, every download (`download <path>: ok` or the error), every `commit` and every reload by `syncInterval`.
@@ -202,12 +210,16 @@ An agent with `coAgentId` controls co-agents with blocks at the end of its answe
 | `### ORCA: send <id>` + message | Message to a co-agent |
 | `### ORCA: cancel <id>` | Stop one co-agent |
 | `### ORCA: wait` | Keep waiting |
-| `### ORCA: inspect` + `ATTACH:` lines | Send files to the agent for its own review, at once: `ATTACH: <co-agent id>` (all its staged files), `ATTACH: <repo path>` (staged version, else local repo), `ATTACH: repo:<repo path>` (local repo version, e.g. the base of a staged file); max. 20 files per answer. Wakes no co-agent and writes nothing. Not allowed in the same answer as `spawn`, `send`, `wait`, `commit` or `stopzilla` |
+| `### ORCA: inspect` + `ATTACH:` lines | For special cases (relay diffs normally replace it): send files to the agent for its own review, at once: `ATTACH: <co-agent id>` (all its staged files), `ATTACH: <repo path>` (staged version, else local repo), `ATTACH: repo:<repo path>` (local repo version, e.g. the base of a staged file); max. 20 files per answer. Wakes no co-agent and writes nothing. Not allowed in the same answer as `spawn`, `send`, `wait`, `commit` or `stopzilla` |
 | `### ORCA: notes` + complete new notes | Replace the notes of this chat (empty = clear); refused if the user changed them after the agent's last message, then the agent is woken with the current notes. Wakes no co-agent, works without `coAgentId` |
 | `### ORCA: commit` | Write all staged co-agent files into the repo; failed ones stay staged |
 | `### ORCA: stopzilla` | Stop all co-agents, close the job |
 
 monarch wakes the agent with a `[monarch relay]` message when all working co-agents have answered, when one answers with `STATUS: question`/`blocked`/`plan`, or after `relayTimeout`. After `relayTimeout` the message has a `progress (working co-agents):` part with the number of steps and the last 3 steps of each working co-agent (`- minizilla_2: 14 steps, last: … | … | …`), read from its run events for at most 5 s; without readable events it says `steps not readable`. It lists the staged files of each co-agent (`files (staged, not in the repo yet): …`), download warnings and the credits of agent and co-agents separately (`credits: agent 120/1000, co-agents 340/1000`); no files are attached. After `inspect`, monarch answers at once with a `[monarch relay] inspect` message: the files as attachments, a list `<file name> = <repo path>, <source>` (`staged by <co-agent id>` or `local repo`; equal names get `-2`, `-3`, …) and the files that could not be attached. A line `ATTACH: <repo path>` in a brief or message attaches that file (staged version first, else from the local repo, `maxFolderMB` each); `ATTACH: <co-agent id>` attaches all staged files of that co-agent; max. 20 files per message. Commands beyond the limits are refused and reported to the agent.
+
+`ATTACH: repo-snapshot` in a spawn or send (not in `inspect`) attaches `repo-snapshot.zip`: every file of `git ls-files -co --exclude-standard` in the workspace folder (tracked plus untracked, not ignored, including local changes not pushed), with all staged co-agent files on top (latest version per path), never `.git`, `.monarch/` or Python caches, plus `SNAPSHOT.md` in the archive root (branch, HEAD, locally changed files, overlaid staged files with `staged by <id>`, deleted files as “nicht enthalten”). It counts as one of the 20 attachments. The command line in the relay shows `repo-snapshot.zip = <branch>@<sha7> + <n> staged`; for a spawn that waited for `AFTER:` the same line appears as `repo-snapshot: …` in that co-agent's relay part. Above `monarch.maxSnapshotMB` the command is refused with the 5 largest folders. Requires git on the PATH. Co-agents have internet access (checked with `curl -sI https://nodejs.org` → HTTP 200 and `pip download pytest` → ok), so project setups that download tools can run from the snapshot; unpack it to `/tmp`, because `git clone` into `/workspace/...` fails in the sandbox (`chmod on .git/config.lock`).
+
+For every file staged since the last relay, the co-agent's part of the relay ends with a `diffs:` block: unified diff with 3 context lines, header `--- <path> (staged by <id>, <kind>, +<added> -<deleted>)` with kind `delta to previous staged` (the path was staged before), `vs local repo` or `new file`. CRLF and LF count as equal. Binary files give only `binary <path> changed (<size> bytes)`, files with more than 20000 lines (old plus new) `diff for <path> skipped (more than 20000 lines)`. The suffix and CRLF warnings stand directly before the diffs. If the inline diffs exceed `monarch.relayDiffMaxKB`, the largest ones are attached as `<name>.diff` (`diff for <path> attached (too large)`, plus a list `<file name> = <repo path>, staged by <id>`); `monarch.relayDiff` switches this to always attached or off.
 
 ## Commands
 

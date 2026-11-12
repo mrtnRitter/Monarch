@@ -1,11 +1,14 @@
 'use strict';
 /** One chat with an awork agent: messages, co-agent relay via ORCA commands, limits, credits (agent and co-agents separately) and stop. */
 const files = require('./files');
+const { unified_diff, plan_diffs } = require('./diff');
 const { abortable } = require('./awork');
 const { parse_commands, parse_spawn_body } = require('./orca');
 const { strip_context } = require('./repo');
 const { notes_block, strip_notes } = require('./notes');
 const { log } = require('./log');
+const { snapshot_label, largest_dirs, snapshot_md } = require('./snapshot');
+const { create_zip } = require('./zip');
 
 // any other status ends the wait, so an unknown final status cannot block the chat
 const active_states = new Set(['', 'accepted', 'created', 'queued', 'pending', 'started', 'running', 'processing', 'in_progress', 'inprogress', 'streaming']);
@@ -17,6 +20,7 @@ const own_co_states = new Set(['working', 'waiting', 'answered', 'cancelled']);
 const skip_roles = new Set(['user', 'tool', 'system']);
 const status_pattern = /^\W*STATUS:\W*(\w+)/im;
 const max_attachments = 20;
+const files_preamble = '[monarch files] Liefere jede Datei vollständig unter /workspace/output/<repo-pfad>, mit LF-Zeilenenden. Vorhandene Dateien dort überschreibst Du unter demselben Pfad. Keine Kopien mit Suffix (-1, -2, …).';
 const attach_pattern = /^\s*ATTACH:\s*`?([^`\n]+?)`?\s*$/;
 const relay_prefix = '[monarch relay]';
 // inspect only reads files; with these commands its answer would be mixed with a relay wait or a repo write
@@ -945,7 +949,11 @@ class ChatSession {
 
     /** Content of a staged co-agent file; downloaded again if it is not in memory (e.g. after a reload). */
     async _staged_file(path) {
-        if (!this.staged_data.has(path)) this.staged_data.set(path, await this._request(signal => this.client.download(this.state.staged[path].url, { signal })));
+        if (!this.staged_data.has(path)) {
+            let data = await this._request(signal => this.client.download(this.state.staged[path].url, { signal }));
+            if (this.state.staged[path].lf) data = files.to_lf(data);
+            this.staged_data.set(path, data);
+        }
         return this.staged_data.get(path);
     }
 
@@ -990,19 +998,61 @@ class ChatSession {
         return null;
     }
 
-    /**
-     * Turn "ATTACH: <repo path>" lines of a brief into attachments: staged co-agent files first, else the local repo.
-     * "ATTACH: <co-agent id>" attaches all staged files of that co-agent.
-     */
-    async _brief(body) {
+    async _snapshot() {
+        if (!this.workspace?.repo_state) throw new Error('repo-snapshot: no folder open');
+        const repo = await this._request(signal => this.workspace.repo_state({ signal }));
+        const staged_paths = Object.keys(this.state.staged).sort();
+        const staged_data = new Map();
+        for (const path of staged_paths) staged_data.set(path, await this._staged_file(path));
+        const base = repo.files.filter(file => !this.state.staged[file.path] && file.path !== 'SNAPSHOT.md');
+        const data_size = data => typeof data === 'string' ? Buffer.byteLength(data) : data.byteLength;
+        const total = base.reduce((size, file) => size + file.size, 0) + [...staged_data.values()].reduce((size, data) => size + data_size(data), 0);
+        const max = Number(this.limits.maxSnapshotMB ?? 20);
+        const mb = bytes => (bytes / 1048576).toFixed(1);
+        if (max > 0 && total > max * 1024 * 1024) {
+            const folders = largest_dirs([...base, ...staged_paths.map(path => ({ path, size: data_size(staged_data.get(path)) }))])
+                .map(dir => `${dir.dir} (${mb(dir.size)} MB)`).join(', ');
+            throw new Error(`repo-snapshot: ${mb(total)} MB exceeds monarch.maxSnapshotMB (${max} MB); largest folders: ${folders}`);
+        }
+        const entries = [];
+        for (const file of base) {
+            let data;
+            try {
+                data = await this._request(() => this.workspace.read(file.path));
+            } catch (error) {
+                if (error instanceof StopRequested) throw error;
+                throw new Error(`repo-snapshot: ${file.path} not readable (${error.message})`);
+            }
+            entries.push({ name: file.path, data });
+        }
+        for (const path of staged_paths) entries.push({ name: path, data: staged_data.get(path) });
+        entries.sort((left, right) => left.name < right.name ? -1 : left.name > right.name ? 1 : 0);
+        entries.push({
+            name: 'SNAPSHOT.md',
+            data: snapshot_md({
+                branch: repo.branch, head: repo.head, changed: repo.changed,
+                staged: staged_paths.map(path => ({ path, from: this.state.staged[path].from })),
+                deleted: repo.deleted.filter(path => !this.state.staged[path]),
+            }),
+        });
+        const upload = await this._request(signal => this.client.upload_temporary_file('repo-snapshot.zip', create_zip(entries), 'application/zip', { signal }));
+        return { upload, label: snapshot_label({ branch: repo.branch, head: repo.head, staged_count: staged_paths.length }) };
+    }
+
+    /** Turn ATTACH lines into file attachments and optionally include a complete local repo snapshot. */
+    async _brief(body, { auto_snapshot = false } = {}) {
         const lines = body.split('\n');
+        const content_lines = lines.filter(line => !attach_pattern.test(line));
+        const title = _first_line(content_lines.join('\n'));
         const entries = lines.map(line => attach_pattern.exec(line)?.[1].trim()).filter(Boolean);
-        if (!entries.length) return { content: body, attachments: [] };
-        const expanded = entries.map(entry => (this.state.co_agents[entry] ? Object.keys(this.state.staged).filter(path => this.state.staged[path].from === entry) : [entry]));
-        const empty = entries.filter((entry, index) => !expanded[index].length);
+        const wants_snapshot = auto_snapshot || entries.some(entry => /^repo-snapshot$/i.test(entry));
+        if (!entries.length && !wants_snapshot) return { content: `${files_preamble}\n\n${body}`, attachments: [], title, snapshot: null };
+        const paths_entries = entries.filter(entry => !/^repo-snapshot$/i.test(entry));
+        const expanded = paths_entries.map(entry => (this.state.co_agents[entry] ? Object.keys(this.state.staged).filter(path => this.state.staged[path].from === entry) : [entry]));
+        const empty = paths_entries.filter((entry, index) => !expanded[index].length);
         if (empty.length) throw new Error(`no staged files of ${empty.join(', ')}`);
         const paths = [...new Set(expanded.flat())];
-        if (paths.length > max_attachments) throw new Error(`max. ${max_attachments} files per message`);
+        if (paths.length + (wants_snapshot ? 1 : 0) > max_attachments) throw new Error(`max. ${max_attachments} files per message`);
         const unsafe = paths.filter(path => !files.safe_rel_path(path) || files.is_junk(path));
         if (unsafe.length) throw new Error(`unsafe attachment path ${unsafe.join(', ')}`);
         const attachments = [];
@@ -1018,8 +1068,13 @@ class ChatSession {
             }
             attachments.push({ temporaryFileId: await this._request(signal => this.client.upload_temporary_file(files.basename(path), data, undefined, { signal })) });
         }
-        const content = lines.filter(line => !attach_pattern.test(line)).join('\n').trim();
-        return { content: `${content}\n\nAttached files (relative to repo root): ${paths.join(', ')}`, attachments };
+        const snapshot = wants_snapshot ? await this._snapshot() : null;
+        if (snapshot) attachments.push({ temporaryFileId: snapshot.upload });
+        const text = content_lines.join('\n').trim();
+        const content = `${files_preamble}\n\n${text}`
+            + (paths.length ? `\n\nAttached files (relative to repo root): ${paths.join(', ')}` : '')
+            + (snapshot ? `\n\nAttached repo snapshot: ${snapshot.label}` : '');
+        return { content, attachments, title, snapshot: snapshot?.label || null };
     }
 
     /**
@@ -1039,6 +1094,10 @@ class ChatSession {
             if (!wanted.some(item => item.path === safe && item.source === source)) wanted.push({ path: safe, local, source });
         };
         for (const entry of entries) {
+            if (/^repo-snapshot$/i.test(entry)) {
+                missing.push('repo-snapshot (not available in inspect)');
+                continue;
+            }
             if (repo_prefix.test(entry)) add(entry.replace(repo_prefix, ''), true);
             else if (this.state.co_agents[entry]) {
                 const paths = Object.keys(this.state.staged).filter(path => this.state.staged[path].from === entry);
@@ -1128,13 +1187,15 @@ class ChatSession {
                     spawn_context?.ids.set(spawn_index, id);
                     return { ...result(true, `spawn ${id}`), pending_id: id };
                 }
-                const { content, attachments } = await this._brief(parsed.body);
+                const { content, attachments, title, snapshot } = await this._brief(parsed.body, { auto_snapshot: this.limits.autoSnapshot === 'spawn' });
                 this.state.next_index += 1;
-                const thread = await this.client.create_thread(this.agent.coAgentId, content, `${id} – ${_first_line(content)}`, attachments);
+                const thread = await this.client.create_thread(this.agent.coAgentId, content, `${id} – ${title}`, attachments);
                 const message_id = await this._accepted_id(thread.id, thread);
-                this.state.co_agents[id] = { thread_id: thread.id, message_id, first_message_id: message_id, state: 'working', relayed: null };
+                const co_agent = { thread_id: thread.id, message_id, first_message_id: message_id, state: 'working', relayed: null };
+                if (snapshot) co_agent.snapshot = snapshot;
+                this.state.co_agents[id] = co_agent;
                 spawn_context?.ids.set(spawn_index, id);
-                return result(true, `spawn ${id}`);
+                return result(true, `spawn ${id}${snapshot ? ` (${snapshot})` : ''}`);
             }
             if (['send', 'cancel'].includes(action) && !co_agent) return result(false, `${action}: unknown co-agent "${target || ''}", known: ${Object.keys(this.state.co_agents).join(', ') || 'none'}`);
             if (action === 'send') {
@@ -1143,11 +1204,12 @@ class ChatSession {
                 if (!body) return result(false, `send ${target}: empty message`);
                 const error = this._limit_error(false);
                 if (error) return result(false, `send ${target}: ${error}`);
-                const { content, attachments } = await this._brief(body);
+                const { content, attachments, snapshot } = await this._brief(body);
                 const accepted = await this.client.send_message(co_agent.thread_id, content, attachments);
                 this.staged_outputs.delete(target);
                 Object.assign(co_agent, { message_id: await this._accepted_id(co_agent.thread_id, accepted), state: 'working' });
-                return result(true, `send ${target}`);
+                if (snapshot) co_agent.snapshot = snapshot;
+                return result(true, `send ${target}${snapshot ? ` (${snapshot})` : ''}`);
             }
             if (action === 'cancel') {
                 if (co_agent.state === 'working') await this.client.cancel(co_agent.thread_id).catch(() => {});
@@ -1215,11 +1277,12 @@ class ChatSession {
             if (!target) throw new Error(`unresolved spawn_${match[2]} attachment`);
             return `${match[1]}${target}${match[3]}`;
         }).join('\n');
-        const { content, attachments } = await this._brief(body);
-        const thread = await this.client.create_thread(this.agent.coAgentId, content, `${id} – ${_first_line(content)}`, attachments);
+        const { content, attachments, title, snapshot } = await this._brief(body, { auto_snapshot: this.limits.autoSnapshot === 'spawn' });
+        const thread = await this.client.create_thread(this.agent.coAgentId, content, `${id} – ${title}`, attachments);
         const co_agent = this.state.co_agents[id];
         const message_id = await this._accepted_id(thread.id, thread);
         Object.assign(co_agent, { thread_id: thread.id, message_id, first_message_id: message_id, state: 'working', relayed: null });
+        if (snapshot) co_agent.snapshot = snapshot;
         delete co_agent.pending_spawn;
     }
 
@@ -1345,12 +1408,127 @@ class ChatSession {
         }
     }
 
+    async _normalize_outputs(output) {
+        const suffix_warnings = [];
+        if (this.limits.normalizeSuffixCopies !== false) {
+            const existence = new Map();
+            const candidates = new Map();
+            const delivered = new Set(output.files.map(file => file.path));
+            for (const file of output.files) {
+                const copy = files.suffix_copy(file.path);
+                if (!copy) continue;
+                let eligible = Object.hasOwn(this.state.staged, copy.base) || delivered.has(copy.base);
+                if (!eligible && !existence.has(copy.base)) {
+                    let exists = false;
+                    if (this.workspace?.exists) {
+                        try {
+                            exists = Boolean(await this._request(() => this.workspace.exists(copy.base)));
+                        } catch (error) {
+                            if (error instanceof StopRequested) throw error;
+                        }
+                    }
+                    existence.set(copy.base, exists);
+                }
+                eligible ||= existence.get(copy.base) === true;
+                if (!eligible) continue;
+                if (!candidates.has(copy.base)) candidates.set(copy.base, []);
+                candidates.get(copy.base).push({ file, n: copy.n, original: file.path });
+            }
+
+            const decisions = new Map();
+            for (const [base, copies] of candidates) {
+                const delivered_base = output.files.find(file => file.path === base);
+                const winner = copies.reduce((best, candidate) => candidate.n > best.n ? candidate : best);
+                decisions.set(winner.file, { path: base, warning: `${winner.original} mapped to ${base}` });
+                for (const candidate of copies) {
+                    if (candidate !== winner) decisions.set(candidate.file, { drop: true, warning: `${candidate.original} ignored (${winner.original} mapped to ${base})` });
+                }
+                if (delivered_base) decisions.set(delivered_base, { drop: true, warning: `${base} ignored (${winner.original} mapped to ${base})` });
+            }
+            const normalized_files = [];
+            for (const file of output.files) {
+                const decision = decisions.get(file);
+                if (decision?.warning) suffix_warnings.push(decision.warning);
+                if (decision?.drop) continue;
+                if (decision?.path) file.path = decision.path;
+                normalized_files.push(file);
+            }
+            output.files = normalized_files;
+        }
+        output.warnings.push(...suffix_warnings);
+
+        const crlf_warnings = [];
+        let eol_loaded = false;
+        let default_eol = null;
+        for (const file of output.files) {
+            if (!files.is_text(file.data) || !files.has_crlf(file.data)) continue;
+            let repo_data;
+            let repo_readable = false;
+            if (this.workspace?.read) {
+                try {
+                    repo_data = await this._request(() => this.workspace.read(file.path));
+                    repo_readable = true;
+                } catch (error) {
+                    if (error instanceof StopRequested) throw error;
+                }
+            }
+            let expects_lf;
+            if (repo_readable) expects_lf = !files.has_crlf(repo_data);
+            else {
+                if (!eol_loaded) {
+                    eol_loaded = true;
+                    if (this.workspace?.eol_default) {
+                        try {
+                            default_eol = await this._request(signal => this.workspace.eol_default({ signal }));
+                        } catch (error) {
+                            if (error instanceof StopRequested) throw error;
+                        }
+                    }
+                }
+                expects_lf = default_eol === 'lf';
+            }
+            if (!expects_lf) continue;
+            if (this.limits.normalizeLineEndings === true) {
+                file.data = files.to_lf(file.data);
+                file.lf = true;
+                crlf_warnings.push(`CRLF in ${file.path} (converted to LF)`);
+            } else crlf_warnings.push(`CRLF in ${file.path}`);
+        }
+        output.warnings.push(...crlf_warnings);
+        return output;
+    }
+
     async _stage_outputs(id, run = null) {
         if (this.staged_outputs.has(id)) return this.staged_outputs.get(id);
         if (!run) ({ run } = await this._answer_for(id));
         const output = await this._download_files(run);
+        await this._normalize_outputs(output);
+        if ((this.limits.relayDiff ?? 'inline') !== 'off') {
+            for (const file of output.files) {
+                let base = { kind: 'new file', data: null };
+                if (Object.hasOwn(this.state.staged, file.path)) {
+                    try {
+                        base = { kind: 'delta to previous staged', data: await this._staged_file(file.path) };
+                    } catch (error) {
+                        if (error instanceof StopRequested) throw error;
+                        if (this.workspace?.read) {
+                            try { base = { kind: 'vs local repo', data: await this._request(() => this.workspace.read(file.path)) }; }
+                            catch (repo_error) {
+                                if (repo_error instanceof StopRequested) throw repo_error;
+                            }
+                        }
+                    }
+                } else if (this.workspace?.read) {
+                    try { base = { kind: 'vs local repo', data: await this._request(() => this.workspace.read(file.path)) }; }
+                    catch (error) {
+                        if (error instanceof StopRequested) throw error;
+                    }
+                }
+                file.base = base;
+            }
+        }
         for (const file of output.files) {
-            this.state.staged[file.path] = { from: id, url: file.url };
+            this.state.staged[file.path] = { from: id, url: file.url, ...(file.lf ? { lf: true } : {}) };
             this.staged_data.set(file.path, file.data);
         }
         this.staged_outputs.set(id, output);
@@ -1368,7 +1546,12 @@ class ChatSession {
         co_agent.relayed = co_agent.message_id;
         this.answers.delete(id);
         this._info(`relay: ${id} ${co_agent.state}, ${found.length} files staged`);
-        const lines = [`## ${id} (${co_agent.state})`, text || '(no answer text)'];
+        const lines = [`## ${id} (${co_agent.state})`];
+        if (co_agent.snapshot) {
+            lines.push(`repo-snapshot: ${co_agent.snapshot}`);
+            delete co_agent.snapshot;
+        }
+        lines.push(text || '(no answer text)');
         if (found.length) lines.push(`files (staged, not in the repo yet): ${found.map(file => file.path).join(', ')}`);
         return [...lines, ...warnings.map(warning => `warning: ${warning}`)].join('\n');
     }
@@ -1409,17 +1592,95 @@ class ChatSession {
         }
     }
 
+    _diff_entry(id, file) {
+        const base = file.base;
+        const bytes = data => typeof data === 'string' ? Buffer.byteLength(data) : data?.byteLength ?? 0;
+        if (!files.is_text(file.data) || (base?.data != null && !files.is_text(base.data))) {
+            const text = `binary ${file.path} changed (${bytes(file.data)} bytes)`;
+            return { path: file.path, id, text, size: Buffer.byteLength(text) };
+        }
+        const to_text = data => typeof data === 'string' ? data : Buffer.from(data).toString('utf8');
+        const old_text = base?.data == null ? '' : to_text(base.data);
+        const new_text = to_text(file.data);
+        const line_count = text => !text ? 0 : text.split('\n').length - (text.endsWith('\n') ? 1 : 0);
+        if (line_count(old_text) + line_count(new_text) > 20_000) {
+            const text = `diff for ${file.path} skipped (more than 20000 lines)`;
+            return { path: file.path, id, text, size: Buffer.byteLength(text) };
+        }
+        const diff = unified_diff(old_text, new_text);
+        const text = `--- ${file.path} (staged by ${id}, ${base?.kind || 'new file'}, +${diff.added} -${diff.deleted})\n${diff.text || '(no changes)'}`;
+        return { path: file.path, id, text, size: Buffer.byteLength(text) };
+    }
+
     async _build_relay(fresh, pending, results, timed_out) {
         const parts = [`${relay_prefix} co-agent update`];
+        const attachments = [];
+        const attachment_sources = [];
         if (results.length) parts.push(['commands:', ...results.map(result => `- ${result.ok ? 'ok' : 'refused'}: ${result.line}`)].join('\n'));
-        for (const id of fresh) parts.push(await this._forward(id));
+        const sections = [];
+        for (const id of fresh) sections.push({ id, index: parts.push(await this._forward(id)) - 1 });
+
+        const mode = this.limits.relayDiff ?? 'inline';
+        if (mode !== 'off') {
+            const entries = [];
+            for (const { id } of sections) {
+                const staged = this.staged_outputs.get(id);
+                for (const file of staged?.files || []) {
+                    if (!file.base) continue;
+                    let entry;
+                    try { entry = this._diff_entry(id, file); }
+                    finally { delete file.base; }
+                    entries.push({ ...entry, always_inline: entry.text.startsWith('binary ') || entry.text.endsWith('skipped (more than 20000 lines)') });
+                }
+            }
+            const regular = entries.filter(entry => !entry.always_inline);
+            const plan = plan_diffs(regular.map(({ path, size }) => ({ path, size })), mode, Number(this.limits.relayDiffMaxKB ?? 40));
+            const remaining_attached = new Map();
+            for (const path of plan.attached) remaining_attached.set(path, (remaining_attached.get(path) || 0) + 1);
+            const attached_regular = new Set();
+            for (const entry of [...regular].sort((left, right) => right.size - left.size)) {
+                const count = remaining_attached.get(entry.path) || 0;
+                if (!count) continue;
+                attached_regular.add(entry);
+                remaining_attached.set(entry.path, count - 1);
+            }
+            const attachment_names = new Set();
+            const by_id = new Map(sections.map(section => [section.id, []]));
+            for (const entry of entries) {
+                const section_lines = by_id.get(entry.id);
+                if (entry.always_inline || !attached_regular.has(entry)) {
+                    section_lines.push(entry.text);
+                    continue;
+                }
+                if (attachments.length >= max_attachments) {
+                    section_lines.push(`diff for ${entry.path} not attached (max. ${max_attachments} attachments)`);
+                    continue;
+                }
+                const name = _unique_name(`${files.basename(entry.path)}.diff`, attachment_names);
+                try {
+                    const temporary_file_id = await this._request(signal => this.client.upload_temporary_file(name, entry.text, undefined, { signal }));
+                    attachments.push({ temporaryFileId: temporary_file_id });
+                    attachment_sources.push(`- ${name} = ${entry.path}, staged by ${entry.id}`);
+                    section_lines.push(`diff for ${entry.path} attached${mode === 'inline' ? ' (too large)' : ''}`);
+                } catch (error) {
+                    if (error instanceof StopRequested) throw error;
+                    section_lines.push(`diff for ${entry.path} not attached (${_reason(error)})`);
+                }
+            }
+            for (const section of sections) {
+                const lines = by_id.get(section.id);
+                if (lines.length) parts[section.index] += `\ndiffs:\n${lines.join('\n')}`;
+            }
+            if (attachment_sources.length) parts.push(['attachments (file name = repo path, source):', ...attachment_sources].join('\n'));
+        }
+
         const progress = timed_out ? await this._co_agent_progress(pending.filter(id => this.state.co_agents[id].state === 'working')) : [];
         if (this.stopping) throw new StopRequested();
         if (progress.length) parts.push(['progress (working co-agents):', ...progress].join('\n'));
         parts.push(this._status_text(pending, timed_out));
         this._save();
         this._emit();
-        return { content: parts.join('\n\n'), attachments: [] };
+        return { content: parts.join('\n\n'), attachments };
     }
 
     // --- model ---
@@ -1517,4 +1778,4 @@ class ChatSession {
     }
 }
 
-module.exports = { ChatSession, Notice, StopRequested, Superseded, answer_of, answer_text, pending_question, questions_of, relay_prefix, relay_text, step_text };
+module.exports = { ChatSession, Notice, StopRequested, Superseded, answer_of, answer_text, pending_question, questions_of, relay_prefix, relay_text, step_text, files_preamble };
