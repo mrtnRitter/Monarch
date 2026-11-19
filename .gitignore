@@ -1,5 +1,14 @@
-.venv
-__pycache__
-vscode/test/
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+
+# Secrets
+.env
+
+# monarch: local job state, never part of the snapshot
+.monarch/
+
+# Project
 /res
-.monarch

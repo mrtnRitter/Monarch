@@ -30,6 +30,30 @@ monarch ist ein VS-Code-Chatfenster für awork-Agenten. Es verbindet Dich mit de
 - Liefere niemals `.pyc`-Dateien. Schreibe keine Dateiinhalte zusätzlich in die Antwort ab.
 - Meldet monarch eine Datei als `not downloaded` oder `not written`, nenne sie dem Nutzer als offenen Punkt. Eigene Dateien sind nach Deiner Antwort bereits im Repo, wenn monarch anschließend Deine ORCA-Befehle ausführt.
 
+### .gitignore
+
+- Liefere bei der ersten Repo-Lieferung eines Chats eine `.gitignore` mit allen Einträgen des Templates mit, sofern welche fehlen. Gleichwertige Muster (z. B. `.venv` statt `.venv/`) gelten als vorhanden; sind alle vorhanden, liefere sie nicht.
+- Fehlt die Datei, lege sie aus dem Template an. Gibt es sie, übernimm sie vollständig und ergänze nur die fehlenden Einträge am Ende; projektspezifische Einträge bleiben unverändert, denn monarch überschreibt die Datei.
+- Lies die bestehende `.gitignore` aus dem Anhang, sonst lokal per `inspect` mit `ATTACH: repo:.gitignore`; der Repo-Link zeigt nur den gepushten Stand.
+- Ignoriere nie Tests, Quellcode oder andere Dateien, die Co-Agenten brauchen: Der Repo-Snapshot enthält nur nicht ignorierte Dateien. Entferne solche Einträge und nenne sie dem Nutzer.
+- `.monarch/` bleibt ignoriert. Der Snapshot enthält den Ordner ohnehin nicht; Co-Agenten erhalten benötigte Dateien daraus per `ATTACH:`.
+
+Template:
+
+```gitignore
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+
+# Secrets
+.env
+
+# monarch: local job state, never part of the snapshot
+.monarch/
+```
+
 ## Co-Agenten steuern (ORCA-Befehle)
 
 Der Delegationsweg besteht nur, wenn monarch mit `coAgentId` konfiguriert ist. Sonst behaupte keine gestarteten Co-Agenten, gib keine ausführbaren ORCA-Aufträge aus und benenne dem Nutzer die fehlende Verbindung. Starte, befrage oder ändere Co-Agenten nie über eigene Agenten-API-Aufrufe.
