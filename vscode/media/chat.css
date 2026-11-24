@@ -300,3 +300,11 @@ span.avatar {
 .toolbar-status { display: flex; flex-wrap: wrap; justify-content: center; gap: 4px; min-width: 0; }
 .input-toolbar .model-wrap { justify-self: end; min-width: 0; max-width: 45vw; }
 .input-toolbar .picker-btn { display: block; max-width: 100%; line-height: 22px; overflow: hidden; text-overflow: ellipsis; }
+
+.msg-time { font-size: 0.75em; opacity: 0.6; text-align: right; margin-top: 2px; }
+.date-divider { display: flex; align-items: center; gap: 8px; font-size: 0.8em; opacity: 0.6; }
+.date-divider::before, .date-divider::after { content: ''; flex: 1; border-top: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.35)); }
+
+.repo-btn { display: flex; align-items: center; gap: 4px; max-width: 30vw; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; background: transparent; border: none; color: inherit; font-size: 0.85em; padding: 0 4px; }
+.repo-btn:disabled { cursor: default; opacity: 0.85; }
+.repo-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }

@@ -7,7 +7,7 @@ const { ChatSession, Notice } = require('./session');
 const { log } = require('./log');
 const { create_zip } = require('./zip');
 const { context_line, git_info } = require('./repo');
-const git = require('./git');
+const { folders, folder_by_name, repo_color, make_workspace_adapter } = require('./workspace');
 
 const fixed_excludes = ['**/.git/**', '**/node_modules/**', '**/__pycache__/**', '**/.venv/**', '**/*.pyc'];
 const default_labels = { chat: 'Chat', coCredits: 'Co-Credits', coAgents: 'Co-Agenten', stop: 'Stop' };
@@ -20,19 +20,6 @@ const language_aliases = { py: 'python', js: 'javascript', ts: 'typescript', sh:
 
 function _config() {
     return vscode.workspace.getConfiguration('monarch');
-}
-
-function _root() {
-    return vscode.workspace.workspaceFolders?.[0]?.uri || null;
-}
-
-function _decode_text(data) {
-    if (data.includes(0)) return null;
-    try {
-        return new TextDecoder('utf-8', { fatal: true }).decode(data);
-    } catch {
-        return null;
-    }
 }
 
 function _data_uri(data) {
@@ -68,10 +55,6 @@ async function _git_repository(uri) {
 }
 
 const _chats_key = agent => `monarch.chats.${agent.agentId}`;
-
-function _repo_name() {
-    return _root()?.path.split('/').filter(Boolean).pop() || null;
-}
 
 /** Deduplicate by thread (newest entry wins), newest first, at most max_chats. */
 function _merge_chats(items) {
@@ -118,76 +101,69 @@ function parse_models(defaults) {
     return { default: { provider: defaults?.modelProvider || null, name: defaults?.modelName || null, reasoning: defaults?.reasoningLevel || null }, models };
 }
 
-/** Repo access for the session: reads files (max. maxFolderMB), writes text as undoable edit, binary directly. */
-const workspace_adapter = {
-    async exists(path) {
-        const root = _root();
-        if (!root) return false;
-        const uri = vscode.Uri.joinPath(root, ...path.split('/'));
-        try {
-            await vscode.workspace.fs.stat(uri);
-            return true;
-        } catch {
-            return false;
-        }
-    },
-    async eol_default({ signal } = {}) {
-        const root = _root();
-        if (!root) return null;
-        return git.eol_default(root.fsPath, { signal });
-    },
-    async repo_state({ signal } = {}) {
-        const root = _root();
-        if (!root) throw new Error('no folder open');
-        return git.repo_state(root.fsPath, { signal });
-    },
-    async read(path) {
-        const root = _root();
-        if (!root) throw new Error('no folder open');
-        const uri = vscode.Uri.joinPath(root, ...path.split('/'));
-        const limit_mb = _config().get('maxFolderMB');
-        if ((await vscode.workspace.fs.stat(uri)).size > limit_mb * 1024 * 1024) throw new Error(`exceeds monarch.maxFolderMB (${limit_mb} MB)`);
-        return vscode.workspace.fs.readFile(uri);
-    },
-    async write(path, data) {
-        const root = _root();
-        if (!root) throw new Error('no folder open');
-        const uri = vscode.Uri.joinPath(root, ...path.split('/'));
-        const text = typeof data === 'string' ? data : _decode_text(data);
-        await vscode.workspace.fs.createDirectory(vscode.Uri.joinPath(uri, '..'));
-        if (text === null) {
-            await vscode.workspace.fs.writeFile(uri, data);
-            return path;
-        }
-        const edit = new vscode.WorkspaceEdit();
-        const exists = await vscode.workspace.fs.stat(uri).then(() => true, () => false);
-        if (exists) {
-            const document = await vscode.workspace.openTextDocument(uri);
-            edit.replace(uri, new vscode.Range(document.positionAt(0), document.positionAt(document.getText().length)), text);
-        } else {
-            edit.createFile(uri, { ignoreIfExists: true });
-            edit.insert(uri, new vscode.Position(0, 0), text);
-        }
-        if (!(await vscode.workspace.applyEdit(edit))) throw new Error('edit rejected');
-        await (await vscode.workspace.openTextDocument(uri)).save();
-        return path;
-    },
-};
-
 class ChatView {
-    constructor(context, client, oauth) {
-        Object.assign(this, { context, client, oauth, view: null, sessions: new Map(), attachments: [], avatars: new Map(), user_avatar: null, me: null, agent_list: null, models: new Map(), last_file: null, last_editor: null, sync_timer: null });
+    constructor(context, client, oauth, options = {}) {
+        Object.assign(this, { context, client, oauth, view: null, sessions: new Map(), attachments: [], avatars: new Map(), user_avatar: null, me: null, agent_list: null, models: new Map(), last_file: null, last_editor: null, sync_timer: null, disposables: [], open_question: false, unseen: false });
+        this.id = crypto.randomUUID();
+        this.options = { repo_name: null, on_change: () => {}, reveal_thread: () => false, ...options };
+        this.repo_name = this.options.repo_name;
+        this.workspace = make_workspace_adapter(() => this._root());
         // remember the last file so that "Current file" also works while a preview or other non-file tab is active
         const remember = uri => { if (uri && uri.scheme !== 'untitled') this.last_file = uri; };
         // remember the last text editor for "Insert at cursor" while the chat window has the focus (output panels excluded)
         const remember_editor = editor => { if (editor && editor.document.uri.scheme !== 'output') this.last_editor = editor; };
         remember(_tab_uri(vscode.window.tabGroups?.activeTabGroup?.activeTab) || vscode.window.activeTextEditor?.document.uri);
         remember_editor(vscode.window.activeTextEditor);
-        context.subscriptions.push(
+        this.disposables.push(
             vscode.window.onDidChangeActiveTextEditor?.(editor => { remember(editor?.document.uri); remember_editor(editor); }) || { dispose() {} },
             vscode.window.tabGroups?.onDidChangeTabs?.(() => remember(_tab_uri(vscode.window.tabGroups.activeTabGroup?.activeTab))) || { dispose() {} },
             { dispose: () => clearTimeout(this.sync_timer) },
         );
+        context.subscriptions.push(...this.disposables);
+    }
+
+    _folder() {
+        return folder_by_name(this.repo_name) || folders()[0] || null;
+    }
+
+    _root() {
+        return this._folder()?.uri || null;
+    }
+
+    _repo_name() {
+        return this._folder()?.name || null;
+    }
+
+    summary() {
+        const agent = this.agent_list && this._agent();
+        const session = agent ? this.sessions.get(agent.agentId) : null;
+        const state = session?.state;
+        const status = session?.busy ? 'working' : this.open_question ? 'question' : this.unseen ? 'answer' : Object.keys(state?.staged || {}).length ? 'staged' : 'idle';
+        return { id: this.id, repo: this._repo_name(), title: state?.title ?? null, thread_id: state?.thread_id ?? null, state: status };
+    }
+
+    _changed() {
+        try {
+            this.options.on_change(this);
+        } catch (error) {
+            log(`on_change failed: ${error.message}`);
+        }
+    }
+
+    mark_seen() {
+        if (!this.unseen) return;
+        this.unseen = false;
+        this._changed();
+    }
+
+    _repo_info(session) {
+        const folder = this._folder();
+        return { name: folder?.name || null, hex: folder ? repo_color(folder.index).hex : null, can_change: folders().length > 1 && !session?.state?.thread_id && !session?.busy };
+    }
+
+    _post_repo(session) {
+        const agent = this._agent();
+        this._post({ type: 'repo', repo: this._repo_info(session), agent: agent?.agentId || null });
     }
 
     /** Drop everything that belongs to the signed-in user (after sign-in or sign-out). */
@@ -241,7 +217,7 @@ class ChatView {
         if (!list && !single) return;
         const legacy = list || (single.thread_id ? { items: [{ thread_id: single.thread_id, title: single.title || 'Earlier chat', updated: Date.now(), state: single }] } : null);
         if (legacy) {
-            const repo = _repo_name();
+            const repo = this._repo_name();
             this.context.globalState.update(_chats_key(agent), _merge_chats([...(this.context.globalState.get(_chats_key(agent)) || []), ...legacy.items.map(item => ({ repo, ...item }))]));
         }
         for (const key of legacy_keys) workspace.update(key, undefined);
@@ -258,10 +234,11 @@ class ChatView {
                 const chats = this._chats(agent);
                 if (state.thread_id) {
                     const item = chats.items.find(entry => entry.thread_id === state.thread_id);
-                    const entry = { thread_id: state.thread_id, title: state.title || item?.title || 'Untitled chat', repo: item ? item.repo ?? null : _repo_name(), updated: Date.now(), state };
+                    const entry = { thread_id: state.thread_id, title: state.title || item?.title || 'Untitled chat', repo: item ? item.repo ?? null : this._repo_name(), updated: Date.now(), state };
                     chats.items = [entry, ...chats.items.filter(other => other.thread_id !== state.thread_id)];
                 }
                 this._save_chats(agent, chats).then(() => this._post_chats(agent));
+                this._changed();
             },
         };
     }
@@ -270,13 +247,19 @@ class ChatView {
         if (!agent) throw new Notice('No agent available. Sign in first.');
         if (!this.sessions.has(agent.agentId)) {
             const ui = {
-                message: item => this._post({ type: 'message', item, agent: agent.agentId }),
+                message: item => {
+                    if (item.role === 'agent') this.unseen = !this.view?.visible;
+                    if (item.role === 'question') this.open_question = true;
+                    if (item.role === 'user') Object.assign(this, { open_question: false, unseen: false });
+                    this._post({ type: 'message', item, agent: agent.agentId });
+                    if (['agent', 'question', 'user'].includes(item.role)) this._changed();
+                },
                 info: text => this._post({ type: 'message', item: { role: 'info', text }, agent: agent.agentId }),
-                status: status => this._post({ type: 'status', status, agent: agent.agentId }),
+                status: status => { this._post({ type: 'status', status, agent: agent.agentId }); this._post_repo(this.sessions.get(agent.agentId) || null); this._changed(); },
                 answer_credits: ({ thread_id, key, credits }) => this._post({ type: 'answer_credits', thread_id, key, credits, agent: agent.agentId }),
                 notes: ({ text, rev }) => this._post({ type: 'notes', text, rev, agent: agent.agentId }),
             };
-            this.sessions.set(agent.agentId, new ChatSession({ client: this.client, agent, limits: this._limits(), store: this._store(agent), workspace: workspace_adapter, ui }));
+            this.sessions.set(agent.agentId, new ChatSession({ client: this.client, agent, limits: this._limits(), store: this._store(agent), workspace: this.workspace, ui }));
         }
         const session = this.sessions.get(agent.agentId);
         Object.assign(session, { agent, limits: this._limits() });
@@ -310,7 +293,8 @@ class ChatView {
     }
 
     // --- webview ---
-    resolveWebviewView(view) {
+    resolveWebviewView(host) {
+        const view = host;
         this.view = view;
         const media = vscode.Uri.joinPath(this.context.extensionUri, 'media');
         view.webview.options = { enableScripts: true, localResourceRoots: [media] };
@@ -323,6 +307,8 @@ class ChatView {
 <div class="chat" id="chat">
 <div class="header" id="header">
 <div class="agents" id="agents"></div><select id="agent" class="agent-select hidden" title="Agent"></select>
+<button id="repo" class="repo-btn" title="Repo of this chat"><span id="repo_dot" class="repo-dot"></span><span id="repo_name"></span></button>
+<button id="terminal" class="icon-btn" title="Terminal for this repo"><svg viewBox="0 0 16 16" width="21" height="21" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 3.5h11v9h-11z"/><path d="M5 6.5l2 1.5-2 1.5"/><path d="M8.5 10h2.5"/></svg></button>
 <button id="notes_toggle" class="icon-btn" title="Show or hide notes" aria-pressed="false"><svg viewBox="0 0 16 16" width="21" height="21" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M3.5 2.5h6l3 3v8h-9z"/><path d="M9.5 2.5v3h3"/><path d="M5.5 8.5h5M5.5 11h3.5"/></svg></button>
 <div class="menu-wrap"><button id="history" class="icon-btn" title="Chat history"><svg viewBox="0 0 16 16" width="21" height="21" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 8a5.5 5.5 0 1 0 1.6-3.9"/><path d="M2.5 2.4v2.7h2.7"/><path d="M8 5v3.2l2.2 1.4"/></svg></button><div id="history_menu" class="menu right hidden"></div></div>
 <button id="new_chat" class="icon-btn primary" title="New chat"><svg viewBox="0 0 16 16" width="21" height="21" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M8 3.5v9M3.5 8h9"/></svg></button>
@@ -341,13 +327,35 @@ class ChatView {
 </div>
 </div>
 <script nonce="${nonce}" src="${asset('markdown.js')}"></script>
+<script nonce="${nonce}" src="${asset('chat_time.js')}"></script>
 <script nonce="${nonce}" src="${asset('chat.js')}"></script></body></html>`;
-        view.webview.onDidReceiveMessage(message => this._on_message(message).catch(error => this._post({ type: 'error', text: error.message, transient: error instanceof Notice })));
+        const message_listener = view.webview.onDidReceiveMessage(message => this._on_message(message).catch(error => this._post({ type: 'error', text: error.message, transient: error instanceof Notice })));
+        if (message_listener) this.disposables.push(message_listener);
+        for (const listener of [host.onDidChangeVisibility?.(() => { if (host.visible) this.mark_seen(); }), host.onDidChangeViewState?.(() => { if (host.visible) this.mark_seen(); })]) {
+            if (listener) this.disposables.push(listener);
+        }
         this._schedule_sync();
     }
 
     _post(message) {
         if (this.view) this.view.webview.postMessage(message);
+    }
+
+    dispose() {
+        this.disposed = true;
+        try { clearTimeout(this.sync_timer); } catch (error) { log(`timer cleanup failed: ${error.message}`); }
+        for (const disposable of this.disposables.splice(0)) {
+            try { disposable.dispose(); } catch (error) { log(`dispose failed: ${error.message}`); }
+        }
+        for (const session of this.sessions.values()) {
+            if (!session.busy) continue;
+            try {
+                session.stop('manual').catch(error => log(`stop failed: ${error.message}`));
+            } catch (error) {
+                log(`stop failed: ${error.message}`);
+            }
+        }
+        this.view = null;
     }
 
     post_notes_position() {
@@ -361,6 +369,19 @@ class ChatView {
                 if (this._agent() && this._session().busy) throw new Notice('Stop the agent first.');
                 await this.context.workspaceState.update('monarch.agent', message.id);
                 await this.refresh();
+            },
+            terminal: () => this._terminal(),
+            select_repo: async () => {
+                const open_folders = folders();
+                if (open_folders.length < 2) return;
+                const agent = this._agent();
+                const session = agent ? this._session(agent) : null;
+                if (session?.busy || session?.state?.thread_id) throw new Notice('The repo of a chat is fixed. Start a new chat for another repo.');
+                const name = await vscode.window.showQuickPick(open_folders.map(folder => folder.name), { title: 'monarch: repo for this chat' });
+                if (!name) return;
+                this.repo_name = name;
+                this._post_repo(session);
+                this._changed();
             },
             send: () => this._send(message.text, message.interrupt_id),
             stop: () => this.stop(),
@@ -404,21 +425,25 @@ class ChatView {
             }
         }
         const agent = signed_in ? this._agent() : null;
+        const session = agent ? this.sessions.get(agent.agentId) || null : null;
         const agent_items = await Promise.all(agents.map(async item => ({ id: item.agentId, name: item.name, avatar: await this._avatar('agents', item.agentId, item.name, item.has_image) })));
-        this._post({ type: 'init', agents: agent_items, current: agent?.agentId || null, current_name: agent?.name || null, labels: agent?.labels || default_labels, signed_in, user: signed_in ? await this._user() : { image: null, initials: 'Du' }, input_height: this.context.globalState.get('monarch.inputHeight') || null, notes_width: this.context.globalState.get('monarch.notesWidth') || null, notes_visible: Boolean(this.context.globalState.get('monarch.notesVisible')), notes_position: this._notes_position() });
+        this._post({ type: 'init', agents: agent_items, current: agent?.agentId || null, current_name: agent?.name || null, labels: agent?.labels || default_labels, signed_in, user: signed_in ? await this._user() : { image: null, initials: 'Du' }, input_height: this.context.globalState.get('monarch.inputHeight') || null, notes_width: this.context.globalState.get('monarch.notesWidth') || null, notes_visible: Boolean(this.context.globalState.get('monarch.notesVisible')), notes_position: this._notes_position(), repo: this._repo_info(session) });
+        this._post_repo(session);
         this._post_attachments();
         if (!agent) return;
-        const session = this._session(agent);
-        this._post({ type: 'notes', ...session.notes(), agent: agent.agentId });
-        this._post({ type: 'status', status: session.status(), agent: agent.agentId });
+        const active_session = this._session(agent);
+        this._post_repo(active_session);
+        this._post({ type: 'notes', ...active_session.notes(), agent: agent.agentId });
+        this._post({ type: 'status', status: active_session.status(), agent: agent.agentId });
         this._post_chats(agent);
         this._post({ type: 'models', agent: agent.agentId, ...(await this._models(agent)) });
-        await this._show_history(session, agent);
-        session.refresh_credits();
+        await this._show_history(active_session, agent);
+        active_session.refresh_credits();
     }
 
     // --- sync with chats continued elsewhere (awork web app) ---
     _schedule_sync() {
+        if (this.disposed) return;
         clearTimeout(this.sync_timer);
         const seconds = _config().get('syncInterval');
         // with 0 (off) the setting is checked again after 10 s
@@ -463,9 +488,14 @@ class ChatView {
         const session = this._session(agent);
         const item = this._chats(agent).items.find(entry => entry.thread_id === thread_id);
         if (!item) throw new Notice('Chat not found in the history.');
+        if (this.options.reveal_thread(thread_id, this)) return;
+        if (item.repo && folder_by_name(item.repo)) this.repo_name = item.repo;
+        Object.assign(this, { open_question: false, unseen: false });
         session.load_state(item.state || { thread_id });
+        this._post_repo(session);
         await this._show_history(session, agent);
         session.refresh_credits();
+        this._changed();
     }
 
     /**
@@ -480,6 +510,7 @@ class ChatView {
         if (!input) return;
         const thread_id = input.match(uuid_pattern)?.[0].toLowerCase();
         if (!thread_id) throw new Notice('No chat id found in the link.');
+        if (this.options.reveal_thread(thread_id, this)) return;
         let thread;
         try {
             thread = await this.client.thread(thread_id);
@@ -489,10 +520,14 @@ class ChatView {
         if (thread.type && thread.type !== 'custom-agent') throw new Notice('Only chats with custom agents can be taken over.');
         if (thread.agentId && thread.agentId !== agent.agentId) throw new Notice(`This chat belongs to ${thread.agentNameSnapshot || 'another agent'}; select that agent first.`);
         const known = this._chats(agent).items.find(entry => entry.thread_id === thread_id);
+        if (known?.repo && folder_by_name(known.repo)) this.repo_name = known.repo;
+        Object.assign(this, { open_question: false, unseen: false });
         session.load_state(known?.state || { thread_id, title: thread.title || 'Chat from awork' });
+        this._post_repo(session);
         log(`chat ${thread_id} taken over from awork`);
         await this._show_history(session, agent);
         session.refresh_credits();
+        this._changed();
     }
 
     async _drop_chat(agent, thread_id) {
@@ -520,9 +555,11 @@ class ChatView {
 
     /** Context line for the agent: open repo, online link, branch, kind of local changes. */
     async _context() {
-        const root = _root();
-        if (!root) return context_line({ folder: null });
-        return context_line({ folder: _repo_name(), ...git_info(await _git_repository(root)) });
+        const folder = this._folder();
+        const open_folders = folders();
+        const others = await Promise.all(open_folders.filter(item => item.index !== folder?.index).map(async item => ({ folder: item.name, ...git_info(await _git_repository(item.uri)) })));
+        if (!folder) return context_line({ folder: null, others });
+        return context_line({ folder: folder.name, ...git_info(await _git_repository(folder.uri)), others });
     }
 
     async stop() {
@@ -531,9 +568,13 @@ class ChatView {
 
     async new_chat() {
         const agent = this._agent();
-        this._session(agent).new_chat();
+        const session = this._session(agent);
+        Object.assign(this, { open_question: false, unseen: false });
+        session.new_chat();
         this._post({ type: 'history', items: [], agent: agent.agentId });
         this._post_chats(agent);
+        this._post_repo(session);
+        this._changed();
     }
 
     // --- attachments ---
@@ -549,7 +590,7 @@ class ChatView {
             if (uri.scheme === 'untitled') throw new Notice('Save the file first, then attach it.');
             picked = [{ uri, folder: false }];
         } else {
-            const uris = await vscode.window.showOpenDialog({ canSelectMany: true, canSelectFiles: kind === 'files', canSelectFolders: kind === 'folder', defaultUri: _root() || undefined });
+            const uris = await vscode.window.showOpenDialog({ canSelectMany: true, canSelectFiles: kind === 'files', canSelectFolders: kind === 'folder', defaultUri: this._root() || undefined });
             picked = (uris || []).map(uri => ({ uri, folder: kind === 'folder' }));
         }
         const limit_mb = _config().get('maxFolderMB');
@@ -632,9 +673,24 @@ class ChatView {
         await vscode.window.showTextDocument(editor.document, editor.viewColumn);
     }
 
+    _terminal() {
+        const folder = this._folder();
+        if (!folder) throw new Notice('No folder open.');
+        const name = `monarch: ${folder.name}`;
+        const existing = vscode.window.terminals.find(terminal => terminal.name === name && terminal.exitStatus === undefined);
+        if (existing) {
+            existing.show();
+            return existing;
+        }
+        const location = this.view?.viewColumn ? { viewColumn: vscode.ViewColumn.Beside, preserveFocus: false } : vscode.TerminalLocation.Panel;
+        const terminal = vscode.window.createTerminal({ name, cwd: folder.uri, color: new vscode.ThemeColor(repo_color(folder.index).theme), iconPath: new vscode.ThemeIcon('terminal'), location });
+        terminal.show();
+        return terminal;
+    }
+
     /** Put code into the active terminal (or a new one) without running it. */
     async _to_terminal(code) {
-        const terminal = vscode.window.activeTerminal || vscode.window.createTerminal('monarch');
+        const terminal = this._folder() ? this._terminal() : (vscode.window.activeTerminal || vscode.window.createTerminal('monarch'));
         terminal.show();
         const text = code.replace(/\s+$/, '');
         if (!text.includes('\n')) return terminal.sendText(text, false);
@@ -645,7 +701,7 @@ class ChatView {
 
     /** Open a written file with the editor VS Code uses for its type (text, image, binary). */
     async _open_file(path) {
-        const root = _root();
+        const root = this._root();
         if (!root) throw new Notice('No folder open.');
         const uri = vscode.Uri.joinPath(root, ...path.split('/'));
         try {

@@ -2,7 +2,7 @@
 /** monarch VS Code extension: chat window for awork agents with co-agent relay. */
 const vscode = require('vscode');
 const { AworkClient, OAuth } = require('./awork');
-const { ChatView } = require('./chat_view');
+const { ChatPanels } = require('./chat_panels');
 const { set_log } = require('./log');
 
 function _config() {
@@ -22,7 +22,8 @@ function activate(context) {
     const client = new AworkClient({ base_url: () => _config().get('apiBaseUrl'), get_token: () => oauth.access_token() });
     // API key of the removed Month item (0.16 and older)
     context.secrets.delete('monarch.apiKey').then(undefined, () => {});
-    const view = new ChatView(context, client, oauth);
+    const panels = new ChatPanels(context, client, oauth);
+    const view = panels.sidebar;
     const run = action => async () => {
         try {
             await action();
@@ -32,23 +33,30 @@ function activate(context) {
     };
     context.subscriptions.push(
         vscode.window.registerWebviewViewProvider('monarch.chat', view, { webviewOptions: { retainContextWhenHidden: true } }),
+        vscode.window.registerTreeDataProvider('monarch.chats', panels),
         vscode.commands.registerCommand('monarch.signIn', run(async () => {
             await oauth.login(url => vscode.env.openExternal(vscode.Uri.parse(url, true)));
             vscode.window.showInformationMessage('monarch: signed in.');
-            view.forget_user();
-            await view.refresh();
+            await Promise.all(panels.all().map(async chat => { chat.forget_user(); await chat.refresh(); }));
         })),
         vscode.commands.registerCommand('monarch.signOut', run(async () => {
             await oauth.logout();
-            view.forget_user();
-            await view.refresh();
+            await Promise.all(panels.all().map(async chat => { chat.forget_user(); await chat.refresh(); }));
         })),
-        vscode.commands.registerCommand('monarch.newChat', run(() => view.new_chat())),
-        vscode.commands.registerCommand('monarch.stop', run(() => view.stop())),
+        vscode.commands.registerCommand('monarch.newChat', run(() => panels.active().new_chat())),
+        vscode.commands.registerCommand('monarch.stop', run(() => panels.active().stop())),
+        vscode.commands.registerCommand('monarch.openChatInEditor', run(async () => {
+            const repo = await panels.pick_repo();
+            if (repo) panels.open(repo);
+        })),
+        vscode.commands.registerCommand('monarch.revealChat', run(id => panels.reveal(id))),
         vscode.workspace.onDidChangeConfiguration(event => {
-            if (event.affectsConfiguration('monarch.agents') || event.affectsConfiguration('monarch.agentFilter')) view.refresh({ reload_agents: true });
-            if (event.affectsConfiguration('monarch.notesPosition')) view.post_notes_position();
+            if (event.affectsConfiguration('monarch.agents') || event.affectsConfiguration('monarch.agentFilter')) {
+                panels.all().forEach(chat => chat.refresh({ reload_agents: true }));
+            }
+            if (event.affectsConfiguration('monarch.notesPosition')) panels.all().forEach(chat => chat.post_notes_position());
         }),
+        vscode.workspace.onDidChangeWorkspaceFolders(() => panels.all().forEach(chat => chat.refresh())),
     );
 }
 

@@ -26,6 +26,8 @@ const relay_prefix = '[monarch relay]';
 // inspect only reads files; with these commands its answer would be mixed with a relay wait or a repo write
 const inspect_conflicts = new Set(['spawn', 'send', 'wait', 'commit', 'stopzilla']);
 const repo_prefix = /^repo:\s*/i;
+const read_prefix = /^read:([^:/\\]+):(.+)$/i;
+const other_snapshot_pattern = /^repo-snapshot:([^:/\\]+)$/i;
 
 class StopRequested extends Error {}
 /** Hint about an action that is not possible right now; shown briefly instead of as an error. */
@@ -835,7 +837,7 @@ class ChatSession {
             if (!this.state.thread_id && !this.state.title) this.state.title = _first_line(text);
             const fresh = context && context !== this.state.context ? context : null;
             let next = { content: text, attachments: await this._upload(uploads), context: fresh, interrupt_id };
-            this.ui.message({ role: 'user', text });
+            this.ui.message({ role: 'user', text, created: Date.now() });
             while (next) next = await this._handle_answer(await this._post(next.content, next.attachments, next.context, next.interrupt_id));
         } catch (error) {
             if (error instanceof Superseded) this._info('chat continued in awork: stopped waiting, the chat is reloaded');
@@ -873,9 +875,11 @@ class ChatSession {
         const written = await this._write_repo_files(run);
         const questions = [...questions_of(run), ...await this._pending_questions(run)];
         const shown = _without_questions(text, questions);
-        const message_id = [...answer].reverse().find(message => message.content)?.id;
+        const last_answer = [...answer].reverse().find(message => message.content);
+        const message_id = last_answer?.id;
+        const created = Date.parse(last_answer?.createdOn) || Date.now();
         const credit_key = message_id ? String(message_id) : `local-${++this.local_keys}`;
-        this.ui.message({ role: 'agent', text: shown || (questions.length ? '' : state === 'completed' ? '(no answer)' : `(run ${state})`), files: written.files, warnings: written.warnings, duration_ms, credit_key, credits: null });
+        this.ui.message({ role: 'agent', text: shown || (questions.length ? '' : state === 'completed' ? '(no answer)' : `(run ${state})`), files: written.files, warnings: written.warnings, duration_ms, credit_key, credits: null, created });
         this._answer_credits(thread_id, credit_key, baseline, Boolean(message_id));
         questions.forEach(question => this.ui.message(question));
         if (!commands.length) return null;
@@ -998,63 +1002,95 @@ class ChatSession {
         return null;
     }
 
-    async _snapshot() {
-        if (!this.workspace?.repo_state) throw new Error('repo-snapshot: no folder open');
-        const repo = await this._request(signal => this.workspace.repo_state({ signal }));
-        const staged_paths = Object.keys(this.state.staged).sort();
-        const staged_data = new Map();
-        for (const path of staged_paths) staged_data.set(path, await this._staged_file(path));
-        const base = repo.files.filter(file => !this.state.staged[file.path] && file.path !== 'SNAPSHOT.md');
-        const data_size = data => typeof data === 'string' ? Buffer.byteLength(data) : data.byteLength;
-        const total = base.reduce((size, file) => size + file.size, 0) + [...staged_data.values()].reduce((size, data) => size + data_size(data), 0);
-        const max = Number(this.limits.maxSnapshotMB ?? 20);
-        const mb = bytes => (bytes / 1048576).toFixed(1);
-        if (max > 0 && total > max * 1024 * 1024) {
-            const folders = largest_dirs([...base, ...staged_paths.map(path => ({ path, size: data_size(staged_data.get(path)) }))])
-                .map(dir => `${dir.dir} (${mb(dir.size)} MB)`).join(', ');
-            throw new Error(`repo-snapshot: ${mb(total)} MB exceeds monarch.maxSnapshotMB (${max} MB); largest folders: ${folders}`);
-        }
-        const entries = [];
-        for (const file of base) {
-            let data;
-            try {
-                data = await this._request(() => this.workspace.read(file.path));
-            } catch (error) {
-                if (error instanceof StopRequested) throw error;
-                throw new Error(`repo-snapshot: ${file.path} not readable (${error.message})`);
-            }
-            entries.push({ name: file.path, data });
-        }
-        for (const path of staged_paths) entries.push({ name: path, data: staged_data.get(path) });
-        entries.sort((left, right) => left.name < right.name ? -1 : left.name > right.name ? 1 : 0);
-        entries.push({
-            name: 'SNAPSHOT.md',
-            data: snapshot_md({
-                branch: repo.branch, head: repo.head, changed: repo.changed,
-                staged: staged_paths.map(path => ({ path, from: this.state.staged[path].from })),
-                deleted: repo.deleted.filter(path => !this.state.staged[path]),
-            }),
-        });
-        const upload = await this._request(signal => this.client.upload_temporary_file('repo-snapshot.zip', create_zip(entries), 'application/zip', { signal }));
-        return { upload, label: snapshot_label({ branch: repo.branch, head: repo.head, staged_count: staged_paths.length }) };
+    _other(name) {
+        const other = this.workspace?.other?.(name);
+        if (!other) throw new Error(`repo ${name} not open in this VS Code window`);
+        return other;
     }
 
-    /** Turn ATTACH lines into file attachments and optionally include a complete local repo snapshot. */
+    async _snapshot(source = this.workspace, { overlay = true, name = 'repo-snapshot.zip' } = {}) {
+        const prefix = name.replace(/\.zip$/i, '');
+        try {
+            if (!source?.repo_state) throw new Error('no folder open');
+            const repo = await this._request(signal => source.repo_state({ signal }));
+            const staged_paths = overlay ? Object.keys(this.state.staged).sort() : [];
+            const staged_data = new Map();
+            for (const path of staged_paths) staged_data.set(path, await this._staged_file(path));
+            const source_files = repo.files.filter(file => !overlay || !this.state.staged[file.path]);
+            const base = source_files.filter(file => file.path !== 'SNAPSHOT.md').map(file => {
+                const path = files.safe_rel_path(file.path);
+                if (!path || files.is_junk(path)) return source === this.workspace ? file : null;
+                return path === file.path ? file : { ...file, path };
+            }).filter(Boolean);
+            const data_size = data => typeof data === 'string' ? Buffer.byteLength(data) : data.byteLength;
+            const total = base.reduce((size, file) => size + file.size, 0) + [...staged_data.values()].reduce((size, data) => size + data_size(data), 0);
+            const max = Number(this.limits.maxSnapshotMB ?? 20);
+            const mb = bytes => (bytes / 1048576).toFixed(1);
+            if (max > 0 && total > max * 1024 * 1024) {
+                const folders = largest_dirs([...base, ...staged_paths.map(path => ({ path, size: data_size(staged_data.get(path)) }))])
+                    .map(dir => `${dir.dir} (${mb(dir.size)} MB)`).join(', ');
+                throw new Error(`${mb(total)} MB exceeds monarch.maxSnapshotMB (${max} MB); largest folders: ${folders}`);
+            }
+            const entries = [];
+            for (const file of base) {
+                let data;
+                try {
+                    data = await this._request(() => source.read(file.path));
+                } catch (error) {
+                    if (error instanceof StopRequested) throw error;
+                    throw new Error(`${file.path} not readable (${error.message})`);
+                }
+                entries.push({ name: file.path, data });
+            }
+            for (const path of staged_paths) entries.push({ name: path, data: staged_data.get(path) });
+            entries.sort((left, right) => left.name < right.name ? -1 : left.name > right.name ? 1 : 0);
+            entries.push({
+                name: 'SNAPSHOT.md',
+                data: snapshot_md({
+                    branch: repo.branch, head: repo.head, changed: repo.changed,
+                    staged: staged_paths.map(path => ({ path, from: this.state.staged[path].from })),
+                    deleted: repo.deleted.filter(path => !this.state.staged[path]),
+                }),
+            });
+            const upload = await this._request(signal => this.client.upload_temporary_file(name, create_zip(entries), 'application/zip', { signal }));
+            return { upload, label: snapshot_label({ branch: repo.branch, head: repo.head, staged_count: staged_paths.length }, name) };
+        } catch (error) {
+            if (error instanceof StopRequested || error.message.startsWith(`${prefix}:`)) throw error;
+            throw new Error(`${prefix}: ${error.message}`);
+        }
+    }
+
+    /** Turn ATTACH lines into file attachments and optionally include repository snapshots. */
     async _brief(body, { auto_snapshot = false } = {}) {
         const lines = body.split('\n');
         const content_lines = lines.filter(line => !attach_pattern.test(line));
         const title = _first_line(content_lines.join('\n'));
         const entries = lines.map(line => attach_pattern.exec(line)?.[1].trim()).filter(Boolean);
+        const read_entries = entries.map(entry => ({ entry, match: read_prefix.exec(entry) })).filter(item => item.match);
+        const other_snapshot_entries = entries.map(entry => ({ entry, match: other_snapshot_pattern.exec(entry) })).filter(item => item.match);
         const wants_snapshot = auto_snapshot || entries.some(entry => /^repo-snapshot$/i.test(entry));
+        const path_entries = entries.filter(entry => !/^repo-snapshot$/i.test(entry) && !read_prefix.test(entry) && !other_snapshot_pattern.test(entry));
         if (!entries.length && !wants_snapshot) return { content: `${files_preamble}\n\n${body}`, attachments: [], title, snapshot: null };
-        const paths_entries = entries.filter(entry => !/^repo-snapshot$/i.test(entry));
-        const expanded = paths_entries.map(entry => (this.state.co_agents[entry] ? Object.keys(this.state.staged).filter(path => this.state.staged[path].from === entry) : [entry]));
-        const empty = paths_entries.filter((entry, index) => !expanded[index].length);
+
+        const expanded = path_entries.map(entry => (this.state.co_agents[entry] ? Object.keys(this.state.staged).filter(path => this.state.staged[path].from === entry) : [entry]));
+        const empty = path_entries.filter((entry, index) => !expanded[index].length);
         if (empty.length) throw new Error(`no staged files of ${empty.join(', ')}`);
         const paths = [...new Set(expanded.flat())];
-        if (paths.length + (wants_snapshot ? 1 : 0) > max_attachments) throw new Error(`max. ${max_attachments} files per message`);
         const unsafe = paths.filter(path => !files.safe_rel_path(path) || files.is_junk(path));
         if (unsafe.length) throw new Error(`unsafe attachment path ${unsafe.join(', ')}`);
+        const reads = [];
+        for (const { entry, match: [, repo, rel] } of read_entries) {
+            const path = files.safe_rel_path(rel);
+            if (!path || files.is_junk(path)) throw new Error(`unsafe attachment path ${entry}`);
+            if (!reads.some(item => item.repo === repo && item.path === path)) reads.push({ repo, path, entry });
+        }
+        const other_snapshots = [];
+        for (const { match: [, repo] } of other_snapshot_entries) {
+            if (!other_snapshots.some(item => item.repo === repo)) other_snapshots.push({ repo });
+        }
+        const attachment_count = paths.length + reads.length + Number(wants_snapshot) + other_snapshots.length;
+        if (attachment_count > max_attachments) throw new Error(`max. ${max_attachments} files per message`);
+
         const attachments = [];
         for (const path of paths.map(files.safe_rel_path)) {
             let data;
@@ -1068,13 +1104,29 @@ class ChatSession {
             }
             attachments.push({ temporaryFileId: await this._request(signal => this.client.upload_temporary_file(files.basename(path), data, undefined, { signal })) });
         }
-        const snapshot = wants_snapshot ? await this._snapshot() : null;
-        if (snapshot) attachments.push({ temporaryFileId: snapshot.upload });
+        for (const { repo, path, entry } of reads) {
+            let data;
+            try {
+                data = await this._request(() => this._other(repo).read(path));
+            } catch (error) {
+                if (error instanceof StopRequested) throw error;
+                throw new Error(`attachment ${entry} not readable (${error.status ? _reason(error) : error.message})`);
+            }
+            attachments.push({ temporaryFileId: await this._request(signal => this.client.upload_temporary_file(files.basename(path), data, undefined, { signal })) });
+        }
+        const snapshots = [];
+        if (wants_snapshot) snapshots.push(await this._snapshot());
+        for (const { repo } of other_snapshots) {
+            const name = `repo-snapshot-${repo}.zip`;
+            snapshots.push(await this._snapshot(this._other(repo), { overlay: false, name }));
+        }
+        for (const item of snapshots) attachments.push({ temporaryFileId: item.upload });
         const text = content_lines.join('\n').trim();
         const content = `${files_preamble}\n\n${text}`
             + (paths.length ? `\n\nAttached files (relative to repo root): ${paths.join(', ')}` : '')
-            + (snapshot ? `\n\nAttached repo snapshot: ${snapshot.label}` : '');
-        return { content, attachments, title, snapshot: snapshot?.label || null };
+            + (reads.length ? `\n\nAttached files from other repos (read only): ${reads.map(({ repo, path }) => `${repo}:${path}`).join(', ')}` : '')
+            + snapshots.map(item => `\n\nAttached repo snapshot: ${item.label}`).join('');
+        return { content, attachments, title, snapshot: snapshots.length ? snapshots.map(item => item.label).join(', ') : null };
     }
 
     /**
@@ -1087,18 +1139,32 @@ class ChatSession {
         if (!entries.length) return { files: [], missing: [], line: 'inspect: no ATTACH lines' };
         const wanted = [];
         const missing = [];
-        const add = (path, local, from = null) => {
+        const add = (path, local, from = null, other = null, relative = null) => {
             const safe = files.safe_rel_path(path);
             if (!safe || files.is_junk(safe)) return missing.push(`${path} (unsafe path)`);
-            const source = local ? 'local repo' : `staged by ${from}`;
-            if (!wanted.some(item => item.path === safe && item.source === source)) wanted.push({ path: safe, local, source });
+            const source = other ? `repo ${other} (local)` : local ? 'local repo' : `staged by ${from}`;
+            if (!wanted.some(item => item.path === safe && item.source === source)) wanted.push({ path: safe, local, source, other, relative });
         };
         for (const entry of entries) {
+            const read_match = read_prefix.exec(entry);
+            if (other_snapshot_pattern.test(entry)) {
+                missing.push(`${entry} (not available in inspect)`);
+                continue;
+            }
             if (/^repo-snapshot$/i.test(entry)) {
                 missing.push('repo-snapshot (not available in inspect)');
                 continue;
             }
-            if (repo_prefix.test(entry)) add(entry.replace(repo_prefix, ''), true);
+            if (read_match) {
+                const [, repo, rel] = read_match;
+                const safe = files.safe_rel_path(rel);
+                if (!safe || files.is_junk(safe)) missing.push(`${entry} (unsafe path)`);
+                else {
+                    const path = `${repo}:${safe}`;
+                    const source = `repo ${repo} (local)`;
+                    if (!wanted.some(item => item.path === path && item.source === source)) wanted.push({ path, local: true, source, other: repo, relative: safe });
+                }
+            } else if (repo_prefix.test(entry)) add(entry.replace(repo_prefix, ''), true);
             else if (this.state.co_agents[entry]) {
                 const paths = Object.keys(this.state.staged).filter(path => this.state.staged[path].from === entry);
                 if (!paths.length) missing.push(`${entry} (no staged files)`);
@@ -1115,15 +1181,18 @@ class ChatSession {
         for (const item of wanted) {
             let data;
             try {
-                if (!item.local) data = await this._staged_file(item.path);
+                if (item.other) data = await this._request(() => this._other(item.other).read(item.relative));
+                else if (!item.local) data = await this._staged_file(item.path);
                 else if (!this.workspace?.read) throw new Error('no folder open');
                 else data = await this.workspace.read(item.path);
             } catch (error) {
                 if (error instanceof StopRequested) throw error;
-                missing.push(`${item.local ? 'repo:' : ''}${item.path} (${item.local ? 'not in the local repo or not readable' : 'not downloaded'}: ${error.status ? _reason(error) : error.message.slice(0, 120)})`);
+                const reason = error.status ? _reason(error) : error.message.slice(0, 120);
+                if (item.other) missing.push(`read:${item.other}:${item.relative} (${reason})`);
+                else missing.push(`${item.local ? 'repo:' : ''}${item.path} (${item.local ? 'not in the local repo or not readable' : 'not downloaded'}: ${reason})`);
                 continue;
             }
-            const name = _unique_name(files.basename(item.path), names);
+            const name = _unique_name(files.basename(item.relative || item.path), names);
             found.push({ name, path: item.path, source: item.source, upload: await this._request(signal => this.client.upload_temporary_file(name, data, undefined, { signal })) });
         }
         context.count += found.length;
@@ -1765,15 +1834,16 @@ class ChatSession {
             const steps = _is_user(message) || ['tool', 'system'].includes(role) ? [] : _history_steps(message, step_keys);
             if (!message.content || ['tool', 'system'].includes(role)) return [...steps, ...questions];
             const text = files.clean_text(message.content);
-            const created = Date.parse(message.createdOn || '') || null;
+            const parsed_created = Date.parse(message.createdOn);
+            const created = Number.isFinite(parsed_created) ? parsed_created : null;
             if (_is_user(message)) {
                 asked_at = created;
-                return [text.startsWith(relay_prefix) ? { role: 'step', text: relay_text(`relay: ${_first_line(text.slice(relay_prefix.length)) || 'co-agent update'}`) } : { role: 'user', text: strip_notes(strip_context(text)) }];
+                return [text.startsWith(relay_prefix) ? { role: 'step', text: relay_text(`relay: ${_first_line(text.slice(relay_prefix.length)) || 'co-agent update'}`) } : { role: 'user', text: strip_notes(strip_context(text)), created }];
             }
             const shown = _without_questions(parse_commands(text).text, questions);
             const credit_key = message.id ? String(message.id) : null;
             const credits = credit_key ? this.state.answer_credits?.[credit_key] : null;
-            return [...steps, { role: 'agent', text: shown, duration_ms: asked_at && created ? created - asked_at : null, credit_key, credits: Number.isFinite(credits) ? credits : null }, ...questions];
+            return [...steps, { role: 'agent', text: shown, created, duration_ms: asked_at && created ? created - asked_at : null, credit_key, credits: Number.isFinite(credits) ? credits : null }, ...questions];
         });
     }
 }

@@ -2,17 +2,24 @@
 (function () {
     const vscode = acquireVsCodeApi();
     const { render_markdown, escape_html } = window.monarch_markdown;
+    const { time_text, divider_for } = window.monarch_time;
     const element = id => document.getElementById(id);
     const level_names = { minimal: 'Minimal', low: 'Low', medium: 'Medium', high: 'High', xhigh: 'Extra high', max: 'Maximum', maximum: 'Maximum' };
     const state = {
         agents: [], agent: null, agent_name: null, labels: { chat: 'Chat', coCredits: 'Co-Credits', coAgents: 'Co-Agenten', stop: 'Stop' },
         user: null, signed_in: false, status: null, chats: [], models: { default: {}, models: [] }, active_thread_id: null,
-        notes_rev: null, notes_visible: false,
+        notes_rev: null, notes_visible: false, last_day: null,
     };
 
     function apply_notes_position(position) {
         document.body.classList.toggle('notes-left', position === 'left');
         document.body.classList.toggle('notes-right', position === 'right');
+    }
+
+    function apply_repo(repo) {
+        element('repo_name').textContent = repo.name || 'no folder';
+        element('repo_dot').style.backgroundColor = repo.hex || 'transparent';
+        element('repo').disabled = !repo.can_change;
     }
 
     function apply_notes_visible() {
@@ -232,6 +239,21 @@
         node.scrollIntoView({ block: 'end' });
     }
 
+    function append_timed(node, item) {
+        const { divider, last_day } = divider_for(state.last_day, item.created);
+        state.last_day = last_day;
+        const messages = messages_box();
+        messages.querySelector('.empty-state')?.remove();
+        if (divider) {
+            const line = document.createElement('div');
+            line.className = 'date-divider';
+            line.appendChild(Object.assign(document.createElement('span'), { textContent: divider }));
+            messages.appendChild(line);
+        }
+        messages.appendChild(node);
+        node.scrollIntoView({ block: 'end' });
+    }
+
     // relay and agent steps between two answers: one line with the latest step and "+ x Steps"; a click shows the earlier ones
     function step_group() {
         let node = messages_box().lastElementChild;
@@ -338,8 +360,9 @@
             const bubble = document.createElement('div');
             bubble.className = 'bubble';
             bubble.textContent = item.text;
+            if (typeof item.created === 'number' && Number.isFinite(item.created)) bubble.appendChild(Object.assign(document.createElement('div'), { className: 'msg-time', textContent: time_text(item.created) }));
             row.append(bubble, avatar(state.user || { initials: 'Du' }));
-            return append(row);
+            return append_timed(row, item);
         }
         const turn = document.createElement('div');
         turn.className = 'turn';
@@ -348,6 +371,7 @@
         head.className = 'turn-head';
         head.appendChild(avatar(agent_avatar()));
         head.appendChild(Object.assign(document.createElement('span'), { className: 'name', textContent: state.agent_name || 'Agent' }));
+        if (typeof item.created === 'number' && Number.isFinite(item.created)) head.appendChild(Object.assign(document.createElement('span'), { className: 'meta time', textContent: time_text(item.created) }));
         if (item.duration_ms) head.appendChild(Object.assign(document.createElement('span'), { className: 'meta', textContent: `· ${format_duration(item.duration_ms)}` }));
         head.appendChild(Object.assign(document.createElement('span'), { className: 'meta credits', hidden: true }));
         show_turn_credits(head, item.credits);
@@ -373,7 +397,7 @@
             body.appendChild(line);
         }
         turn.append(head, body);
-        append(turn);
+        append_timed(turn, item);
     }
 
     function show_turn_credits(head, credits) {
@@ -504,7 +528,8 @@
         if (data.agent && data.agent !== state.agent) return;
         if (data.type === 'init') {
             const labels = data.labels || {};
-            Object.assign(state, { agents: data.agents, agent: data.current, agent_name: data.current_name, labels: { ...state.labels, ...labels, chat: labels.chat || labels.credits || state.labels.chat }, user: data.user, signed_in: data.signed_in, chats: [], models: { default: {}, models: [] }, status: null, active_thread_id: null, notes_rev: null, notes_visible: Boolean(data.notes_visible) });
+            Object.assign(state, { agents: data.agents, agent: data.current, agent_name: data.current_name, labels: { ...state.labels, ...labels, chat: labels.chat || labels.credits || state.labels.chat }, user: data.user, signed_in: data.signed_in, chats: [], models: { default: {}, models: [] }, status: null, active_thread_id: null, notes_rev: null, notes_visible: Boolean(data.notes_visible), last_day: null });
+            if (data.repo) apply_repo(data.repo);
             element('notes').value = '';
             apply_notes_position(data.notes_position);
             apply_notes_visible();
@@ -518,12 +543,15 @@
             if (data.notes_width) set_notes_width(data.notes_width);
             close_menus();
             show_empty_state();
+        } else if (data.type === 'repo') {
+            apply_repo(data.repo);
         } else if (data.type === 'notes') {
             state.notes_rev = data.rev;
             if (element('notes').value !== data.text) element('notes').value = data.text;
         } else if (data.type === 'notes_position') {
             apply_notes_position(data.position);
         } else if (data.type === 'history') {
+            state.last_day = null;
             state.active_thread_id = typeof data.thread_id === 'string' ? data.thread_id : null;
             open_cards.length = 0;
             show_empty_state();
@@ -635,6 +663,8 @@
     element('stop').addEventListener('click', () => vscode.postMessage({ type: 'stop' }));
     // Ctrl/Cmd+click: hidden workaround to take over a chat from its awork link
     element('new_chat').addEventListener('click', event => vscode.postMessage({ type: event.ctrlKey || event.metaKey ? 'import_chat' : 'new_chat' }));
+    element('repo').addEventListener('click', () => vscode.postMessage({ type: 'select_repo' }));
+    element('terminal').addEventListener('click', () => vscode.postMessage({ type: 'terminal' }));
     element('history').addEventListener('click', event => { event.stopPropagation(); toggle_menu('history_menu', render_history); });
     element('model').addEventListener('click', event => { event.stopPropagation(); toggle_menu('model_menu', render_model_menu); });
     element('attach').addEventListener('click', event => { event.stopPropagation(); toggle_menu('attach_menu', render_attach_menu); });

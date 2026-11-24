@@ -5,8 +5,8 @@
  * @param {{branch: string|null, head: string|null, staged_count: number}} snapshot
  * @returns {string}
  */
-function snapshot_label({ branch, head, staged_count }) {
-    return `repo-snapshot.zip = ${branch || 'HEAD'}@${head ? head.slice(0, 7) : 'none'} + ${staged_count} staged`;
+function snapshot_label({ branch, head, staged_count }, name = 'repo-snapshot.zip') {
+    return `${name} = ${branch || 'HEAD'}@${head ? head.slice(0, 7) : 'none'} + ${staged_count} staged`;
 }
 
 /** Return the largest top-level folders (and root files) by uncompressed size.

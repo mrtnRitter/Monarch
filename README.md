@@ -46,11 +46,11 @@ Requirements: VS Code 1.85+ with the built-in Git extension, an awork account in
 
 ```bash
 cd monarch/vscode
-python build_vsix.py                         # -> monarch-0.22.0.vsix
-code --install-extension monarch-0.22.0.vsix
+python build_vsix.py                         # -> monarch-0.23.0.vsix
+code --install-extension monarch-0.23.0.vsix
 ```
 
-Or in VS Code: Extensions view → `…` → **Install from VSIX…**. Optional local tests: `node test/test.js`, `node test/steps_test.js`, `node test/webview_test.js`, `node test/extension_smoke.js`, `node test/relay_plan_progress_test.js`, `node test/chat_view_test.js`, `node test/notes_test.js`, `node test/git_test.js` (needs git), `node test/staging_test.js`, `node test/snapshot_test.js` and `node test/relay_diff_test.js`; `test/webview_notes_test.js` needs jsdom (`NODE_PATH=<folder>/node_modules node test/webview_notes_test.js`).
+Or in VS Code: Extensions view → `…` → **Install from VSIX…**. `Optional local tests (node, no network): for f in test/*_test.js; do node "$f"; done` – `test/webview_notes_test.js` needs jsdom (`NODE_PATH=<folder>/node_modules`).
 
 ## Setup in awork (once per workspace, by the agent owner)
 
@@ -74,7 +74,7 @@ The skills use the neutral terms *main agent* and *co-agent* and the placeholder
 
 Every user, also the agent owner, does this once:
 
-1. **Install** `monarch-0.22.0.vsix` (see *Installation*) and reload VS Code (Command Palette → **Developer: Reload Window**).
+1. **Install** `monarch-0.23.0.vsix` (see *Installation*) and reload VS Code (Command Palette → **Developer: Reload Window**).
 2. **Sign in:** Open **monarch** in the activity bar and click **Sign in** (or Command Palette → **monarch: Sign in**). The browser opens; log in to awork and select the workspace.
 3. **Check the agents:** The agent circles at the top show the agents. If an agent shared with you is missing, set **Monarch: Agent Filter** (`monarch.agentFilter`) to `all`.
 4. **Test files:** Start a **new chat** (blue **+**) and send: `Create output/download_test.txt with three lines.`
@@ -136,9 +136,12 @@ All settings are optional. The agent list comes from awork (see `monarch.agentFi
 | Element | Function |
 |---|---|
 | Agent circles | Agents according to `monarch.agentFilter`, with their profile pictures; click to select. If they do not fit into the panel, a dropdown is shown instead. |
+| Repo (colored dot + name) | Repo of this chat. While a chat has no messages and multiple folders are open, click to select another open folder; after the first message, the repo is fixed. |
 | Notes (note sheet) | Left of the history button: shows or hides the notes pane of the current chat (full height of the window, left or right of the chat according to `monarch.notesPosition`); shown or hidden stays as set for all chats |
 | History (clock) | Chats of the selected agent from all repos (max. 100), newest first, with repo name and date; click to continue a chat, ✕ removes it from the list (the chat stays in awork) |
 | New chat (blue +) | Start a new conversation with the selected agent. **Ctrl+click** (Mac: Cmd+click) takes over an existing chat instead (workaround, e.g. for chats started in the awork web app): paste its link (`https://<workspace>.awork.com/ai/thread/<id>`) or id; the chat must belong to the selected agent and be readable with your login. It opens and is added to the history. |
+| Terminal | Opens or shows the `monarch: <repo>` terminal in this chat's repo, colored with the repo. It opens beside an editor chat or in the panel for the sidebar chat; the **Terminal** code-block action uses it. |
+| Message times | Every message shows its time; a thin line with the date separates messages from different days. |
 | Row above the input | **+** (attachments) on the left, **Chat**, **Co-Credits** and **Co-agents** in the middle, **Model** on the right (details below) |
 | **+** | Opens a small menu to the right of the button, **Current file** at the height of **+**: **Current file** attaches the file of the active editor tab (also Markdown preview, images, notebooks, diffs), otherwise the last active file, as single file. **Files** and **Folder** open the file dialog for files or folders. Everything picked with **Files** and **Folder** is sent together as one `attachments.zip` with paths relative to the repo root (files outside the repo under their file name; folders without `.git`, `node_modules`, `__pycache__`, `.venv`, `*.pyc` and `files.exclude`). Attachments appear as blue chips above the input; click a chip to remove it. Max. 20 attachments and `maxFolderMB` per file or folder |
 | Chat | Credits of the agent in this chat (without co-agents) against `maxCredits`. Hover to show − on the left, the current limit in the middle, and + on the right; clicks change only this chat’s limit by `creditStep`, saved with the chat. The limit cannot go below credits already used. `0` = no limit and no buttons. Turns warning-colored at 90%. |
@@ -220,6 +223,25 @@ monarch wakes the agent with a `[monarch relay]` message when all working co-age
 `ATTACH: repo-snapshot` in a spawn or send (not in `inspect`) attaches `repo-snapshot.zip`: every file of `git ls-files -co --exclude-standard` in the workspace folder (tracked plus untracked, not ignored, including local changes not pushed), with all staged co-agent files on top (latest version per path), never `.git`, `.monarch/` or Python caches, plus `SNAPSHOT.md` in the archive root (branch, HEAD, locally changed files, overlaid staged files with `staged by <id>`, deleted files as “nicht enthalten”). It counts as one of the 20 attachments. The command line in the relay shows `repo-snapshot.zip = <branch>@<sha7> + <n> staged`; for a spawn that waited for `AFTER:` the same line appears as `repo-snapshot: …` in that co-agent's relay part. Above `monarch.maxSnapshotMB` the command is refused with the 5 largest folders. Requires git on the PATH. Co-agents have internet access (checked with `curl -sI https://nodejs.org` → HTTP 200 and `pip download pytest` → ok), so project setups that download tools can run from the snapshot; unpack it to `/tmp`, because `git clone` into `/workspace/...` fails in the sandbox (`chmod on .git/config.lock`).
 
 For every file staged since the last relay, the co-agent's part of the relay ends with a `diffs:` block: unified diff with 3 context lines, header `--- <path> (staged by <id>, <kind>, +<added> -<deleted>)` with kind `delta to previous staged` (the path was staged before), `vs local repo` or `new file`. CRLF and LF count as equal. Binary files give only `binary <path> changed (<size> bytes)`, files with more than 20000 lines (old plus new) `diff for <path> skipped (more than 20000 lines)`. The suffix and CRLF warnings stand directly before the diffs. If the inline diffs exceed `monarch.relayDiffMaxKB`, the largest ones are attached as `<name>.diff` (`diff for <path> attached (too large)`, plus a list `<file name> = <repo path>, staged by <id>`); `monarch.relayDiff` switches this to always attached or off.
+
+## Several repos in one window
+
+Open repos as a multi-root workspace with **File → Add Folder to Workspace…**; optionally save it as a `.code-workspace` file.
+
+**monarch: New chat in editor** opens a chat as an editor tab for a selected repo (choose one when several folders are open). The tab title is `<repo> · <chat title>`, and its icon uses the repo color. Chat tabs can be arranged side by side.
+
+The **Chats** view in the monarch sidebar lists every chat in this window with its repo, title and status (`working`, `question`, `new answer`, `files staged`). The sidebar chat is marked `sidebar`; click a chat to show it.
+
+A chat writes only to its repo. The agent sees other open repos in its context line and can read them only with `ATTACH: read:<repo>:<path>` and `ATTACH: repo-snapshot:<repo>`.
+
+Opening a chat that is already open in another tab shows that existing tab. Closing a chat tab while its agent is working stops the agent and its co-agents. Chat tabs are not restored after a restart; continue chats from History.
+
+For terminal tabs with repo names, use this settings JSON block:
+
+```json
+"terminal.integrated.tabs.title": "${workspaceFolderName}${separator}${process}",
+"terminal.integrated.tabs.description": "${cwdFolder}"
+```
 
 ## Commands
 
