@@ -37,10 +37,6 @@
                     "type": "webview",
                     "id": "monarch.chat",
                     "name": "Chat"
-                },
-                {
-                    "id": "monarch.chats",
-                    "name": "Chats"
                 }
             ]
         },
@@ -103,6 +99,11 @@
                     "default": "left",
                     "enumDescriptions": ["Notes left of the chat", "Notes right of the chat"],
                     "description": "Side of the notes pane next to the chat; show or hide it with the notes button in the chat window."
+                },
+                "monarch.reposRoot": {
+                    "type": "string",
+                    "default": "",
+                    "description": "Folder whose direct subfolders with .git are the repos you can pick for a chat; empty = parent folders of the open workspace folders. Open workspace folders are always listed."
                 },
                 "monarch.autoSnapshot": { "type": "string", "enum": ["off", "spawn"], "default": "off", "description": "spawn: attach the repo snapshot to every ORCA spawn; off: only on ATTACH: repo-snapshot." },
                 "monarch.maxSnapshotMB": { "type": "number", "default": 20, "minimum": 0, "description": "Max. size of the repo snapshot (uncompressed) in MB. 0 = no cap." },
