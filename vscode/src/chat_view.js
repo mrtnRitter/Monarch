@@ -105,9 +105,10 @@ function parse_models(defaults) {
 
 class ChatView {
     constructor(context, client, oauth, options = {}) {
-        Object.assign(this, { context, client, oauth, view: null, sessions: new Map(), attachments: [], avatars: new Map(), user_avatar: null, me: null, agent_list: null, models: new Map(), last_file: null, last_editor: null, sync_timer: null, disposables: [], open_question: false, unseen: false });
+        Object.assign(this, { context, client, oauth, port: null, port_disposables: [], sessions: new Map(), attachments: [], avatars: new Map(), user_avatar: null, me: null, agent_list: null, models: new Map(), last_file: null, last_editor: null, sync_timer: null, disposables: [], open_question: false, unseen: false });
         this.id = crypto.randomUUID();
-        this.options = { repo: null, colors: null, on_change: () => {}, reveal_thread: () => false, open_beside: () => {}, set_notes: () => false, ...options };
+        this.options = { repo: null, colors: null, on_change: () => {}, reveal_thread: () => false, window_idle: () => false, ...options };
+        this.agent_id = options.agent_id ?? context.workspaceState.get('monarch.agent');
         this.repo = this.options.repo || null;
         this.colors = this.options.colors || make_repo_colors(context.globalState);
         this.workspace = make_workspace_adapter(() => this._root());
@@ -156,7 +157,7 @@ class ChatView {
         const session = agent ? this.sessions.get(agent.agentId) : null;
         const state = session?.state;
         const status = session?.busy ? 'working' : this.open_question ? 'question' : this.unseen ? 'answer' : Object.keys(state?.staged || {}).length ? 'staged' : 'idle';
-        return { id: this.id, repo: this._repo_name(), title: state?.title ?? null, thread_id: state?.thread_id ?? null, state: status };
+        return { id: this.id, repo: this._repo_name(), title: state?.title ?? null, thread_id: state?.thread_id ?? null, state: status, agent_id: agent?.agentId || this.agent_id || null };
     }
 
     _changed() {
@@ -173,10 +174,6 @@ class ChatView {
         if (!session) return null;
         const repo = this._repo_name();
         return { id: this.id, repo, hex: repo ? this.colors.color(repo).hex : null, title: session.state.title || 'New chat', ...session.notes() };
-    }
-
-    post_notes_groups(groups) {
-        this._post({ type: 'notes_groups', groups, self: this.id });
     }
 
     apply_notes(text, rev) {
@@ -226,17 +223,12 @@ class ChatView {
 
     _agent() {
         const agents = this.agent_list || [];
-        const stored = this.context.workspaceState.get('monarch.agent');
-        return agents.find(agent => agent.agentId === stored || agent.name === stored) || agents[0] || null;
-    }
-
-    _notes_position() {
-        return _config().get('notesPosition') === 'left' ? 'left' : 'right';
+        return agents.find(agent => agent.agentId === this.agent_id || agent.name === this.agent_id) || agents[0] || null;
     }
 
     _limits() {
         const config = _config();
-        return Object.fromEntries(['maxCredits', 'maxCoAgentCredits', 'maxCoAgents', 'creditStep', 'relayTimeout', 'pollInterval', 'syncInterval', 'maxFolderMB', 'autoSnapshot', 'maxSnapshotMB', 'normalizeSuffixCopies', 'normalizeLineEndings', 'relayDiff', 'relayDiffMaxKB'].map(key => [key, config.get(key)]));
+        return Object.fromEntries(['relayTimeout', 'pollInterval', 'syncInterval', 'maxFolderMB', 'autoSnapshot', 'maxSnapshotMB', 'normalizeSuffixCopies', 'normalizeLineEndings', 'relayDiff', 'relayDiffMaxKB'].map(key => [key, config.get(key)]));
     }
 
     async _models(agent) {
@@ -289,7 +281,7 @@ class ChatView {
         if (!this.sessions.has(agent.agentId)) {
             const ui = {
                 message: item => {
-                    if (item.role === 'agent') this.unseen = !this.view?.visible;
+                    if (item.role === 'agent') this.unseen = !this.port?.visible;
                     if (item.role === 'question') this.open_question = true;
                     if (item.role === 'user') Object.assign(this, { open_question: false, unseen: false });
                     this._post({ type: 'message', item, agent: agent.agentId });
@@ -333,75 +325,43 @@ class ChatView {
         return this.user_avatar;
     }
 
-    // --- webview ---
-    resolveWebviewView(host) {
-        const view = host;
-        this.view = view;
-        const media = vscode.Uri.joinPath(this.context.extensionUri, 'media');
-        view.webview.options = { enableScripts: true, localResourceRoots: [media] };
-        const nonce = crypto.randomBytes(16).toString('hex');
-        const asset = name => view.webview.asWebviewUri(vscode.Uri.joinPath(media, name));
-        view.webview.html = `<!DOCTYPE html><html><head><meta charset="UTF-8">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${view.webview.cspSource}; img-src data:; script-src 'nonce-${nonce}';">
-<link rel="stylesheet" href="${asset('chat.css')}"></head><body>
-<div id="notes_pane" class="notes-pane hidden"><div id="notes_splitter" class="notes-splitter"></div><div id="notes_groups" class="notes-groups"><textarea id="notes" placeholder="Notes for this chat …" spellcheck="false"></textarea></div></div>
-<div class="chat" id="chat">
-<div class="header" id="header">
-<div class="agents" id="agents"></div><select id="agent" class="agent-select hidden" title="Agent"></select>
-<div class="menu-wrap repo-wrap"><button id="repo" class="repo-btn" title="Repo of this chat"><span id="repo_dot" class="repo-dot"></span><span id="repo_name"></span></button><div id="repo_menu" class="menu hidden"></div></div>
-<button id="terminal" class="icon-btn" title="Terminal for this repo"><svg viewBox="0 0 16 16" width="21" height="21" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 3.5h11v9h-11z"/><path d="M5 6.5l2 1.5-2 1.5"/><path d="M8.5 10h2.5"/></svg></button>
-<button id="notes_toggle" class="icon-btn" title="Show or hide notes" aria-pressed="false"><svg viewBox="0 0 16 16" width="21" height="21" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M3.5 2.5h6l3 3v8h-9z"/><path d="M9.5 2.5v3h3"/><path d="M5.5 8.5h5M5.5 11h3.5"/></svg></button>
-<div class="menu-wrap"><button id="history" class="icon-btn" title="Chat history"><svg viewBox="0 0 16 16" width="21" height="21" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 8a5.5 5.5 0 1 0 1.6-3.9"/><path d="M2.5 2.4v2.7h2.7"/><path d="M8 5v3.2l2.2 1.4"/></svg></button><div id="history_menu" class="menu right hidden"></div></div>
-<div class="menu-wrap"><button id="new_chat" class="icon-btn primary" title="New chat"><svg viewBox="0 0 16 16" width="21" height="21" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M8 3.5v9M3.5 8h9"/></svg></button><div id="new_menu" class="menu right hidden"></div></div>
-</div>
-<div class="messages" id="messages"></div>
-<div class="input-area">
-<div id="splitter" class="splitter" title="Drag to resize the input"></div>
-<div class="input-toolbar" id="statusbar">
-<div class="menu-wrap attach-wrap"><button id="attach" class="icon-btn" title="Attach"><svg viewBox="0 0 16 16" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M8 3.5v9M3.5 8h9"/></svg></button><div id="attach_menu" class="menu hidden"></div></div>
-<div class="toolbar-status"><span id="credits" class="badge"></span><span id="co_credits" class="badge"></span><span id="co_agents" class="badge"></span></div>
-<div class="menu-wrap model-wrap"><button id="model" class="picker-btn" title="Model for this chat"></button><div id="model_menu" class="menu up right hidden"></div></div>
-</div>
-<div id="attachments" class="attachments"></div>
-<div class="input-editor-wrap"><textarea id="input" rows="3" placeholder="Message …"></textarea></div>
-<div class="input-send-row"><span class="hint">Enter = send · Shift+Enter = new line</span><button id="send" class="send-btn">Send</button><button id="stop" class="stop-btn hidden"></button></div>
-</div>
-</div>
-<script nonce="${nonce}" src="${asset('markdown.js')}"></script>
-<script nonce="${nonce}" src="${asset('chat_time.js')}"></script>
-<script nonce="${nonce}" src="${asset('chat_scroll.js')}"></script>
-<script nonce="${nonce}" src="${asset('chat.js')}"></script></body></html>`;
-        const message_listener = view.webview.onDidReceiveMessage(message => this._on_message(message).catch(error => this._post({ type: 'error', text: error.message, transient: error instanceof Notice })));
-        if (message_listener) this.disposables.push(message_listener);
-        for (const listener of [host.onDidChangeVisibility?.(() => { if (host.visible) this.mark_seen(); }), host.onDidChangeViewState?.(() => { if (host.visible) this.mark_seen(); })]) {
-            if (listener) this.disposables.push(listener);
+    // --- webview port ---
+    _dispose_port_listeners() {
+        for (const disposable of this.port_disposables.splice(0)) {
+            try { disposable.dispose(); } catch (error) { log(`dispose failed: ${error.message}`); }
         }
+    }
+
+    attach(port) {
+        this._dispose_port_listeners();
+        this.port = port;
+        const is_current = () => this.port === port;
+        const message_listener = port.webview.onDidReceiveMessage(message => {
+            if (!is_current()) return;
+            return this._on_message(message).catch(error => {
+                if (is_current()) this._post({ type: 'error', text: error.message, transient: error instanceof Notice });
+            });
+        });
+        if (message_listener) this.port_disposables.push(message_listener);
+        const visibility_listener = port.onDidChangeVisibility(() => {
+            if (is_current() && port.visible) this.mark_seen();
+        });
+        if (visibility_listener) this.port_disposables.push(visibility_listener);
         this._schedule_sync();
     }
 
     _post(message) {
-        if (this.view) this.view.webview.postMessage(message);
+        if (this.port) this.port.webview.postMessage(message);
     }
 
     dispose() {
         this.disposed = true;
         try { clearTimeout(this.sync_timer); } catch (error) { log(`timer cleanup failed: ${error.message}`); }
+        this.port = null;
+        this._dispose_port_listeners();
         for (const disposable of this.disposables.splice(0)) {
             try { disposable.dispose(); } catch (error) { log(`dispose failed: ${error.message}`); }
         }
-        for (const session of this.sessions.values()) {
-            if (!session.busy) continue;
-            try {
-                session.stop('manual').catch(error => log(`stop failed: ${error.message}`));
-            } catch (error) {
-                log(`stop failed: ${error.message}`);
-            }
-        }
-        this.view = null;
-    }
-
-    post_notes_position() {
-        this._post({ type: 'notes_position', position: this._notes_position() });
     }
 
     async _on_message(message) {
@@ -410,6 +370,7 @@ class ChatView {
             select_agent: async () => {
                 if (this._agent() && this._session().busy) throw new Notice('Stop the agent first.');
                 await this.context.workspaceState.update('monarch.agent', message.id);
+                this.agent_id = message.id;
                 await this.refresh();
             },
             terminal: () => this._terminal(),
@@ -434,30 +395,25 @@ class ChatView {
                 if (agent && session?.state?.thread_id) this._store(agent).save(session.state);
                 this._post_repo(session);
                 this._changed();
+                let workspace_folders = vscode.workspace.workspaceFolders || [];
+                if (workspace_folders.some(folder => this._same_path(found.uri, folder.uri))) return;
+                if (typeof vscode.workspace.updateWorkspaceFolders !== 'function') return;
+                if (!vscode.workspace.workspaceFile) {
+                    if (!this.options.window_idle()) throw new Notice('Repo selected. Add it with File → Add Folder to Workspace… when no agent is running.');
+                    const answer = await vscode.window.showWarningMessage(`Add ${found.name} to the workspace? This window becomes an untitled multi-root workspace and VS Code may restart the extensions.`, { modal: true }, 'Add');
+                    if (answer !== 'Add') return;
+                    workspace_folders = vscode.workspace.workspaceFolders || [];
+                    if (workspace_folders.some(folder => this._same_path(found.uri, folder.uri))) return;
+                }
+                if (!vscode.workspace.updateWorkspaceFolders(workspace_folders.length, 0, { uri: found.uri })) throw new Notice('Folder not added.');
             },
             send: () => this._send(message.text, message.interrupt_id),
             stop: () => this.stop(),
             new_chat: () => this.new_chat(),
-            new_chat_beside: () => this.options.open_beside(this.current_repo()),
             open_chat: () => this._open_chat(message.thread_id),
             remove_chat: () => this._remove_chat(message.thread_id),
             import_chat: () => this._import_chat(),
             set_model: () => this._session().set_model(message.model),
-            set_notes: () => {
-                const text = String(message.text ?? '');
-                if (message.chat_id != null && message.chat_id !== this.id) {
-                    this.options.set_notes(message.chat_id, text, message.rev);
-                    return;
-                }
-                if (!this.options.set_notes(this.id, text, message.rev)) this.apply_notes(text, message.rev);
-            },
-            notes_visible: () => this.context.globalState.update('monarch.notesVisible', Boolean(message.visible)),
-            adjust: () => {
-                const session = this._session();
-                const adjust = { credits: 'adjust_credits', co_credits: 'adjust_co_credits', co_agents: 'adjust_co_agents' }[message.item];
-                const changed = adjust ? session[adjust](message.direction) : false;
-                if (!changed) throw new Notice('This limit cannot be changed further.');
-            },
             sign_in: () => vscode.commands.executeCommand('monarch.signIn'),
             attach: () => this._attach(message.kind),
             remove_attachment: () => {
@@ -468,7 +424,6 @@ class ChatView {
             copy: () => vscode.env.clipboard.writeText(String(message.text || '')),
             code_action: () => this._code_action(message.action, String(message.code || ''), message.language),
             input_height: () => this.context.globalState.update('monarch.inputHeight', Math.round(Number(message.height)) || null),
-            notes_width: () => { const width = Math.round(Number(message.width)); return this.context.globalState.update('monarch.notesWidth', Number.isFinite(width) && width > 0 ? width : null); },
         };
         await (handlers[message.type] || (() => {}))();
     }
@@ -488,7 +443,7 @@ class ChatView {
             const agent = signed_in ? this._agent() : null;
             const session = agent ? this.sessions.get(agent.agentId) || null : null;
             const agent_items = await Promise.all(agents.map(async item => ({ id: item.agentId, name: item.name, avatar: await this._avatar('agents', item.agentId, item.name, item.has_image) })));
-            this._post({ type: 'init', agents: agent_items, current: agent?.agentId || null, current_name: agent?.name || null, labels: agent?.labels || default_labels, signed_in, user: signed_in ? await this._user() : { image: null, initials: 'Du' }, input_height: this.context.globalState.get('monarch.inputHeight') || null, notes_width: this.context.globalState.get('monarch.notesWidth') || null, notes_visible: Boolean(this.context.globalState.get('monarch.notesVisible')), notes_position: this._notes_position(), repo: this._repo_info(session) });
+            this._post({ type: 'init', agents: agent_items, current: agent?.agentId || null, current_name: agent?.name || null, labels: agent?.labels || default_labels, signed_in, user: signed_in ? await this._user() : { image: null, initials: 'Du' }, input_height: this.context.globalState.get('monarch.inputHeight') || null, repo: this._repo_info(session) });
             this._post_repo(session);
             this._post_attachments();
             if (!agent) return;
@@ -517,7 +472,7 @@ class ChatView {
     }
 
     async _sync() {
-        if (!(_config().get('syncInterval') > 0) || !this.view?.visible) return;
+        if (!(_config().get('syncInterval') > 0) || !this.port?.visible) return;
         const agent = this.agent_list && this._agent();
         const session = agent && this.sessions.get(agent.agentId);
         if (!session || !(await session.has_updates())) return;
@@ -764,7 +719,7 @@ class ChatView {
             existing.show();
             return existing;
         }
-        const location = this.view?.viewColumn ? { viewColumn: vscode.ViewColumn.Beside, preserveFocus: false } : vscode.TerminalLocation.Panel;
+        const location = vscode.TerminalLocation.Panel;
         const terminal = vscode.window.createTerminal({ name, cwd: folder.uri, color: new vscode.ThemeColor(this.colors.color(folder.name).theme), iconPath: new vscode.ThemeIcon('terminal'), location });
         terminal.show();
         return terminal;

@@ -118,13 +118,12 @@ function harness(initial_values = {}, options = {}, names = ['A', 'B'], all_repo
     const chat = new ChatView(context, {}, { is_logged_in: async () => false }, options);
     chat._schedule_sync = () => {};
     const webview = {
-        cspSource: 'mock-csp',
-        asWebviewUri: uri => uri.fsPath,
         postMessage: async message => posted.push(message),
-        onDidReceiveMessage(handler) { this.receive = handler; },
+        onDidReceiveMessage(handler) { this.receive = handler; return { dispose() {} }; },
     };
-    chat.resolveWebviewView({ webview });
-    return { chat, context, posted, state, webview };
+    const port = { webview, visible: false, onDidChangeVisibility: () => ({ dispose() {} }) };
+    chat.attach(port);
+    return { chat, context, posted, state, webview, port };
 }
 
 const agent = { agentId: 'a1', name: 'Z', labels: {} };
@@ -218,8 +217,7 @@ async function main() {
     assert.equal(race_open.chat.current_repo().name, 'A');
     assert.equal(open_session.loaded, undefined);
 
-    let routed_notes;
-    const notes_chat = harness({}, { set_notes: (...args) => { routed_notes = args; return true; } }, ['A']);
+    const notes_chat = harness({}, {}, ['A']);
     notes_chat.chat.agent_list = [agent];
     const note_session = {
         state: { title: 'Notes title' },
@@ -228,15 +226,9 @@ async function main() {
     };
     notes_chat.chat.sessions.set(agent.agentId, note_session);
     assert.deepEqual(notes_chat.chat.notes_entry(), { id: notes_chat.chat.id, repo: 'A', hex: palette[0].hex, title: 'Notes title', text: 'current note', rev: 11 });
-    const groups = [{ id: 'another-chat' }];
-    notes_chat.chat.post_notes_groups(groups);
-    assert.deepEqual(notes_chat.posted.at(-1), { type: 'notes_groups', groups, self: notes_chat.chat.id });
     assert.equal(notes_chat.chat.apply_notes('updated note', 11), true);
     assert.deepEqual(note_session.applied, ['updated note', 11]);
     assert.deepEqual(notes_chat.posted.at(-1), { type: 'notes', text: 'updated note', rev: 11, agent: agent.agentId });
-    await notes_chat.chat._on_message({ type: 'set_notes', text: 'routed note', rev: 12 });
-    assert.deepEqual(routed_notes, [notes_chat.chat.id, 'routed note', 12]);
-
     const temp_root = await fs.mkdtemp(path.join(os.tmpdir(), 'chat-view-repo-'));
     const from_history = harness({ 'monarch.chats.a1': [{ thread_id: 't2', repo: 'X', repo_path: temp_root, updated: 1, state: { thread_id: 't2' } }] }, {}, ['A'], [repo('A', '/r/A', true), repo('X', temp_root)]);
     from_history.chat.agent_list = [agent];
@@ -274,8 +266,6 @@ async function main() {
     assert.equal(attach.chat.attachments[0].label, 'sub/a.txt');
     open_dialog_uris = [];
 
-    const repo_button = harness();
-    assert.match(repo_button.webview.html, /<div class="menu-wrap repo-wrap"><button id="repo" class="repo-btn" title="Repo of this chat">/);
     await fs.rm(temp_root, { recursive: true, force: true });
 }
 

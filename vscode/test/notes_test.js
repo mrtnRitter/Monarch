@@ -6,7 +6,7 @@ const { notes_block, strip_notes, notes_marker, notes_end } = require('../src/no
 const { strip_context } = require('../src/repo');
 
 const header = `${notes_marker} Notes of this chat, shown next to the chat (not in the repo). To change them, end your answer with "### ORCA: notes" followed by the complete new notes.`;
-const limits = { maxCredits: 0, maxCoAgentCredits: 0, maxCoAgents: 0, creditStep: 0, pollInterval: 0, relayTimeout: 0, syncInterval: 0 };
+const limits = { pollInterval: 0, relayTimeout: 0, syncInterval: 0 };
 
 function harness({ answers = [], on_status = null, initial_messages = [] } = {}) {
     const sent = [];

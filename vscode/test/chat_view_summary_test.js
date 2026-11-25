@@ -10,7 +10,6 @@ const vscode = {
     Uri: { joinPath: (base, ...parts) => make_uri([base?.fsPath || '', ...parts].join('/')) },
     ThemeColor: class ThemeColor { constructor(id) { this.id = id; } },
     ThemeIcon: class ThemeIcon { constructor(id) { this.id = id; } },
-    ViewColumn: { Beside: -2 },
     TerminalLocation: { Panel: 1 },
     workspace: { workspaceFolders: [], getConfiguration: () => ({ get: () => null }) },
     window: {
@@ -36,7 +35,7 @@ function folders(names = ['A', 'B']) {
     vscode.workspace.workspaceFolders = names.map(name => ({ name, uri: make_uri(`/r/${name}`) }));
 }
 
-function harness(initial_values = {}, options = {}, { names = ['A', 'B'], visible = false, viewColumn, stub_schedule = true } = {}) {
+function harness(initial_values = {}, options = {}, { names = ['A', 'B'], visible = false, stub_schedule = true } = {}) {
     folders(names);
     const state = new Map(Object.entries(initial_values));
     const posted = [];
@@ -51,22 +50,19 @@ function harness(initial_values = {}, options = {}, { names = ['A', 'B'], visibl
     };
     const chat = new ChatView(context, {}, { is_logged_in: async () => false }, options);
     if (stub_schedule) chat._schedule_sync = () => {};
+    const message_listener = { disposed: false };
     const webview = {
-        cspSource: 'mock-csp',
-        asWebviewUri: uri => uri.fsPath,
         postMessage: async message => posted.push(message),
-        onDidReceiveMessage(handler) { this.receive = handler; return disposable(); },
+        onDidReceiveMessage(handler) { this.receive = handler; return disposable(message_listener); },
     };
     const host_listeners = [];
-    const host = {
+    const port = {
         webview,
         visible,
-        viewColumn,
         onDidChangeVisibility(handler) { host_listeners.push({ type: 'visibility', handler }); return disposable(host_listeners.at(-1)); },
-        onDidChangeViewState(handler) { host_listeners.push({ type: 'viewState', handler }); return disposable(host_listeners.at(-1)); },
     };
-    chat.resolveWebviewView(host);
-    return { chat, context, posted, state, webview, host, host_listeners };
+    chat.attach(port);
+    return { chat, context, posted, state, webview, port, host_listeners, message_listener };
 }
 
 function disposable(record = null) {
@@ -137,14 +133,13 @@ async function main() {
 
     created_terminals.length = 0;
     terminal_options.length = 0;
-    const beside = harness({}, {}, { names: ['A'], viewColumn: 1 });
+    const beside = harness({}, {}, { names: ['A'], visible: true });
     beside.chat._terminal();
-    assert.deepEqual(terminal_options.at(-1).location, { viewColumn: -2, preserveFocus: false });
+    assert.equal(terminal_options.at(-1).location, vscode.TerminalLocation.Panel);
     let terminal_messages = 0;
     beside.chat._terminal = () => { terminal_messages++; };
     await beside.webview.receive({ type: 'terminal' });
     assert.equal(terminal_messages, 1);
-    assert.match(beside.webview.html, /id="terminal"/);
 
     const opened = harness({ 'monarch.chats.a1': [{ thread_id: 't9', repo: 'A', updated: 1, state: { thread_id: 't9' } }] });
     opened.chat.agent_list = [{ agentId: 'a1', name: 'Z', labels: {} }];
@@ -169,18 +164,17 @@ async function main() {
     assert.equal(new_timers, 0);
 
     const disposed = harness();
-    let stopped_with = null;
-    let reject_stop;
-    disposed.chat.sessions.set('a1', { busy: true, stop: reason => { stopped_with = reason; return new Promise((resolve, reject) => { reject_stop = reject; }); } });
+    let stop_calls = 0;
+    disposed.chat.sessions.set('a1', { busy: true, stop: () => { stop_calls++; } });
     assert.equal(disposed.chat.dispose(), undefined);
-    assert.equal(stopped_with, 'manual');
-    assert.equal(disposed.chat.view, null);
-    reject_stop(new Error('stop failed'));
-    await new Promise(resolve => setImmediate(resolve));
-    assert(disposed.host_listeners.length >= 2);
+    assert.equal(stop_calls, 0);
+    assert.equal(disposed.chat.port, null);
+    assert(disposed.host_listeners.length >= 1);
     assert(disposed.host_listeners.every(listener => listener.disposed));
+    assert.equal(disposed.message_listener.disposed, true);
+    assert.equal(disposed.chat.sessions.get('a1').busy, true);
     assert.doesNotThrow(() => disposed.chat._post({ type: 'after-dispose' }));
-    assert.equal(disposed.chat.view, null);
+    assert.equal(disposed.chat.port, null);
 }
 
 main().catch(error => {

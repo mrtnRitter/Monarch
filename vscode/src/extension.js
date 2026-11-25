@@ -23,7 +23,6 @@ function activate(context) {
     // API key of the removed Month item (0.16 and older)
     context.secrets.delete('monarch.apiKey').then(undefined, () => {});
     const panels = new ChatPanels(context, client, oauth);
-    const view = panels.sidebar;
     const run = action => async () => {
         try {
             await action();
@@ -32,7 +31,8 @@ function activate(context) {
         }
     };
     context.subscriptions.push(
-        vscode.window.registerWebviewViewProvider('monarch.chat', view, { webviewOptions: { retainContextWhenHidden: true } }),
+        panels,
+        vscode.window.registerWebviewViewProvider('monarch.chat', panels, { webviewOptions: { retainContextWhenHidden: true } }),
         vscode.commands.registerCommand('monarch.signIn', run(async () => {
             await oauth.login(url => vscode.env.openExternal(vscode.Uri.parse(url, true)));
             vscode.window.showInformationMessage('monarch: signed in.');
@@ -44,12 +44,13 @@ function activate(context) {
         })),
         vscode.commands.registerCommand('monarch.newChat', run(() => panels.active().new_chat())),
         vscode.commands.registerCommand('monarch.stop', run(() => panels.active().stop())),
-        vscode.commands.registerCommand('monarch.openChatInEditor', run(() => panels.open(panels.active().current_repo?.() || null))),
+        vscode.commands.registerCommand('monarch.addChat', run(() => panels.add_chat())),
         vscode.workspace.onDidChangeConfiguration(event => {
             if (event.affectsConfiguration('monarch.agents') || event.affectsConfiguration('monarch.agentFilter')) {
                 panels.all().forEach(chat => chat.refresh({ reload_agents: true }));
             }
-            if (event.affectsConfiguration('monarch.notesPosition')) panels.all().forEach(chat => chat.post_notes_position());
+            if (event.affectsConfiguration('monarch.notesPosition')) panels.set_notes_position(_config().get('notesPosition'));
+            if (event.affectsConfiguration('monarch.newChatPosition')) panels.set_new_chat_position(_config().get('newChatPosition'));
         }),
         vscode.workspace.onDidChangeWorkspaceFolders(() => panels.all().forEach(chat => chat.refresh())),
     );

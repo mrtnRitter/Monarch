@@ -46,8 +46,8 @@ Requirements: VS Code 1.85+ with the built-in Git extension, an awork account in
 
 ```bash
 cd monarch/vscode
-python build_vsix.py                         # -> monarch-0.23.0.vsix
-code --install-extension monarch-0.23.0.vsix
+python build_vsix.py                         # -> monarch-0.24.0.vsix
+code --install-extension monarch-0.24.0.vsix
 ```
 
 Or in VS Code: Extensions view → `…` → **Install from VSIX…**. `Optional local tests (node, no network): for f in test/*_test.js; do node "$f"; done` – `test/webview_notes_test.js` needs jsdom (`NODE_PATH=<folder>/node_modules`).
@@ -74,9 +74,9 @@ The skills use the neutral terms *main agent* and *co-agent* and the placeholder
 
 Every user, also the agent owner, does this once:
 
-1. **Install** `monarch-0.23.0.vsix` (see *Installation*) and reload VS Code (Command Palette → **Developer: Reload Window**).
+1. **Install** `monarch-0.24.0.vsix` (see *Installation*) and reload VS Code (Command Palette → **Developer: Reload Window**).
 2. **Sign in:** Open **monarch** in the activity bar and click **Sign in** (or Command Palette → **monarch: Sign in**). The browser opens; log in to awork and select the workspace.
-3. **Check the agents:** The agent circles at the top show the agents. If an agent shared with you is missing, set **Monarch: Agent Filter** (`monarch.agentFilter`) to `all`.
+3. **Check the agents:** Open the **Model** menu in a chat to choose its agent. If an agent shared with you is missing, set **Monarch: Agent Filter** (`monarch.agentFilter`) to `all`.
 4. **Test files:** Start a **new chat** (blue **+**) and send: `Create output/download_test.txt with three lines.`
 5. **Check:** `download_test.txt` appears as link in the answer and in the repo; **Output → monarch** shows `download download_test.txt: ok`. Then delete the test file.
 
@@ -88,7 +88,7 @@ Every user, also the agent owner, does this once:
 | `not written (…)` | The file could not be written (e.g. no folder open, file locked) |
 | No agents | Sign in again; check sharing (owner setup 3) and `monarch.agentFilter` |
 
-Credits and limits apply per chat.
+Credits and co-agent counts are displayed per chat; monarch does not limit them.
 
 ## Settings
 
@@ -111,11 +111,7 @@ All settings are optional. The agent list comes from awork (see `monarch.agentFi
 | `monarch.redirectPort` | `8765` | Local port of the sign-in callback; must match the redirect URI |
 | `monarch.apiBaseUrl` | `https://api.awork.com/api/v1` | awork API base URL |
 | `monarch.agentFilter` | `own` | `own`: agents you created plus agents listed in `monarch.agents`; `all`: every agent shared with you |
-| `monarch.agents` | entry for CodeZilla | Additions per agent, matched by `agentId` (or `name`): `coAgentId` (agent started by `ORCA: spawn`; empty = no co-agents), `coAgentName` (prefix of co-agent IDs; empty = awork name of the co-agent in lower case without spaces, e.g. `minizilla`), `labels` (UI names of the status items; `chat`, `coCredits`, `coAgents`, `stop` (`credits` = deprecated, same as `chat`)). Agents used as `coAgentId` are not shown in the agent list. |
-| `monarch.maxCredits` | `1000` | Credit cap per chat for the agent only; reaching it stops the agent and all co-agents; `0` = no cap. Can be changed per chat with − / + in the chat window. |
-| `monarch.maxCoAgentCredits` | `1000` | Credit cap per chat for all co-agents together; reaching it stops the agent and all co-agents, `spawn` and `send` are refused; `0` = no cap. Can be changed per chat with − / + in the chat window. |
-| `monarch.maxCoAgents` | `10` | Max. co-agents per job (a co-agent holds its slot until cancel/stopzilla); `0` = no cap. Can be changed per chat with − / + in the chat window. |
-| `monarch.creditStep` | `100` | Credits added or removed per click on − / + of the Chat and Co-Credits items (this chat only); minimum `1` |
+| `monarch.agents` | entry for CodeZilla | Additions per agent, matched by `agentId` (or `name`): `coAgentId` (agent started by `ORCA: spawn`; empty = no co-agents), `coAgentName` (prefix of co-agent IDs; empty = awork name of the co-agent in lower case without spaces, e.g. `minizilla`), `labels` (UI names for `Chat`, `Co-Credits`, `Co-Agenten` display values and `stop`). Agents used as `coAgentId` are not shown in the agent list. |
 | `monarch.relayTimeout` | `600` | Seconds the relay waits before waking the agent with the current state, including the progress of working co-agents; `0` = no limit |
 | `monarch.pollInterval` | `3` | Seconds between status checks |
 | `monarch.maxFolderMB` | `20` | Max. size of a folder or file attachment |
@@ -125,7 +121,8 @@ All settings are optional. The agent list comes from awork (see `monarch.agentFi
 | `monarch.normalizeLineEndings` | `false` | `true`: co-agent text files with CRLF are converted to LF when LF is expected; otherwise only a warning |
 | `monarch.relayDiff` | `inline` | Diffs of newly staged co-agent files in the relay: `inline`, `attach` (always as `<name>.diff` attachment) or `off` |
 | `monarch.relayDiffMaxKB` | `40` | Max. total size of inline diffs per relay; the largest diffs beyond it are attached instead |
-| `monarch.notesPosition` | `right` | Side of the notes pane next to the chat: `left` or `right` |
+| `monarch.notesPosition` | `left` | Side of the notes pane next to all chats: `left` or `right`; changes apply immediately |
+| `monarch.newChatPosition` | `right` | Side where a new chat area from the **+** menu or `monarch.addChat` opens: `right` or `left`; changes apply immediately without moving open areas |
 | `monarch.reposRoot` | `""` | Folder whose direct subfolders with `.git` are the repos you can pick for a chat; empty = parent folders of the open workspace folders. Open workspace folders are always listed. |
 | `monarch.syncInterval` | `4` | Seconds between checks for new messages of the current chat written elsewhere (e.g. awork web app) while the chat window is visible; while the agent is working, a newer message of yours written elsewhere ends the wait; `0` = off |
 
@@ -136,30 +133,30 @@ All settings are optional. The agent list comes from awork (see `monarch.agentFi
 
 | Element | Function |
 |---|---|
-| Agent circles | Agents according to `monarch.agentFilter`, with their profile pictures; click to select. If they do not fit into the panel, a dropdown is shown instead. |
-| Repo (colored dot + name) | Click to open a filterable list of all repos, including repos not open in VS Code; type to filter, use ↑ / ↓ and Enter to select, or Esc to close. Open workspace folders are always listed. Change an existing chat’s repo only when the agent and co-agents are not working and no files are staged; the next message carries the new `[monarch context]` line. |
-| Notes (note sheet) | Left of the history button: shows or hides the notes pane of the current chat (full height of the window, left or right of the chat according to `monarch.notesPosition`); shown or hidden stays as set for all chats |
-| History (clock) | Chats of the selected agent from all repos (max. 100), newest first, with repo name and date; click to continue a chat, ✕ removes it from the list (the chat stays in awork) |
-| New chat (blue +) | Opens a menu: **New chat here** starts a chat in this repo; **New chat beside** opens a chat tab next to the current chat, in the same repo. **Ctrl/Cmd+click** on **+** still takes over a chat from awork. |
-| Terminal | Opens or shows the `monarch: <repo>` terminal in this chat's repo, colored with the repo. It opens beside an editor chat or in the panel for the sidebar chat; the **Terminal** code-block action uses it. |
+| Chat areas | The monarch sidebar shows up to 4 chats side by side. Drag the dividers between chats to resize them; each chat area is at least 300 px wide. |
+| Top bar | **Notes**, **History**, and **+** appear once above all chats. |
+| Repo (colored dot + name) | Click to open a filterable list of all repos, including repos not open in VS Code; type to filter, use ↑ / ↓ and Enter to select, or Esc to close. Open workspace folders are always listed. A selected repo that is not open is added directly in a multi-root window. In a single-folder window, monarch asks before adding it and does so only when no chat is working, no co-agent is working or waiting, and no files are staged; the window then becomes an untitled multi-root workspace. The next message carries the new `[monarch context]` line. |
+| Notes (note sheet) | In the top bar: shows or hides the notes pane, which spans the full height beside all chats on the left or right according to `monarch.notesPosition`; the visibility setting applies to all chats. |
+| History (clock) | Chats of the selected agent from all repos (max. 100), newest first, with repo name and date; click to open a chat in the active area, or focus its existing area; ✕ removes it from the list (the chat stays in awork). |
+| New chat (blue +) | Opens a menu: **New chat here** starts a chat in this area; **New chat right** or **New chat left** adds a new area beside the open chats, on the configured side (not in the active area), carrying over the active area’s repo and agent and becoming active. **Ctrl/Cmd+click** on **+** takes over a chat from awork in the active area. |
+| Terminal | Each chat has a **Terminal** button in its bottom row; it opens or shows the `monarch: <repo>` terminal in the chat's repo in the panel. The **Terminal** code-block action uses it. |
+| Bottom row | Each chat has its repo button, **Terminal**, **×** (when available, close; the chat stays in History), and **Send** or **Stop**. The close button is available with at least 2 chats when no agent or co-agent is working or waiting and no files are staged. |
 | Message times | Every message shows its time; a thin line with the date separates messages from different days. |
-| Row above the input | **+** (attachments) on the left, **Chat**, **Co-Credits** and **Co-agents** in the middle, **Model** on the right (details below) |
-| **+** | Opens a small menu to the right of the button, **Current file** at the height of **+**: **Current file** attaches the file of the active editor tab (also Markdown preview, images, notebooks, diffs), otherwise the last active file, as single file. **Files** and **Folder** open the file dialog for files or folders. Everything picked with **Files** and **Folder** is sent together as one `attachments.zip` with paths relative to the repo root (files outside the repo under their file name; folders without `.git`, `node_modules`, `__pycache__`, `.venv`, `*.pyc` and `files.exclude`). Attachments appear as blue chips above the input; click a chip to remove it. Max. 20 attachments and `maxFolderMB` per file or folder |
-| Chat | Credits of the agent in this chat (without co-agents) against `maxCredits`. Hover to show − on the left, the current limit in the middle, and + on the right; clicks change only this chat’s limit by `creditStep`, saved with the chat. The limit cannot go below credits already used. `0` = no limit and no buttons. Turns warning-colored at 90%. |
-| Co-Credits | Credits of all co-agents of this chat against `maxCoAgentCredits`. − / + and limit as for Chat (steps of `creditStep`, not below the co-agent credits already used, saved with the chat). `0` = no limit and no buttons. Turns warning-colored at 90%. |
-| Co-agents | Co-agents of the current job against `maxCoAgents`, incl. how many are working. Hover to show − on the left, the current limit in the middle, and + on the right; clicks change only this chat’s limit by 1. Minimum is the number of active co-agents, and at least 1. `0` = no limit and no buttons. |
-| Model | Opens its menu above the button, aligned to its right edge: **Agent default** (uses the agent's settings) at the top, below **Reasoning** with the levels of the selected model in one line, below **AI models** with model name, credit factor (e.g. `3×`, in one column) and provider. Model and reasoning level apply to the next messages of this chat and are saved with the chat; co-agents keep their own model. |
-| Send / Stop | **Send** sends the message. While the agent works, **Stop** replaces Send: it stops the agent and all co-agents and closes the job. When the agent is idle, use **monarch: Stop agent and co-agents** to stop waiting co-agents |
+| Row above the input | **+** (attachments), the **Chat**, **Co-Credits**, and **Co-Agenten** values as plain text styled like the **Model** button (no pills; unknown values show `?`; no limits or warning color), and the **Model** menu. |
+| **+** (attachments) | Opens a small menu to the right of the button, **Current file** at the height of **+**: **Current file** attaches the file of the active editor tab (also Markdown preview, images, notebooks, diffs), otherwise the last active file, as single file. **Files** and **Folder** open the file dialog for files or folders. Everything picked with **Files** and **Folder** is sent together as one `attachments.zip` with paths relative to the repo root (files outside the repo under their file name; folders without `.git`, `node_modules`, `__pycache__`, `.venv`, `*.pyc` and `files.exclude`). Attachments appear as blue chips above the input; click a chip to remove it. Max. 20 attachments and `maxFolderMB` per file or folder |
+| Chat | Credits of the agent in this chat, without co-agents, shown as a read-only value. |
+| Co-Credits | Credits of all co-agents in this chat, shown as a read-only value. |
+| Co-Agenten | The number of co-agents in the current job and how many are working, shown as a read-only value. |
+| Model | Opens its menu above the button, aligned to its right edge. Choose the agent for this chat, **Agent default** (uses the selected agent's settings), **Reasoning**, or an **AI model**. The agent choice applies to this chat; model and reasoning level apply to its next messages and are saved with the chat. |
+| Send / Stop | **Send** sends the message. While the agent works, **Stop** replaces Send: it stops the agent and all co-agents and closes the job. When the agent is idle, use **monarch: Stop agent and co-agents** to stop waiting co-agents. |
 | Line above the input | Drag up/down to resize the input (min. 3 lines, max. 70 % of the panel); the height is kept |
 | Line between chat and notes | Drag left/right to resize the notes pane (min. 120 px, max. 70 % of the panel); the width is kept |
 | Enter / Shift+Enter | Send / new line |
 | Ctrl+C / Cmd+C | Copies the selected text of the chat (or of the input) |
-
-The labels of Chat, Co-Credits, Co-agents and Stop come from `labels` of the selected agent. Every new VS Code window starts with a new chat; earlier chats are continued from the history. The history is stored locally in VS Code for all repos together and survives restarts. Histories of older versions (per repo) are taken over when the repo is opened the first time. It only contains chats started or taken over in monarch: awork does not let API clients list chats (the route of the web app and `/agents/management/threads` are refused for non-admins).
+The labels of Chat, Co-Credits, Co-Agenten and Stop come from `labels` of the selected agent. Chat, Co-Credits and Co-Agenten are display values only; monarch does not limit credits or co-agents. Every new VS Code window starts with a new chat; earlier chats are continued from the history. The history is stored locally in VS Code for all repos together and survives restarts. Histories of older versions (per repo) are taken over when the repo is opened the first time. It only contains chats started or taken over in monarch: awork does not let API clients list chats (the route of the web app and `/agents/management/threads` are refused for non-admins).
 
 A chat continued in the awork web app is updated in the chat window after `syncInterval` seconds. Files from answers that were not started in monarch are not written into the repo.
 
-If the agent credits cannot be read and `maxCredits` is not `0` (or the co-agent credits and `maxCoAgentCredits`), the chat does not accept further messages.
 
 ### Chat view
 
@@ -182,7 +179,7 @@ Free text for ideas and open points of the current chat, outside the repo. Type 
 
 The agent sees the notes: when they changed since the last message to the agent (also relay messages), monarch adds them at the end of the next message as a `[monarch notes] … [/monarch notes]` block, before the context line; the block is not shown in the chat. The agent replaces the notes with `### ORCA: notes` (see *Co-agents*); the pane shows the new text at once. If you changed the notes after the agent's last message, the command is refused and the agent gets your current notes.
 
-With two or more open chats, the notes pane shows one group per open chat, sidebar first and then tabs. Each header line has a colored dot, repo name, and chat title. Click a header, or focus it and press Enter/Space, to collapse or expand the group. The current chat is expanded and the others are collapsed. Expanded groups share the height; edits show up in all chat windows at once.
+With two or more open chats, the notes pane shows one group per open chat. Each header line has a colored dot, repo name, and chat title; groups are ordered from left to right to match the chat areas and separated by draggable dividers. Groups share the height; edits show up in all chat windows at once.
 
 ### Scrolling
 
@@ -225,7 +222,7 @@ An agent with `coAgentId` controls co-agents with blocks at the end of its answe
 | `### ORCA: commit` | Write all staged co-agent files into the repo; failed ones stay staged |
 | `### ORCA: stopzilla` | Stop all co-agents, close the job |
 
-monarch wakes the agent with a `[monarch relay]` message when all working co-agents have answered, when one answers with `STATUS: question`/`blocked`/`plan`, or after `relayTimeout`. After `relayTimeout` the message has a `progress (working co-agents):` part with the number of steps and the last 3 steps of each working co-agent (`- minizilla_2: 14 steps, last: … | … | …`), read from its run events for at most 5 s; without readable events it says `steps not readable`. It lists the staged files of each co-agent (`files (staged, not in the repo yet): …`), download warnings and the credits of agent and co-agents separately (`credits: agent 120/1000, co-agents 340/1000`); no files are attached. After `inspect`, monarch answers at once with a `[monarch relay] inspect` message: the files as attachments, a list `<file name> = <repo path>, <source>` (`staged by <co-agent id>` or `local repo`; equal names get `-2`, `-3`, …) and the files that could not be attached. A line `ATTACH: <repo path>` in a brief or message attaches that file (staged version first, else from the local repo, `maxFolderMB` each); `ATTACH: <co-agent id>` attaches all staged files of that co-agent; max. 20 files per message. Commands beyond the limits are refused and reported to the agent.
+monarch wakes the agent with a `[monarch relay]` message when all working co-agents have answered, when one answers with `STATUS: question`/`blocked`/`plan`, or after `relayTimeout`. After `relayTimeout` the message has a `progress (working co-agents):` part with the number of steps and the last 3 steps of each working co-agent (`- minizilla_2: 14 steps, last: … | … | …`), read from its run events for at most 5 s; without readable events it says `steps not readable`. It lists the staged files of each co-agent (`files (staged, not in the repo yet): …`), download warnings and the credits of agent and co-agents separately (`credits: agent 120, co-agents 340`); no files are attached. After `inspect`, monarch answers at once with a `[monarch relay] inspect` message: the files as attachments, a list `<file name> = <repo path>, <source>` (`staged by <co-agent id>` or `local repo`; equal names get `-2`, `-3`, …) and the files that could not be attached. A line `ATTACH: <repo path>` in a brief or message attaches that file (staged version first, else from the local repo, `maxFolderMB` each); `ATTACH: <co-agent id>` attaches all staged files of that co-agent; max. 20 files per message. Commands that exceed attachment or snapshot limits are refused and reported to the agent.
 
 `ATTACH: repo-snapshot` in a spawn or send (not in `inspect`) attaches `repo-snapshot.zip`: every file of `git ls-files -co --exclude-standard` in the workspace folder (tracked plus untracked, not ignored, including local changes not pushed), with all staged co-agent files on top (latest version per path), never `.git`, `.monarch/` or Python caches, plus `SNAPSHOT.md` in the archive root (branch, HEAD, locally changed files, overlaid staged files with `staged by <id>`, deleted files as “nicht enthalten”). It counts as one of the 20 attachments. The command line in the relay shows `repo-snapshot.zip = <branch>@<sha7> + <n> staged`; for a spawn that waited for `AFTER:` the same line appears as `repo-snapshot: …` in that co-agent's relay part. Above `monarch.maxSnapshotMB` the command is refused with the 5 largest folders. Requires git on the PATH. Co-agents have internet access (checked with `curl -sI https://nodejs.org` → HTTP 200 and `pip download pytest` → ok), so project setups that download tools can run from the snapshot; unpack it to `/tmp`, because `git clone` into `/workspace/...` fails in the sandbox (`chmod on .git/config.lock`).
 
@@ -233,23 +230,23 @@ For every file staged since the last relay, the co-agent's part of the relay end
 
 ## Several repos in one window
 
-Each chat belongs to one repo, including repos that are not open in VS Code. Click the colored dot and repo name in the chat header to open a filterable list of all repos (type to filter, ↑ ↓ Enter, Esc). Open workspace folders are always listed.
+Each chat belongs to one repo, including repos that are not open in VS Code. Up to 4 chats can appear side by side in the monarch sidebar. Click the colored dot and repo name in a chat to open a filterable list of all repos (type to filter, ↑ ↓ Enter, Esc). Open workspace folders are always listed.
+
+A selected repo that is not open is added directly to a multi-root workspace. In a single-folder window, monarch asks before adding it; it does so only when no chat is working, no co-agent is working or waiting, and no files are staged. The window then becomes an untitled multi-root workspace.
 
 You can also change the repo of an existing chat, but not while the agent or co-agents are working or files are staged; the next message carries the new `[monarch context]` line.
 
-Every repo keeps its color permanently (dot, editor tab icon, terminal); a new repo gets a color no open chat uses.
+Every repo keeps its color permanently (dot and terminal); a new repo gets a color no open chat uses.
 
-**+** opens a menu: **New chat here** | **New chat beside** (opens a chat tab next to the current chat, in the same repo). **Ctrl/Cmd+click** on **+** still takes over a chat from awork.
+**+** opens a menu: **New chat here** | **New chat right** / **New chat left** (according to `monarch.newChatPosition`). **Ctrl/Cmd+click** on **+** takes over a chat from awork into the active area.
 
-**monarch: New chat in editor** opens a chat tab beside, in the repo of the active chat.
-
-Folder attachments only work for repos open in VS Code; single files work everywhere.
+Folder attachments work for repos open in VS Code; single files work everywhere.
 
 Open repos as a multi-root workspace with **File → Add Folder to Workspace…**; optionally save it as a `.code-workspace` file.
 
 A chat writes only to its repo. The agent sees other open repos in its context line and can read them only with `ATTACH: read:<repo>:<path>` and `ATTACH: repo-snapshot:<repo>`.
 
-Opening a chat that is already open in another tab shows that existing tab. Closing a chat tab while its agent is working stops the agent and its co-agents. Chat tabs are not restored after a restart; continue chats from History.
+Close **×** in a chat's bottom row when it is available; the chat stays in History. Continue chats from History after a restart.
 
 For terminal tabs with repo names, use this settings JSON block:
 
@@ -263,6 +260,6 @@ For terminal tabs with repo names, use this settings JSON block:
 | Command | Effect |
 |---|---|
 | `monarch: Sign in` / `monarch: Sign out` | OAuth sign-in in the browser / delete the stored sign-in |
-| `monarch: New chat` | Starts a new chat in the active chat window (like **New chat here**) |
-| `monarch: New chat in editor` | Opens a chat tab beside, in the repo of the active chat |
+| `monarch: New chat` | Starts a new chat in the active chat area (like **New chat here**) |
+| `monarch: Add chat` (`monarch.addChat`) | Adds a new chat area beside the open chats, on the right or left according to `monarch.newChatPosition` (not in the active area) |
 | `monarch: Stop agent and co-agents` | Same as the Stop button |

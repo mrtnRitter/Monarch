@@ -78,7 +78,7 @@ button:disabled { opacity: .5; cursor: not-allowed; }
 .icon-btn.primary { background: var(--vscode-button-background); color: var(--vscode-button-foreground); opacity: 1; }
 .icon-btn.primary:hover { background: var(--vscode-button-hoverBackground); }
 .icon-btn.small { width: 24px; height: 24px; border-radius: 5px; }
-.badge { display: inline-flex; gap: 4px; padding: 1px 8px; border-radius: 10px; background: var(--vscode-badge-background); color: var(--vscode-badge-foreground); white-space: nowrap; font-size: .85em; }
+.badge { display: inline-flex; gap: 4px; white-space: nowrap; font-size: 12px; opacity: .8; }
 .badge .label { opacity: .8; }
 .avatar { width: var(--avatar); height: var(--avatar); border-radius: 50%; flex-shrink: 0; display: inline-flex; align-items: center; justify-content: center; font-size: .75em; font-weight: 600; color: #fff; }
 .avatar.large { --avatar: 48px; font-size: 1.1em; }
@@ -109,7 +109,7 @@ button:disabled { opacity: .5; cursor: not-allowed; }
 .splitter::before { content: ''; flex: 1; height: 1px; background: var(--vscode-panel-border); }
 .splitter:hover::before, .splitter.dragging::before { height: 3px; background: var(--vscode-sash-hoverBorder); }
 .input-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 6px; padding: 4px var(--pad) 0; position: relative; }
-.toolbar-status { display: flex; gap: 4px; min-width: 0; }
+.toolbar-status { display: flex; gap: 10px; min-width: 0; }
 .model-wrap { margin-left: auto; min-width: 0; max-width: 100%; }
 .picker-btn { display: block; max-width: 100%; height: 26px; line-height: 22px; padding: 2px 8px; border-radius: 3px; background: transparent; color: var(--vscode-foreground); font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; opacity: .8; }
 .picker-btn:hover { background: var(--vscode-toolbar-hoverBackground); opacity: 1; }
@@ -166,7 +166,8 @@ button:disabled { opacity: .5; cursor: not-allowed; }
 <div class="dummy">
   <b>UI dummy · monarch 0.24.0 · chats side by side</b>
   <span>Only for the look; no awork connection.</span>
-  <label>Notes position <select id="d_notes_pos"><option value="right">right</option><option value="left">left</option></select></label>
+  <label>monarch.notesPosition <select id="d_notes_pos"><option value="left">left</option><option value="right">right</option></select></label>
+  <label>monarch.newChatPosition <select id="d_new_pos"><option value="right">right</option><option value="left">left</option></select></label>
   <label><input type="checkbox" id="d_staged"> files staged (active chat)</label>
   <label><input type="checkbox" id="d_unknown"> values not readable</label>
   <button id="d_reset">Reset</button>
@@ -181,7 +182,7 @@ button:disabled { opacity: .5; cursor: not-allowed; }
         <div class="menu-wrap"><button class="icon-btn" id="history" title="Chat history"><svg viewBox="0 0 16 16" width="19" height="19" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 8a5.5 5.5 0 1 0 1.6-3.9"/><path d="M2.5 2.4v2.7h2.7"/><path d="M8 5v3.2l2.2 1.4"/></svg></button><div class="menu right hidden" id="history_menu"></div></div>
         <div class="menu-wrap"><button class="icon-btn primary" id="new_chat" title="New chat"><svg viewBox="0 0 16 16" width="19" height="19" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M8 3.5v9M3.5 8h9"/></svg></button><div class="menu right hidden" id="new_menu"></div></div>
       </div>
-      <div class="main" id="main">
+      <div class="main notes-left" id="main">
         <div class="areas" id="areas"></div>
         <div class="notes-pane hidden" id="notes_pane"><div class="notes-splitter" id="notes_splitter"></div><div id="notes_groups" style="display:flex;flex-direction:column;flex:1;min-height:0"></div></div>
       </div>
@@ -254,6 +255,7 @@ function drag_split(sizes, index, delta_px, total_px, min_px) {
   px[index + 1] = pair - px[index];
   return px.map(value => value / total_px);
 }
+const insert_index = (count, position) => position === 'left' ? 0 : count;
 const next_active = (ids, removed_id, active_id) => {
   if (removed_id !== active_id) return active_id;
   const index = ids.indexOf(removed_id);
@@ -272,7 +274,7 @@ const $ = id => document.getElementById(id);
 function reset() {
   chats = sample_chats(); next_chat_id = 4; input_height = 84; notes_width = 260;
   areas = []; active_id = null; $('areas').replaceChildren();
-  for (const chat_id of [1, 2]) add_area(chat_id);
+  for (const chat_id of [1, 2]) add_area_at_end(chat_id);
   set_active(areas[0].id);
   $('notes_pane').classList.remove('hidden'); $('notes_toggle').classList.add('active');
   render_notes();
@@ -280,12 +282,13 @@ function reset() {
 
 // ---------- areas ----------
 let area_seq = 0;
+function add_area_at_end(chat_id) { const pos = $('d_new_pos').value; $('d_new_pos').value = 'right'; add_area(chat_id); $('d_new_pos').value = pos; }
 function add_area(chat_id) {
   const root = $('area_template').content.firstElementChild.cloneNode(true);
   const el = name => root.querySelector(`[data-el="${name}"]`);
   const chat = chat_of(chat_id);
   const area = { id: ++area_seq, chat_id, root, el, working: false, staged: false, model: null, level: null, timer: null };
-  areas.push(area);
+  areas.splice(insert_index(areas.length, $('d_new_pos').value), 0, area);
   el('input').style.height = `${input_height}px`;
   if (chat_id === 1) el('attachments').innerHTML = '<span class="chip">docs/multichat_v2.md</span>';
   wire_area(area);
@@ -523,7 +526,7 @@ function render_new_menu() {
       if (!can_change(area)) return notice(area, 'Stop the agent first.');
       area.chat_id = new_chat(effective(area).chat).id; area.model = null; render_area(area); render_notes();
     } }),
-    menu_item('New chat right', full ? 'max. 4' : '', { disabled: full, action: () => {
+    menu_item(`New chat ${$('d_new_pos').value}`, full ? 'max. 4' : '', { disabled: full, action: () => {
       const area = add_area(new_chat(effective(active_area()).chat).id);
       set_active(area.id); area.el('input').focus();
     } }));

@@ -90,7 +90,7 @@ Die Meldung listet die bereitgehaltenen Dateien je Co-Agent (`files (staged, not
 
 **Bereitgehaltene Dateien:** Dateien von Co-Agenten schreibt monarch nicht direkt ins Repo. Es hält sie außerhalb des Repos bereit (je Pfad die zuletzt gelieferte Version), bis Du `commit` ausführst. `commit` schreibt immer alle bereitgehaltenen Dateien. Ein neuer Chat verwirft alle bereitgehaltenen Dateien. monarch stellt jeder Nachricht an einen Co-Agenten den Vorspann `[monarch files]` voran: Lieferung unter demselben Repo-Pfad, LF-Zeilenenden, keine Suffix-Kopien.
 
-**Limits:** Credits und Co-Agent-Zahl sind je Chat begrenzt (`maxCredits`, `maxCoAgentCredits`, `maxCoAgents`). Das Erreichen einer Credit-Grenze stoppt Dich und alle Co-Agenten. Befehle außerhalb der Grenzen verweigert monarch und meldet es Dir. Umgehe die Limits nicht, benenne dem Nutzer die Einschränkung. Halte Briefings, Korrekturrunden und Statusmeldungen kurz.
+**Credits:** monarch zeigt Credits und Co-Agenten je Chat nur an und begrenzt sie nicht. Halte Briefings, Korrekturrunden und Statusmeldungen kurz.
 
 Schreibe Zwischenmeldungen nur, wenn sie dem Nutzer eine Entscheidung, Rückfrage oder einen relevanten Status vermitteln; eine reine Steuerungsrunde kann nur ORCA-Blöcke enthalten.
 
