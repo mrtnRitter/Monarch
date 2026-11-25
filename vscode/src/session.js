@@ -801,7 +801,7 @@ class ChatSession {
         const message_id = last_answer?.id;
         const created = Date.parse(last_answer?.createdOn) || Date.now();
         const credit_key = message_id ? String(message_id) : `local-${++this.local_keys}`;
-        this.ui.message({ role: 'agent', text: shown || (questions.length ? '' : state === 'completed' ? '(no answer)' : `(run ${state})`), files: written.files, warnings: written.warnings, duration_ms, credit_key, credits: null, created });
+        this.ui.message({ role: 'agent', text: shown || (questions.length ? '' : state === 'completed' ? activity_summary(commands, written.files) : `(run ${state})`), files: written.files, warnings: written.warnings, duration_ms, credit_key, credits: null, created });
         this._answer_credits(thread_id, credit_key, baseline, Boolean(message_id));
         questions.forEach(question => this.ui.message(question));
         if (!commands.length) return null;
@@ -1754,7 +1754,8 @@ class ChatSession {
                 asked_at = created;
                 return [text.startsWith(relay_prefix) ? { role: 'step', text: relay_text(`relay: ${_first_line(text.slice(relay_prefix.length)) || 'co-agent update'}`) } : { role: 'user', text: strip_notes(strip_context(text)), created }];
             }
-            const shown = _without_questions(parse_commands(text).text, questions);
+            const parsed = parse_commands(text);
+            const shown = _without_questions(parsed.text, questions) || (questions.length ? '' : activity_summary(parsed.commands, []));
             const credit_key = message.id ? String(message.id) : null;
             const credits = credit_key ? this.state.answer_credits?.[credit_key] : null;
             return [...steps, { role: 'agent', text: shown, created, duration_ms: asked_at && created ? created - asked_at : null, credit_key, credits: Number.isFinite(credits) ? credits : null }, ...questions];
@@ -1762,4 +1763,16 @@ class ChatSession {
     }
 }
 
-module.exports = { ChatSession, Notice, StopRequested, Superseded, answer_of, answer_text, pending_question, questions_of, relay_prefix, relay_text, step_text, files_preamble };
+function activity_summary(commands, written_files) {
+    const counts = new Map();
+    for (const { action } of commands) counts.set(action, (counts.get(action) || 0) + 1);
+    const command_list = [...counts].map(([action, count]) => `${action}${count > 1 ? ` ×${count}` : ''}`).join(', ');
+    const file_list = written_files.slice(0, 5).map(file => file.path);
+    if (written_files.length > 5) file_list.push(`+${written_files.length - 5} more`);
+    const parts = [];
+    if (command_list) parts.push(`Commands: ${command_list}`);
+    if (file_list.length) parts.push(`Files: ${file_list.join(', ')}`);
+    return parts.join(' · ');
+}
+
+module.exports = { ChatSession, Notice, StopRequested, Superseded, answer_of, answer_text, activity_summary, pending_question, questions_of, relay_prefix, relay_text, step_text, files_preamble };

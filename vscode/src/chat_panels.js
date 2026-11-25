@@ -7,7 +7,6 @@ const { chat_html } = require('./chat_html');
 const { insert_index, next_active } = require('../media/chat_layout');
 const { log } = require('./log');
 
-const max_areas = 4;
 const global_messages = new Set(['host_ready', 'focus_area', 'add_chat', 'close_area', 'notes_visible', 'notes_width', 'set_notes']);
 const close_notice = 'Close the chat when the agent has finished and no files are staged.';
 
@@ -151,7 +150,6 @@ class ChatPanels {
             notes_width: this.context.globalState.get('monarch.notesWidth') ?? null,
             notes_position: this.notes_position,
             new_chat_position: this.new_chat_position,
-            max_areas,
             input_height: this.context.globalState.get('monarch.inputHeight') || null,
         });
         this.entries.forEach((entry, index) => this._post_message({ type: 'add_area', chat_id: entry.chat.id, index }));
@@ -169,11 +167,6 @@ class ChatPanels {
     }
 
     add_chat() {
-        if (this.entries.length >= max_areas) {
-            const active = this._entry(this.active_id) || this.entries[0];
-            this._post_message({ type: 'error', chat_id: active?.chat.id, text: 'Max. 4 chats open.', transient: true });
-            return null;
-        }
         const active = this._entry(this.active_id) || this.entries[0];
         let repo = null;
         try { repo = active?.chat.current_repo?.() || null; } catch (error) { this._log_error(error); }

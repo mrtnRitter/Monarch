@@ -87,7 +87,7 @@ try {
     assert.deepEqual(scripts, ['markdown.js', 'chat_time.js', 'chat_scroll.js', 'chat_layout.js', 'chat.js', 'chat_host.js']);
     assert.match(html, /default-src 'none'; style-src vscode-resource:; img-src data:; script-src 'nonce-[0-9a-f]{32}';/);
 
-    post({ type: 'host_init', notes_visible: false, notes_width: 220, notes_position: 'left', new_chat_position: 'left', max_areas: 3, input_height: 84 });
+    post({ type: 'host_init', notes_visible: false, notes_width: 220, notes_position: 'left', new_chat_position: 'left', input_height: 84 });
     assert.equal(window.document.body.classList.contains('notes-left'), true);
     assert.equal(window.document.getElementById('notes_pane').style.flexBasis, '220px');
     post({ type: 'add_area', chat_id: 'chat-a', index: 0 });
@@ -200,25 +200,12 @@ try {
 
     const new_button = window.document.getElementById('new_chat');
     new_button.click();
-    let new_menu = window.document.getElementById('new_menu');
-    assert.equal(new_menu.classList.contains('hidden'), false);
-    assert.deepEqual([...new_menu.querySelectorAll('.item-label')].map(node => node.textContent), ['New chat here', 'New chat left']);
-    const disabled_add = click_item(new_menu, 'New chat left');
-    assert.equal(disabled_add.classList.contains('disabled'), true);
-    assert.notEqual(posted.at(-1).type, 'add_chat');
-    click_item(new_menu, 'New chat here');
-    assert.deepEqual(posted.at(-1), { chat_id: 'chat-a', type: 'new_chat' });
+    assert.deepEqual(posted.at(-1), { type: 'add_chat' });
     new_button.dispatchEvent(new window.MouseEvent('click', { bubbles: true, metaKey: true }));
     assert.deepEqual(posted.at(-1), { chat_id: 'chat-a', type: 'import_chat' });
-    post({ type: 'host_init', notes_visible: false, notes_width: 220, notes_position: 'right', new_chat_position: 'right', max_areas: 4, input_height: 84 });
+    post({ type: 'host_init', notes_visible: false, notes_width: 220, notes_position: 'right', new_chat_position: 'right', input_height: 84 });
     assert.equal(window.document.body.classList.contains('notes-right'), true);
-    new_button.click();
-    new_menu = window.document.getElementById('new_menu');
-    assert.deepEqual([...new_menu.querySelectorAll('.item-label')].map(node => node.textContent), ['New chat here', 'New chat right']);
-    click_item(new_menu, 'New chat right');
-    assert.deepEqual(posted.at(-1), { type: 'add_chat' });
-
-    post({ type: 'host_init', notes_visible: true, notes_width: 220, notes_position: 'right', new_chat_position: 'right', max_areas: 4, input_height: 84 });
+    post({ type: 'host_init', notes_visible: true, notes_width: 220, notes_position: 'right', new_chat_position: 'right', input_height: 84 });
     assert.equal(window.document.getElementById('notes_pane').classList.contains('hidden'), false);
     notes_toggle_click();
     assert.deepEqual(posted.at(-1), { type: 'notes_visible', visible: false });
@@ -249,7 +236,6 @@ try {
     assert.deepEqual(posted.at(-1), { type: 'notes_width', width: 270 });
 
     window.document.body.dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
-    assert.equal(new_menu.classList.contains('hidden'), true);
     post({ type: 'remove_area', chat_id: 'chat-a' });
     assert.equal(instances.get('chat-a').disposed, true);
     assert.equal(window.document.querySelector('#areas [data-el="chat"]').dataset.el, 'chat');

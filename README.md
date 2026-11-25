@@ -122,7 +122,7 @@ All settings are optional. The agent list comes from awork (see `monarch.agentFi
 | `monarch.relayDiff` | `inline` | Diffs of newly staged co-agent files in the relay: `inline`, `attach` (always as `<name>.diff` attachment) or `off` |
 | `monarch.relayDiffMaxKB` | `40` | Max. total size of inline diffs per relay; the largest diffs beyond it are attached instead |
 | `monarch.notesPosition` | `left` | Side of the notes pane next to all chats: `left` or `right`; changes apply immediately |
-| `monarch.newChatPosition` | `right` | Side where a new chat area from the **+** menu or `monarch.addChat` opens: `right` or `left`; changes apply immediately without moving open areas |
+| `monarch.newChatPosition` | `right` | Side where a new chat area opened by **+** or `monarch.addChat` opens: `right` or `left`; changes apply immediately without moving open areas |
 | `monarch.reposRoot` | `""` | Folder whose direct subfolders with `.git` are the repos you can pick for a chat; empty = parent folders of the open workspace folders. Open workspace folders are always listed. |
 | `monarch.syncInterval` | `4` | Seconds between checks for new messages of the current chat written elsewhere (e.g. awork web app) while the chat window is visible; while the agent is working, a newer message of yours written elsewhere ends the wait; `0` = off |
 
@@ -133,12 +133,12 @@ All settings are optional. The agent list comes from awork (see `monarch.agentFi
 
 | Element | Function |
 |---|---|
-| Chat areas | The monarch sidebar shows up to 4 chats side by side. Drag the dividers between chats to resize them; each chat area is at least 300 px wide. |
+| Chat areas | The monarch sidebar shows chats side by side. Drag the dividers between chats to resize them; each chat area is at least 300 px wide. The number of open chats is not limited; when space is tight, the area scrolls horizontally. |
 | Top bar | **Notes**, **History**, and **+** appear once above all chats. |
 | Repo (colored dot + name) | Click to open a filterable list of all repos, including repos not open in VS Code; type to filter, use ↑ / ↓ and Enter to select, or Esc to close. Open workspace folders are always listed. A selected repo that is not open is added directly in a multi-root window. In a single-folder window, monarch asks before adding it and does so only when no chat is working, no co-agent is working or waiting, and no files are staged; the window then becomes an untitled multi-root workspace. The next message carries the new `[monarch context]` line. |
 | Notes (note sheet) | In the top bar: shows or hides the notes pane, which spans the full height beside all chats on the left or right according to `monarch.notesPosition`; the visibility setting applies to all chats. |
 | History (clock) | Chats of the selected agent from all repos (max. 100), newest first, with repo name and date; click to open a chat in the active area, or focus its existing area; ✕ removes it from the list (the chat stays in awork). |
-| New chat (blue +) | Opens a menu: **New chat here** starts a chat in this area; **New chat right** or **New chat left** adds a new area beside the open chats, on the configured side (not in the active area), carrying over the active area’s repo and agent and becoming active. **Ctrl/Cmd+click** on **+** takes over a chat from awork in the active area. |
+| New chat (blue +) | Click **+** to open a new chat beside the open chats, on the side configured by `monarch.newChatPosition`; it carries over the active area’s repo and agent and becomes active. **Ctrl/Cmd+click** on **+** imports a chat from awork into the active area. |
 | Terminal | Each chat has a **Terminal** button in its bottom row; it opens or shows the `monarch: <repo>` terminal in the chat's repo in the panel. The **Terminal** code-block action uses it. |
 | Bottom row | Each chat has its repo button, **Terminal**, **×** (when available, close; the chat stays in History), and **Send** or **Stop**. The close button is available with at least 2 chats when no agent or co-agent is working or waiting and no files are staged. |
 | Message times | Every message shows its time; a thin line with the date separates messages from different days. |
@@ -230,7 +230,7 @@ For every file staged since the last relay, the co-agent's part of the relay end
 
 ## Several repos in one window
 
-Each chat belongs to one repo, including repos that are not open in VS Code. Up to 4 chats can appear side by side in the monarch sidebar. Click the colored dot and repo name in a chat to open a filterable list of all repos (type to filter, ↑ ↓ Enter, Esc). Open workspace folders are always listed.
+Each chat belongs to one repo, including repos that are not open in VS Code. There is no limit on the number of open chats; when space is tight, the chat area scrolls horizontally. Click the colored dot and repo name in a chat to open a filterable list of all repos (type to filter, ↑ ↓ Enter, Esc). Open workspace folders are always listed.
 
 A selected repo that is not open is added directly to a multi-root workspace. In a single-folder window, monarch asks before adding it; it does so only when no chat is working, no co-agent is working or waiting, and no files are staged. The window then becomes an untitled multi-root workspace.
 
@@ -238,7 +238,7 @@ You can also change the repo of an existing chat, but not while the agent or co-
 
 Every repo keeps its color permanently (dot and terminal); a new repo gets a color no open chat uses.
 
-**+** opens a menu: **New chat here** | **New chat right** / **New chat left** (according to `monarch.newChatPosition`). **Ctrl/Cmd+click** on **+** takes over a chat from awork into the active area.
+Click **+** to open a new chat beside the open chats, on the side set by `monarch.newChatPosition`. **Ctrl/Cmd+click** on **+** imports a chat from awork into the active area.
 
 Folder attachments work for repos open in VS Code; single files work everywhere.
 
@@ -260,6 +260,6 @@ For terminal tabs with repo names, use this settings JSON block:
 | Command | Effect |
 |---|---|
 | `monarch: Sign in` / `monarch: Sign out` | OAuth sign-in in the browser / delete the stored sign-in |
-| `monarch: New chat` | Starts a new chat in the active chat area (like **New chat here**) |
+| `monarch: New chat` | Starts a new chat in the active chat area |
 | `monarch: Add chat` (`monarch.addChat`) | Adds a new chat area beside the open chats, on the right or left according to `monarch.newChatPosition` (not in the active area) |
 | `monarch: Stop agent and co-agents` | Same as the Stop button |

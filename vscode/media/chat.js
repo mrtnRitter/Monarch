@@ -520,7 +520,7 @@ window.monarch_chat = {
                 button.addEventListener('click', () => {
                     if (instant) return on_choose(option) && button.classList.add('chosen');
                     if (!question.multi) buttons.forEach(node => node !== button && node.classList.remove('chosen'));
-                    if (question.multi) button.classList.toggle('chosen'); else button.classList.add('chosen');
+                    button.classList.toggle('chosen');
                     on_choose();
                 });
                 card.appendChild(button);

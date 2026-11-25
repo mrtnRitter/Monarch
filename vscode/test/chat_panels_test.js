@@ -141,12 +141,15 @@ async function main() {
         const { manager } = make_manager();
         const view = make_view();
         manager.resolveWebviewView(view);
-        let latest = manager.entries[0].chat;
-        for (let index = 0; index < 3; index += 1) latest = manager.add_chat();
-        view.sent.length = 0;
-        manager.add_chat();
-        assert.deepEqual(view.sent.at(-1), { type: 'error', chat_id: latest.id, text: 'Max. 4 chats open.', transient: true });
-        assert.equal(manager.entries.length, 4);
+        for (let index = 0; index < 5; index += 1) {
+            const previous_count = manager.entries.length;
+            assert.ok(manager.add_chat());
+            assert.equal(manager.entries.length, previous_count + 1);
+        }
+        assert.equal(view.sent.some(message => message.text === ['Max.', ' 4 chats open.'].join('')), false);
+        view.receive({ type: 'host_ready' });
+        const host_init = view.sent.find(message => message.type === 'host_init');
+        assert.equal(Object.hasOwn(host_init, ['max', 'areas'].join('_')), false);
     }
     {
         const { manager } = make_manager();
@@ -237,7 +240,7 @@ async function main() {
         replacement.receive({ type: 'host_ready' });
         assert.deepEqual(replacement.sent.filter(message => message.type === 'add_area').map(message => message.chat_id), [active.id, second.id]);
         assert.deepEqual(replacement.sent.find(message => message.type === 'host_init'), {
-            type: 'host_init', notes_visible: false, notes_width: null, notes_position: 'left', new_chat_position: 'right', max_areas: 4, input_height: null,
+            type: 'host_init', notes_visible: false, notes_width: null, notes_position: 'left', new_chat_position: 'right', input_height: null,
         });
         assert.deepEqual(replacement.sent.filter(message => message.type === 'focus_area').at(-1), { type: 'focus_area', chat_id: second.id });
         assert.doesNotThrow(() => manager.entries[0].port.webview.postMessage({ type: 'x' }));

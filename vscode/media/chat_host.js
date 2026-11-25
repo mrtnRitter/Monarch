@@ -13,7 +13,6 @@
     const history_button = document.getElementById('history');
     const history_menu = document.getElementById('history_menu');
     const new_chat_button = document.getElementById('new_chat');
-    const new_menu = document.getElementById('new_menu');
     const areas = [];
     const note_cache = new Map();
     const note_nodes = new Map();
@@ -28,7 +27,6 @@
     let notes_width = null;
     let notes_position = 'left';
     let new_chat_position = 'right';
-    let max_areas = 4;
     let input_height = null;
     let ready_sent = false;
 
@@ -49,7 +47,6 @@
         for (const item of areas) item.root.classList.toggle('active', areas.length > 1 && item.chat_id === active_id);
         if (changed) {
             render_history();
-            render_new_menu();
             if (notify) post({ type: 'focus_area', chat_id });
         }
         if (focus) area.instance?.focus();
@@ -135,7 +132,7 @@
     }
 
     function add_area(chat_id, index) {
-        if (chat_id === undefined || chat_id === null || area_of(chat_id) || areas.length >= max_areas) return;
+        if (chat_id === undefined || chat_id === null || area_of(chat_id)) return;
         const root = template.content.firstElementChild.cloneNode(true);
         const area = { chat_id, root, instance: null, chats: [], can_change: false, agent_id: null };
         root.addEventListener('pointerdown', () => set_active(chat_id), true);
@@ -154,7 +151,6 @@
             post: message => post_area(area, message),
         });
         if (active_id === null || !area_of(active_id)) set_active(chat_id, { notify: false });
-        else render_new_menu();
         render_notes();
     }
 
@@ -179,7 +175,6 @@
 
     function close_host_menus() {
         history_menu.classList.add('hidden');
-        new_menu.classList.add('hidden');
     }
 
     function menu_header(text) {
@@ -244,21 +239,6 @@
         history_menu.replaceChildren(menu_header('Chat history'), ...(items.length ? items : [menu_note('No chats yet.') ]));
     }
 
-    function render_new_menu() {
-        const active = area_of(active_id);
-        const position = new_chat_position === 'left' ? 'left' : 'right';
-        const add_disabled = areas.length >= max_areas;
-        const items = [menu_item('New chat here', '', {
-            disabled: !active,
-            action: () => { close_host_menus(); if (active) post_area(active, { type: 'new_chat' }); },
-        })];
-        items.push(menu_item(`New chat ${position}`, '', {
-            disabled: add_disabled,
-            action: () => { close_host_menus(); post({ type: 'add_chat' }); },
-        }));
-        new_menu.replaceChildren(...items);
-    }
-
     function open_menu(menu, render) {
         const opening = menu.classList.contains('hidden');
         close_host_menus();
@@ -279,14 +259,15 @@
             close_host_menus();
             return;
         }
-        open_menu(new_menu, render_new_menu);
+        close_host_menus();
+        post({ type: 'add_chat' });
     });
     notes_toggle.addEventListener('click', event => {
         event.stopPropagation();
         set_notes_visible(!notes_visible, true);
     });
     document.addEventListener('click', event => {
-        if (!history_menu.contains(event.target) && !new_menu.contains(event.target)) close_host_menus();
+        if (!history_menu.contains(event.target)) close_host_menus();
     });
     document.addEventListener('keydown', event => {
         if (!(event.ctrlKey || event.metaKey) || event.altKey || event.shiftKey || event.key.toLowerCase() !== 'c') return;
@@ -508,12 +489,10 @@
             notes_width = Number.isFinite(message.notes_width) ? message.notes_width : null;
             notes_position = message.notes_position === 'right' ? 'right' : 'left';
             new_chat_position = message.new_chat_position === 'left' ? 'left' : 'right';
-            max_areas = Number.isInteger(message.max_areas) && message.max_areas > 0 ? message.max_areas : 4;
             input_height = Number.isFinite(message.input_height) ? message.input_height : null;
             set_notes_position(notes_position);
             set_notes_visible(notes_visible);
             if (notes_width !== null) set_notes_width(notes_width);
-            render_new_menu();
             return;
         }
         if (message.type === 'add_area') {
@@ -544,7 +523,6 @@
         }
         if (message.type === 'new_chat_position') {
             new_chat_position = message.position === 'left' ? 'left' : 'right';
-            render_new_menu();
             return;
         }
         if (message.type === 'error' && message.chat_id === undefined) {
