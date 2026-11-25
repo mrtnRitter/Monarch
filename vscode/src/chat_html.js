@@ -36,10 +36,12 @@ function chat_html({ webview, extension_uri }) {
 <div class="attachments" data-el="attachments"></div>
 <div class="input-editor-wrap"><textarea data-el="input" rows="3" placeholder="Message … (Enter = send, Shift+Enter = new line)"></textarea></div>
 <div class="bottom-row">
-<div class="menu-wrap repo-wrap"><button class="repo-btn" data-el="repo" title="Repo of this chat"><span class="repo-dot" data-el="repo_dot"></span><span data-el="repo_name"></span></button><div class="menu up hidden" data-el="repo_menu"><div class="menu-header">Repo of this chat</div><input class="menu-filter" data-el="repo_filter" type="text" placeholder="Filter repos …" spellcheck="false"><div class="repo-list"></div></div></div>
-<button class="icon-btn small" data-el="terminal" title="Terminal for this repo"><svg viewBox="0 0 16 16" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 3.5h11v9h-11z"/><path d="M5 6.5l2 1.5-2 1.5"/><path d="M8.5 10h2.5"/></svg></button>
+<div class="bottom-left">
 <button class="icon-btn small" data-el="close" title="Close this chat"><svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M4 4l8 8M12 4l-8 8"/></svg></button>
-<span class="grow"></span><button class="send-btn" data-el="send">Send</button><button class="stop-btn hidden" data-el="stop">Stop</button>
+<button class="icon-btn small" data-el="terminal" title="Terminal for this repo"><svg viewBox="0 0 16 16" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 3.5h11v9h-11z"/><path d="M5 6.5l2 1.5-2 1.5"/><path d="M8.5 10h2.5"/></svg></button>
+</div>
+<div class="menu-wrap repo-wrap"><button class="repo-btn" data-el="repo" title="Repo of this chat"><span class="repo-dot" data-el="repo_dot"></span><span class="repo-name" data-el="repo_name"></span></button><div class="menu up hidden" data-el="repo_menu"><div class="menu-header">Repo of this chat</div><input class="menu-filter" data-el="repo_filter" type="text" placeholder="Filter repos …" spellcheck="false"><div class="repo-list"></div></div></div>
+<div class="bottom-right"><button class="send-btn" data-el="send">Send</button><button class="stop-btn hidden" data-el="stop">Stop</button></div>
 </div>
 </div>
 </div>

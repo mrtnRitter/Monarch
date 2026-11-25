@@ -198,7 +198,7 @@ span.avatar {
 .splitter { height: 7px; margin-top: -3px; display: flex; align-items: center; cursor: ns-resize; touch-action: none; position: relative; z-index: 1; }
 .splitter::before { content: ''; flex: 1; height: 1px; background: var(--vscode-panel-border); }
 .splitter:hover::before, .splitter.dragging::before { height: 3px; background: var(--vscode-sash-hoverBorder, var(--vscode-focusBorder)); }
-.input-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 6px; position: relative; padding: 4px var(--pad) 0; }
+.input-toolbar { display: grid; grid-template-columns: minmax(max-content, 1fr) minmax(0, max-content) minmax(0, 1fr); align-items: center; gap: 4px 6px; position: relative; padding: 4px var(--pad) 0; }
 .picker-btn {
   display: inline-flex; align-items: center; gap: 4px; padding: 2px 8px; border-radius: 3px; background: transparent;
   color: var(--vscode-foreground); font-size: calc(var(--vscode-font-size) - 1px); white-space: nowrap; opacity: 0.8;
@@ -280,21 +280,25 @@ span.avatar {
 .levels { display: flex; flex-wrap: nowrap; overflow-x: auto; align-items: center; gap: 4px; padding: 2px 10px 6px 30px; }
 .level { padding: 1px 8px; border-radius: 10px; background: var(--vscode-button-secondaryBackground); color: var(--vscode-button-secondaryForeground); font-size: 0.9em; white-space: nowrap; flex-shrink: 0; }
 .level.selected { background: var(--vscode-button-background); color: var(--vscode-button-foreground); }
-.input-toolbar .attach-wrap { position: relative; }
-.toolbar-status { display: flex; flex-wrap: wrap; gap: 10px; min-width: 0; }
-.model-wrap { margin-left: auto; min-width: 0; max-width: 100%; }
+.input-toolbar .attach-wrap { position: relative; justify-self: start; }
+.toolbar-status { display: flex; flex-wrap: wrap; justify-content: center; gap: 10px; min-width: 0; }
+.model-wrap { justify-self: end; min-width: 0; max-width: 100%; }
 .input-toolbar .picker-btn { display: block; max-width: 100%; line-height: 22px; overflow: hidden; text-overflow: ellipsis; }
 
 .msg-time { font-size: 0.75em; opacity: 0.6; text-align: right; margin-top: 2px; }
 .date-divider { display: flex; align-items: center; gap: 8px; font-size: 0.8em; opacity: 0.6; }
 .date-divider::before, .date-divider::after { content: ''; flex: 1; border-top: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.35)); }
 
-.bottom-row { display: flex; align-items: center; gap: 2px; padding: 4px var(--pad) 10px; }
-.grow { flex: 1; }
-.repo-btn { display: flex; align-items: center; gap: 4px; max-width: 45%; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; background: transparent; border: none; color: inherit; font-size: 0.85em; padding: 0 4px; }
+.bottom-row { display: grid; grid-template-columns: minmax(max-content, 1fr) minmax(0, max-content) minmax(max-content, 1fr); align-items: center; gap: 4px; padding: 4px var(--pad) 10px; }
+.bottom-left, .bottom-right { display: flex; align-items: center; gap: 2px; }
+.bottom-left { justify-self: start; }
+.bottom-right { justify-self: end; }
+.repo-wrap { justify-self: center; min-width: 0; max-width: 100%; }
+.repo-btn { display: flex; align-items: center; gap: 4px; max-width: 100%; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; background: transparent; border: none; color: inherit; font-size: 0.85em; padding: 0 4px; }
+.repo-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .repo-btn:disabled { cursor: default; opacity: 0.85; }
 .repo-btn:disabled:hover { background: transparent; }
-[data-el="repo_menu"] { left: 0; min-width: 220px; }
+[data-el="repo_menu"] { left: 50%; transform: translateX(-50%); min-width: 220px; }
 .menu-filter {
   display: block; width: 100%; margin: 4px 0; padding: 4px 6px;
   color: var(--vscode-input-foreground); background: var(--vscode-input-background); border: 1px solid var(--vscode-input-border);
