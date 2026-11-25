@@ -27,6 +27,7 @@
     let notes_width = null;
     let notes_position = 'left';
     let new_chat_position = 'right';
+    let input_empty_lines = 1;
     let input_height = null;
     let ready_sent = false;
 
@@ -148,6 +149,7 @@
             root,
             chat_id,
             input_height,
+            input_empty_lines,
             post: message => post_area(area, message),
         });
         if (active_id === null || !area_of(active_id)) set_active(chat_id, { notify: false });
@@ -489,6 +491,7 @@
             notes_width = Number.isFinite(message.notes_width) ? message.notes_width : null;
             notes_position = message.notes_position === 'right' ? 'right' : 'left';
             new_chat_position = message.new_chat_position === 'left' ? 'left' : 'right';
+            input_empty_lines = message.input_empty_lines;
             input_height = Number.isFinite(message.input_height) ? message.input_height : null;
             set_notes_position(notes_position);
             set_notes_visible(notes_visible);
@@ -523,6 +526,12 @@
         }
         if (message.type === 'new_chat_position') {
             new_chat_position = message.position === 'left' ? 'left' : 'right';
+            return;
+        }
+        if (message.type === 'input_empty_lines') {
+            const value = message.value;
+            input_empty_lines = value;
+            areas.forEach(area => area.instance?.set_input_empty_lines?.(value));
             return;
         }
         if (message.type === 'error' && message.chat_id === undefined) {

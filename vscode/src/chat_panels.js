@@ -31,6 +31,7 @@ class ChatPanels {
             .filter(Boolean));
         this.notes_position = _config().get('notesPosition') === 'right' ? 'right' : 'left';
         this.new_chat_position = _config().get('newChatPosition') === 'left' ? 'left' : 'right';
+        this.input_empty_lines = _config().get('inputEmptyLines');
         this.sidebar = new ChatViewClass(context, client, oauth, this._options(null));
         const entry = { chat: this.sidebar, port: null };
         this.entries = [entry];
@@ -150,6 +151,7 @@ class ChatPanels {
             notes_width: this.context.globalState.get('monarch.notesWidth') ?? null,
             notes_position: this.notes_position,
             new_chat_position: this.new_chat_position,
+            input_empty_lines: this.input_empty_lines,
             input_height: this.context.globalState.get('monarch.inputHeight') || null,
         });
         this.entries.forEach((entry, index) => this._post_message({ type: 'add_area', chat_id: entry.chat.id, index }));
@@ -260,6 +262,11 @@ class ChatPanels {
     set_new_chat_position(position) {
         this.new_chat_position = position === 'left' ? 'left' : 'right';
         this._post_message({ type: 'new_chat_position', position: this.new_chat_position });
+    }
+
+    set_input_empty_lines(value) {
+        this.input_empty_lines = value;
+        this._post_message({ type: 'input_empty_lines', value });
     }
 
     active() {

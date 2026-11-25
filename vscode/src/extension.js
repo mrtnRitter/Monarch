@@ -51,6 +51,7 @@ function activate(context) {
             }
             if (event.affectsConfiguration('monarch.notesPosition')) panels.set_notes_position(_config().get('notesPosition'));
             if (event.affectsConfiguration('monarch.newChatPosition')) panels.set_new_chat_position(_config().get('newChatPosition'));
+            if (event.affectsConfiguration('monarch.inputEmptyLines')) panels.set_input_empty_lines(_config().get('inputEmptyLines'));
         }),
         vscode.workspace.onDidChangeWorkspaceFolders(() => panels.all().forEach(chat => chat.refresh())),
     );

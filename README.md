@@ -46,8 +46,8 @@ Requirements: VS Code 1.85+ with the built-in Git extension, an awork account in
 
 ```bash
 cd monarch/vscode
-python build_vsix.py                         # -> monarch-0.25.0.vsix
-code --install-extension monarch-0.25.0.vsix
+python build_vsix.py                         # -> monarch-0.25.1.vsix
+code --install-extension monarch-0.25.1.vsix
 ```
 
 Or in VS Code: Extensions view → `…` → **Install from VSIX…**. `Optional local tests (node, no network): for f in test/*_test.js; do node "$f"; done` – `test/webview_notes_test.js` needs jsdom (`NODE_PATH=<folder>/node_modules`).
@@ -74,7 +74,7 @@ The skills use the neutral terms *main agent* and *co-agent* and the placeholder
 
 Every user, also the agent owner, does this once:
 
-1. **Install** `monarch-0.25.0.vsix` (see *Installation*) and reload VS Code (Command Palette → **Developer: Reload Window**).
+1. **Install** `monarch-0.25.1.vsix` (see *Installation*) and reload VS Code (Command Palette → **Developer: Reload Window**).
 2. **Sign in:** Open **monarch** in the activity bar and click **Sign in** (or Command Palette → **monarch: Sign in**). The browser opens; log in to awork and select the workspace.
 3. **Check the agents:** Open the **Model** menu in a chat to choose its agent. If an agent shared with you is missing, set **Monarch: Agent Filter** (`monarch.agentFilter`) to `all`.
 4. **Test files:** Start a **new chat** (blue **+**) and send: `Create output/download_test.txt with three lines.`
@@ -123,6 +123,7 @@ All settings are optional. The agent list comes from awork (see `monarch.agentFi
 | `monarch.relayDiffMaxKB` | `40` | Max. total size of inline diffs per relay; the largest diffs beyond it are attached instead |
 | `monarch.notesPosition` | `left` | Side of the notes pane next to all chats: `left` or `right`; changes apply immediately |
 | `monarch.newChatPosition` | `right` | Side where a new chat area opened by **+** or `monarch.addChat` opens: `right` or `left`; changes apply immediately without moving open areas |
+| `monarch.inputEmptyLines` | `1` | Empty lines kept below the text of the input while it grows automatically (1–10); changes apply immediately |
 | `monarch.reposRoot` | `""` | Folder whose direct subfolders with `.git` are the repos you can pick for a chat; empty = parent folders of the open workspace folders. Open workspace folders are always listed. |
 | `monarch.syncInterval` | `4` | Seconds between checks for new messages of the current chat written elsewhere (e.g. awork web app) while the chat window is visible; while the agent is working, a newer message of yours written elsewhere ends the wait; `0` = off |
 
@@ -149,7 +150,7 @@ All settings are optional. The agent list comes from awork (see `monarch.agentFi
 | Co-Agenten | The number of co-agents in the current job and how many are working, shown as a read-only value. |
 | Model | Opens its menu above the button, aligned to its right edge. Choose the agent for this chat, **Agent default** (uses the selected agent's settings), **Reasoning**, or an **AI model**. The agent choice applies to this chat; model and reasoning level apply to its next messages and are saved with the chat. |
 | Send / Stop | **Send** sends the message. While the agent works, **Stop** replaces Send: it stops the agent and all co-agents and closes the job. When the agent is idle, use **monarch: Stop agent and co-agents** to stop waiting co-agents. |
-| Line above the input | Drag up/down to resize the input (min. 3 lines, max. 70 % of the panel); the height is kept. While you type, the input grows upward so that 3 empty lines stay below the text, up to 70 % of the panel, then it scrolls; it shrinks back to the dragged height when the text gets shorter. |
+| Line above the input | Drag up/down to resize the input (min. 3 lines, max. 70 % of the panel); the height is kept. While you type, the input grows upward so that `monarch.inputEmptyLines` empty lines (default 1) stay below the text, up to 70 % of the panel, then it scrolls; it shrinks back to the dragged height when the text gets shorter. |
 | Line between chat and notes | Drag left/right to resize the notes pane (min. 120 px, max. 70 % of the panel); the width is kept |
 | Enter / Shift+Enter | Send / new line |
 | Ctrl+C / Cmd+C | Copies the selected text of the chat (or of the input) |

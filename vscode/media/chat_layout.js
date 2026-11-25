@@ -3,8 +3,12 @@
         equal_sizes(count) {
             return count > 0 ? Array.from({ length: count }, () => 1 / count) : [];
         },
-        auto_input_height({ text_px, line_px, base_px, max_px }) {
-            return Math.round(Math.min(max_px, Math.max(base_px, text_px + 3 * line_px)));
+        input_empty_lines(value) {
+            if (typeof value !== 'number' || !Number.isFinite(value)) return 1;
+            return Math.min(10, Math.max(1, Math.round(value)));
+        },
+        auto_input_height({ text_px, line_px, base_px, max_px, empty_lines }) {
+            return Math.round(Math.min(max_px, Math.max(base_px, text_px + empty_lines * line_px)));
         },
         drag_split(sizes, index, delta_px, total_px, min_px) {
             const next = sizes.slice();

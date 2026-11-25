@@ -1,6 +1,6 @@
 // monarch chat webview: renders agents, messages, history, model menu and status; forwards user actions to the extension.
 window.monarch_chat = {
-    create({ root, chat_id, post, input_height: initial_input_height }) {
+    create({ root, chat_id, post, input_height: initial_input_height, input_empty_lines }) {
         const { render_markdown, escape_html } = window.monarch_markdown;
         const { time_text, divider_for } = window.monarch_time;
         const element = name => root.querySelector('[data-el="' + name + '"]');
@@ -779,6 +779,7 @@ window.monarch_chat = {
 
         // --- input height: drag the line between messages and input; min. height comes from CSS ---
         let input_height = initial_input_height ?? null;
+        let empty_lines = window.monarch_layout.input_empty_lines(input_empty_lines);
         const input_wrap = input.closest('.input-editor-wrap');
         const mirror = document.createElement('textarea');
         mirror.tabIndex = -1;
@@ -807,7 +808,7 @@ window.monarch_chat = {
                 input.style.height = `${base_px}px`;
                 return;
             }
-            input.style.height = `${window.monarch_layout.auto_input_height({ text_px, line_px, base_px, max_px })}px`;
+            input.style.height = `${window.monarch_layout.auto_input_height({ text_px, line_px, base_px, max_px, empty_lines })}px`;
         }
         function set_input_height(height) {
             input_height = height;
@@ -895,6 +896,10 @@ window.monarch_chat = {
         return {
             on_message,
             focus() { element('input').focus({ preventScroll: true }); },
+            set_input_empty_lines(value) {
+                empty_lines = window.monarch_layout.input_empty_lines(value);
+                fit_input();
+            },
             dispose,
         };
     },

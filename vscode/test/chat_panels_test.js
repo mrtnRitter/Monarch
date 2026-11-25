@@ -3,7 +3,7 @@
 const assert = require('node:assert/strict');
 const Module = require('node:module');
 
-const config = { notesPosition: undefined, newChatPosition: undefined };
+const config = { notesPosition: undefined, newChatPosition: undefined, inputEmptyLines: 6 };
 const vscode = {
     Uri: { joinPath: (base, ...parts) => ({ path: [base?.path || '', ...parts].join('/') }) },
     workspace: { getConfiguration: () => ({ get: key => config[key] }) },
@@ -161,6 +161,8 @@ async function main() {
         assert.deepEqual(manager.entries.map(entry => entry.chat), [first, right]);
         assert.deepEqual(view.sent.filter(message => message.type === 'add_area').at(-1), { type: 'add_area', chat_id: right.id, index: 1 });
         manager.set_new_chat_position('left');
+        manager.set_input_empty_lines(3);
+        assert.deepEqual(view.sent.find(message => message.type === 'input_empty_lines'), { type: 'input_empty_lines', value: 3 });
         view.sent.length = 0;
         const left = manager.add_chat();
         assert.deepEqual(manager.entries.map(entry => entry.chat), [left, first, right]);
@@ -240,7 +242,7 @@ async function main() {
         replacement.receive({ type: 'host_ready' });
         assert.deepEqual(replacement.sent.filter(message => message.type === 'add_area').map(message => message.chat_id), [active.id, second.id]);
         assert.deepEqual(replacement.sent.find(message => message.type === 'host_init'), {
-            type: 'host_init', notes_visible: false, notes_width: null, notes_position: 'left', new_chat_position: 'right', input_height: null,
+            type: 'host_init', notes_visible: false, notes_width: null, notes_position: 'left', new_chat_position: 'right', input_empty_lines: 6, input_height: null,
         });
         assert.deepEqual(replacement.sent.filter(message => message.type === 'focus_area').at(-1), { type: 'focus_area', chat_id: second.id });
         assert.doesNotThrow(() => manager.entries[0].port.webview.postMessage({ type: 'x' }));
