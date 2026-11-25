@@ -11,6 +11,10 @@ function close(actual, expected) {
 close(layout.equal_sizes(3), [1 / 3, 1 / 3, 1 / 3]);
 close(layout.equal_sizes(1), [1]);
 close(layout.equal_sizes(0), []);
+assert.strictEqual(layout.auto_input_height({ text_px: 50, line_px: 20, base_px: 80, max_px: 500 }), 110);
+assert.strictEqual(layout.auto_input_height({ text_px: 10, line_px: 20, base_px: 80, max_px: 500 }), 80);
+assert.strictEqual(layout.auto_input_height({ text_px: 600, line_px: 20, base_px: 80, max_px: 500 }), 500);
+assert.strictEqual(layout.auto_input_height({ text_px: 50.4, line_px: 19.6, base_px: 0, max_px: 500 }), 109);
 close(layout.drag_split([0.5, 0.5], 0, 100, 1000, 300), [0.6, 0.4]);
 close(layout.drag_split([0.5, 0.5], 0, 400, 1000, 300), [0.7, 0.3]);
 close(layout.drag_split([0.5, 0.5], 0, -400, 1000, 300), [0.3, 0.7]);

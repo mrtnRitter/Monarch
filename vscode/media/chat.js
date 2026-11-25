@@ -769,22 +769,71 @@ window.monarch_chat = {
             open_cards.splice(0).forEach(card => card.lock());
             return true;
         }
+        const input = element('input');
         const send = () => {
-            if (send_text(element('input').value)) element('input').value = '';
+            if (send_text(input.value)) {
+                input.value = '';
+                fit_input();
+            }
         };
 
         // --- input height: drag the line between messages and input; min. height comes from CSS ---
         let input_height = initial_input_height ?? null;
+        const input_wrap = input.closest('.input-editor-wrap');
+        const mirror = document.createElement('textarea');
+        mirror.tabIndex = -1;
+        mirror.setAttribute('aria-hidden', 'true');
+        Object.assign(mirror.style, {
+            position: 'absolute', top: '0', left: '0', visibility: 'hidden',
+            pointerEvents: 'none', height: '0', minHeight: '0', overflow: 'hidden',
+        });
+        input_wrap?.append(mirror);
+        function input_height_limits() {
+            const max_px = Math.round(window.innerHeight * 0.7);
+            const parsed_min_px = parseFloat(window.getComputedStyle(input).minHeight);
+            const min_px = Number.isFinite(parsed_min_px) ? parsed_min_px : Math.min(input.offsetHeight || 0, max_px);
+            const base_px = Math.min(max_px, Math.max(min_px, input_height ?? 0));
+            return { min_px, max_px, base_px };
+        }
+        function fit_input() {
+            const { base_px, max_px } = input_height_limits();
+            const computed = window.getComputedStyle(input);
+            const line_height = parseFloat(computed.lineHeight);
+            const line_px = Number.isFinite(line_height) ? line_height : parseFloat(computed.fontSize) * 1.4;
+            mirror.style.width = `${input.offsetWidth}px`;
+            mirror.value = input.value;
+            const text_px = mirror.scrollHeight - parseFloat(computed.paddingBottom) + parseFloat(computed.borderTopWidth) + parseFloat(computed.borderBottomWidth);
+            if (!Number.isFinite(text_px) || !Number.isFinite(line_px)) {
+                input.style.height = `${base_px}px`;
+                return;
+            }
+            input.style.height = `${window.monarch_layout.auto_input_height({ text_px, line_px, base_px, max_px })}px`;
+        }
         function set_input_height(height) {
             input_height = height;
-            element('input').style.height = `${Math.min(height, Math.round(window.innerHeight * 0.7))}px`;
+            fit_input();
         }
-        if (input_height !== null) set_input_height(input_height);
-        listen_globally(window, 'resize', () => { if (input_height) set_input_height(input_height); });
+        input.addEventListener('input', fit_input);
+        listen_globally(window, 'resize', fit_input);
+        if (typeof ResizeObserver === 'function') {
+            let input_width = input.offsetWidth;
+            const input_observer = new ResizeObserver(() => {
+                if (input.offsetWidth === input_width) return;
+                input_width = input.offsetWidth;
+                fit_input();
+            });
+            input_observer.observe(input);
+            resize_observers.push(input_observer);
+        }
+        fit_input();
         element('splitter').addEventListener('pointerdown', event => {
             const splitter = element('splitter');
-            const [start_y, start_height] = [event.clientY, element('input').offsetHeight];
-            const move = moved => set_input_height(Math.max(0, start_height + start_y - moved.clientY));
+            const [start_y, start_height] = [event.clientY, input.offsetHeight];
+            let dragged_height = start_height;
+            const move = moved => {
+                dragged_height = Math.max(0, start_height + start_y - moved.clientY);
+                set_input_height(dragged_height);
+            };
             let finished = false;
             const dispose_drag = () => {
                 if (finished) return;
@@ -802,7 +851,9 @@ window.monarch_chat = {
                 splitter.removeEventListener('lostpointercapture', finish);
                 splitter.classList.remove('dragging');
                 active_drags.delete(dispose_drag);
-                set_input_height(element('input').offsetHeight);
+                const { min_px, max_px } = input_height_limits();
+                input_height = Math.min(max_px, Math.max(min_px, dragged_height));
+                fit_input();
                 post({ type: 'input_height', height: input_height });
             };
             event.preventDefault();

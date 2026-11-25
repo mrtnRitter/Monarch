@@ -3,6 +3,9 @@
         equal_sizes(count) {
             return count > 0 ? Array.from({ length: count }, () => 1 / count) : [];
         },
+        auto_input_height({ text_px, line_px, base_px, max_px }) {
+            return Math.round(Math.min(max_px, Math.max(base_px, text_px + 3 * line_px)));
+        },
         drag_split(sizes, index, delta_px, total_px, min_px) {
             const next = sizes.slice();
             const first_px = sizes[index] * total_px;

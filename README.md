@@ -46,8 +46,8 @@ Requirements: VS Code 1.85+ with the built-in Git extension, an awork account in
 
 ```bash
 cd monarch/vscode
-python build_vsix.py                         # -> monarch-0.24.1.vsix
-code --install-extension monarch-0.24.1.vsix
+python build_vsix.py                         # -> monarch-0.25.0.vsix
+code --install-extension monarch-0.25.0.vsix
 ```
 
 Or in VS Code: Extensions view → `…` → **Install from VSIX…**. `Optional local tests (node, no network): for f in test/*_test.js; do node "$f"; done` – `test/webview_notes_test.js` needs jsdom (`NODE_PATH=<folder>/node_modules`).
@@ -74,7 +74,7 @@ The skills use the neutral terms *main agent* and *co-agent* and the placeholder
 
 Every user, also the agent owner, does this once:
 
-1. **Install** `monarch-0.24.1.vsix` (see *Installation*) and reload VS Code (Command Palette → **Developer: Reload Window**).
+1. **Install** `monarch-0.25.0.vsix` (see *Installation*) and reload VS Code (Command Palette → **Developer: Reload Window**).
 2. **Sign in:** Open **monarch** in the activity bar and click **Sign in** (or Command Palette → **monarch: Sign in**). The browser opens; log in to awork and select the workspace.
 3. **Check the agents:** Open the **Model** menu in a chat to choose its agent. If an agent shared with you is missing, set **Monarch: Agent Filter** (`monarch.agentFilter`) to `all`.
 4. **Test files:** Start a **new chat** (blue **+**) and send: `Create output/download_test.txt with three lines.`
@@ -139,17 +139,17 @@ All settings are optional. The agent list comes from awork (see `monarch.agentFi
 | Notes (note sheet) | In the top bar: shows or hides the notes pane, which spans the full height beside all chats on the left or right according to `monarch.notesPosition`; the visibility setting applies to all chats. |
 | History (clock) | Chats of the selected agent from all repos (max. 100), newest first, with repo name and date; click to open a chat in the active area, or focus its existing area; ✕ removes it from the list (the chat stays in awork). |
 | New chat (blue +) | Click **+** to open a new chat beside the open chats, on the side configured by `monarch.newChatPosition`; it carries over the active area’s repo and agent and becomes active. **Ctrl/Cmd+click** on **+** imports a chat from awork into the active area. |
-| Terminal | Each chat has a **Terminal** button in its bottom row; it opens or shows the `monarch: <repo>` terminal in the chat's repo in the panel. The **Terminal** code-block action uses it. |
+| Terminal | Each chat has a **Terminal** button in its bottom row; it opens or shows the `monarch: <repo>` terminal in the chat's repo in the panel. A newly opened terminal activates the repo's virtual environment (`.venv`, otherwise `venv`, in the repo root) when there is one. The **Terminal** code-block action uses it. |
 | Bottom row | Each chat has its repo button, **Terminal**, **×** (when available, close; the chat stays in History), and **Send** or **Stop**. The close button is available with at least 2 chats when no agent or co-agent is working or waiting and no files are staged. |
 | Message times | Every message shows its time; a thin line with the date separates messages from different days. |
-| Row above the input | **+** (attachments), the **Chat**, **Co-Credits**, and **Co-Agenten** values as plain text styled like the **Model** button (no pills; unknown values show `?`; no limits or warning color), and the **Model** menu. |
+| Row above the input | **+** (attachments), the **Chat**, **Co-Credits**, and **Co-Agenten** values as plain text styled like the **Model** button (no pills; unknown values show `?`; no limits or warning color), and the **Model** menu. The values are centered in the space between **+** and **Model**; when space is short, the **Model** button is truncated first. |
 | **+** (attachments) | Opens a small menu to the right of the button, **Current file** at the height of **+**: **Current file** attaches the file of the active editor tab (also Markdown preview, images, notebooks, diffs), otherwise the last active file, as single file. **Files** and **Folder** open the file dialog for files or folders. Everything picked with **Files** and **Folder** is sent together as one `attachments.zip` with paths relative to the repo root (files outside the repo under their file name; folders without `.git`, `node_modules`, `__pycache__`, `.venv`, `*.pyc` and `files.exclude`). Attachments appear as blue chips above the input; click a chip to remove it. Max. 20 attachments and `maxFolderMB` per file or folder |
 | Chat | Credits of the agent in this chat, without co-agents, shown as a read-only value. |
 | Co-Credits | Credits of all co-agents in this chat, shown as a read-only value. |
 | Co-Agenten | The number of co-agents in the current job and how many are working, shown as a read-only value. |
 | Model | Opens its menu above the button, aligned to its right edge. Choose the agent for this chat, **Agent default** (uses the selected agent's settings), **Reasoning**, or an **AI model**. The agent choice applies to this chat; model and reasoning level apply to its next messages and are saved with the chat. |
 | Send / Stop | **Send** sends the message. While the agent works, **Stop** replaces Send: it stops the agent and all co-agents and closes the job. When the agent is idle, use **monarch: Stop agent and co-agents** to stop waiting co-agents. |
-| Line above the input | Drag up/down to resize the input (min. 3 lines, max. 70 % of the panel); the height is kept |
+| Line above the input | Drag up/down to resize the input (min. 3 lines, max. 70 % of the panel); the height is kept. While you type, the input grows upward so that 3 empty lines stay below the text, up to 70 % of the panel, then it scrolls; it shrinks back to the dragged height when the text gets shorter. |
 | Line between chat and notes | Drag left/right to resize the notes pane (min. 120 px, max. 70 % of the panel); the width is kept |
 | Enter / Shift+Enter | Send / new line |
 | Ctrl+C / Cmd+C | Copies the selected text of the chat (or of the input) |

@@ -9,6 +9,7 @@ const { log } = require('./log');
 const { create_zip } = require('./zip');
 const { context_line, git_info } = require('./repo');
 const { repo_info } = require('./git');
+const { venv_command } = require('./venv');
 const { folders, list_repos, find_repo, make_repo_colors, make_workspace_adapter } = require('./workspace');
 
 const fixed_excludes = ['**/.git/**', '**/node_modules/**', '**/__pycache__/**', '**/.venv/**', '**/*.pyc'];
@@ -721,6 +722,8 @@ class ChatView {
         }
         const location = vscode.TerminalLocation.Panel;
         const terminal = vscode.window.createTerminal({ name, cwd: folder.uri, color: new vscode.ThemeColor(this.colors.color(folder.name).theme), iconPath: new vscode.ThemeIcon('terminal'), location });
+        const command = venv_command(folder.uri.fsPath, vscode.env?.shell || '');
+        if (command) terminal.sendText(command, true);
         terminal.show();
         return terminal;
     }
