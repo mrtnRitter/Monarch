@@ -33,7 +33,6 @@ function activate(context) {
     };
     context.subscriptions.push(
         vscode.window.registerWebviewViewProvider('monarch.chat', view, { webviewOptions: { retainContextWhenHidden: true } }),
-        vscode.window.registerTreeDataProvider('monarch.chats', panels),
         vscode.commands.registerCommand('monarch.signIn', run(async () => {
             await oauth.login(url => vscode.env.openExternal(vscode.Uri.parse(url, true)));
             vscode.window.showInformationMessage('monarch: signed in.');
@@ -45,11 +44,7 @@ function activate(context) {
         })),
         vscode.commands.registerCommand('monarch.newChat', run(() => panels.active().new_chat())),
         vscode.commands.registerCommand('monarch.stop', run(() => panels.active().stop())),
-        vscode.commands.registerCommand('monarch.openChatInEditor', run(async () => {
-            const repo = await panels.pick_repo();
-            if (repo) panels.open(repo);
-        })),
-        vscode.commands.registerCommand('monarch.revealChat', run(id => panels.reveal(id))),
+        vscode.commands.registerCommand('monarch.openChatInEditor', run(() => panels.open(panels.active().current_repo?.() || null))),
         vscode.workspace.onDidChangeConfiguration(event => {
             if (event.affectsConfiguration('monarch.agents') || event.affectsConfiguration('monarch.agentFilter')) {
                 panels.all().forEach(chat => chat.refresh({ reload_agents: true }));

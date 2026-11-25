@@ -1,11 +1,9 @@
 'use strict';
-/** Editor chat panels and their shared chat tree. */
+/** Editor chat panels and their shared chat state. */
 const vscode = require('vscode');
 const { ChatView } = require('./chat_view');
-const { folders, folder_by_name, repo_color } = require('./workspace');
+const { make_repo_colors } = require('./workspace');
 const { log } = require('./log');
-
-const status_text = { working: 'working', question: 'question', answer: 'new answer', staged: 'files staged', idle: '' };
 
 class ChatPanels {
     /**
@@ -20,20 +18,25 @@ class ChatPanels {
         this.client = client;
         this.oauth = oauth;
         this.ChatViewClass = ChatViewClass;
+        this._change_generation = 0;
         this._on_change = () => this._changed();
         this._reveal_thread = (thread_id, self) => this.reveal_thread(thread_id, self);
-        this.emitter = new vscode.EventEmitter();
-        this.onDidChangeTreeData = this.emitter.event;
-        this.sidebar = new ChatViewClass(context, client, oauth, this._options());
+        this.colors = make_repo_colors(context.globalState, () => (this.entries || [])
+            .map(entry => entry.chat.current_repo?.()?.name)
+            .filter(Boolean));
+        this.sidebar = new ChatViewClass(context, client, oauth, this._options(null));
         this.entries = [{ chat: this.sidebar, panel: null }];
         this.last = this.sidebar;
     }
 
-    _options(repo_name) {
+    _options(repo) {
         return {
-            ...(repo_name === undefined ? {} : { repo_name }),
+            repo,
+            colors: this.colors,
             on_change: this._on_change,
             reveal_thread: this._reveal_thread,
+            open_beside: next_repo => this.open(next_repo),
+            set_notes: (chat_id, text, rev) => this.set_notes(chat_id, text, rev),
         };
     }
 
@@ -49,81 +52,74 @@ class ChatPanels {
     }
 
     _changed() {
-        try {
-            for (const entry of this.entries) {
-                if (!entry.panel) continue;
-                try {
-                    const summary = entry.chat.summary() || {};
-                    entry.panel.title = `${summary.repo || 'no folder'} · ${summary.title || 'New chat'}`;
-                } catch (error) {
-                    this._log_error(error);
+        const generation = ++this._change_generation;
+        const entries = [...this.entries];
+        for (const entry of entries) {
+            if (!entry.panel) continue;
+            try {
+                const summary = entry.chat.summary() || {};
+                entry.panel.title = `${summary.repo || 'no folder'} · ${summary.title || 'New chat'}`;
+                if (summary.repo) {
+                    entry.panel.iconPath = vscode.Uri.joinPath(
+                        this.context.extensionUri, 'media', this.colors.color(summary.repo).icon,
+                    );
                 }
+            } catch (error) {
+                this._log_error(error);
             }
-        } catch (error) {
-            this._log_error(error);
         }
-        try { this.emitter.fire(); } catch (error) { this._log_error(error); }
+
+        const groups = this.notes_groups();
+        for (const entry of entries) {
+            if (generation !== this._change_generation) return;
+            if (!this.entries.includes(entry)) continue;
+            try {
+                entry.chat.post_notes_groups?.(groups);
+            } catch (error) {
+                this._log_error(error);
+            }
+        }
     }
 
-    /** Open a chat in a new editor tab for the named workspace folder.
-     * @param {string} repo_name
-     * @returns {ChatView}
-     */
-    open(repo_name) {
+    /** Open a chat in a new editor tab for the selected repository. */
+    open(repo) {
         const panel = vscode.window.createWebviewPanel(
-            'monarch.chatPanel', `${repo_name} · New chat`, vscode.ViewColumn.Active,
+            'monarch.chatPanel', `${repo?.name || 'no folder'} · New chat`, vscode.ViewColumn.Beside,
             { enableScripts: true, retainContextWhenHidden: true, localResourceRoots: [vscode.Uri.joinPath(this.context.extensionUri, 'media')] },
         );
-        const chat = new this.ChatViewClass(this.context, this.client, this.oauth, this._options(repo_name));
+        const chat = new this.ChatViewClass(this.context, this.client, this.oauth, this._options(repo));
         chat.resolveWebviewView(panel);
-        const folder = folder_by_name(repo_name);
-        panel.iconPath = vscode.Uri.joinPath(this.context.extensionUri, 'media', repo_color(folder?.index ?? 0).icon);
-        const entry = { chat, panel };
+        if (repo?.name) {
+            panel.iconPath = vscode.Uri.joinPath(this.context.extensionUri, 'media', this.colors.color(repo.name).icon);
+        }
+        const entry = { chat, panel, listeners: [] };
         this.entries.push(entry);
         this.last = chat;
-        panel.onDidChangeViewState(() => {
+        const view_state_listener = panel.onDidChangeViewState(() => {
             if (panel.active) this.last = chat;
             this._changed();
         });
-        panel.onDidDispose(() => {
+        if (view_state_listener) entry.listeners.push(view_state_listener);
+        const dispose_listeners = () => {
+            for (const listener of entry.listeners.splice(0)) {
+                try { listener.dispose(); } catch (error) { this._log_error(error); }
+            }
+        };
+        const dispose_listener = panel.onDidDispose(() => {
             if (!this.entries.includes(entry)) return;
             this.entries = this.entries.filter(item => item !== entry);
             if (this.last === chat) this.last = this.sidebar;
+            dispose_listeners();
             try { chat.dispose(); } catch (error) { this._log_error(error); }
             this._changed();
         });
+        if (dispose_listener) entry.listeners.push(dispose_listener);
         return chat;
     }
 
-    /** Ask which open repository should own a new chat.
-     * @returns {Promise<string|null>}
-     */
-    async pick_repo() {
-        const available = folders();
-        if (!available.length) {
-            vscode.window.showErrorMessage('monarch: open a folder first.');
-            return null;
-        }
-        if (available.length === 1) return available[0].name;
-        return (await vscode.window.showQuickPick(available.map(folder => folder.name), { title: 'monarch: repo for the new chat' })) ?? null;
-    }
-
-    /** Reveal another chat with the requested thread, focusing the sidebar when needed.
-     * @param {string} thread_id
-     * @param {ChatView} self
-     * @returns {boolean}
-     */
+    /** Reveal another chat with the requested thread, focusing the sidebar when needed. */
     reveal_thread(thread_id, self) {
         const entry = this.entries.find(item => item.chat !== self && this._summary(item.chat).thread_id === thread_id);
-        return this._reveal_entry(entry);
-    }
-
-    /** Reveal a chat by its stable view id.
-     * @param {string} id
-     * @returns {boolean}
-     */
-    reveal(id) {
-        const entry = this.entries.find(item => this._summary(item.chat).id === id);
         return this._reveal_entry(entry);
     }
 
@@ -139,45 +135,38 @@ class ChatPanels {
         }
     }
 
-    /** Return the most recently focused chat, falling back to the sidebar.
-     * @returns {ChatView}
-     */
+    notes_groups() {
+        const groups = [];
+        for (const entry of this.entries) {
+            try {
+                const notes = entry.chat.notes_entry?.();
+                if (notes) groups.push(notes);
+            } catch (error) {
+                this._log_error(error);
+            }
+        }
+        return groups;
+    }
+
+    set_notes(chat_id, text, rev) {
+        const entry = this.entries.find(item => this._summary(item.chat).id === chat_id);
+        if (!entry) return false;
+        try {
+            return Boolean(entry.chat.apply_notes?.(text, rev));
+        } catch (error) {
+            this._log_error(error);
+            return false;
+        }
+    }
+
+    /** Return the most recently focused chat, falling back to the sidebar. */
     active() {
         return this.entries.some(entry => entry.chat === this.last) ? this.last : this.sidebar;
     }
 
-    /** Return all live chat views.
-     * @returns {ChatView[]}
-     */
+    /** Return all live chat views. */
     all() {
         return this.entries.map(entry => entry.chat);
-    }
-
-    /** Return the current entries for the chat tree.
-     * @returns {{chat: ChatView, panel: import('vscode').WebviewPanel|null}[]}
-     */
-    getChildren() {
-        return this.entries;
-    }
-
-    /** Build a tree row for a chat.
-     * @param {{chat: ChatView, panel: import('vscode').WebviewPanel|null}} entry
-     * @returns {import('vscode').TreeItem}
-     */
-    getTreeItem(entry) {
-        try {
-            const summary = this._summary(entry.chat);
-            const folder = folder_by_name(summary.repo);
-            const item = new vscode.TreeItem(`${summary.repo || 'no folder'} · ${summary.title || 'New chat'}`, vscode.TreeItemCollapsibleState.None);
-            item.id = summary.id;
-            item.description = [status_text[summary.state], entry.panel ? null : 'sidebar'].filter(Boolean).join(' · ');
-            if (folder) item.iconPath = new vscode.ThemeIcon('comment-discussion', new vscode.ThemeColor(repo_color(folder.index).theme));
-            item.command = { command: 'monarch.revealChat', title: 'Show chat', arguments: [summary.id] };
-            return item;
-        } catch (error) {
-            this._log_error(error);
-            return new vscode.TreeItem('no folder · New chat', vscode.TreeItemCollapsibleState.None);
-        }
     }
 }
 

@@ -6,7 +6,7 @@ const { promisify } = require('node:util');
 const fs = require('node:fs/promises');
 const os = require('node:os');
 const path = require('node:path');
-const { run_git, eol_default, repo_state } = require('../src/git');
+const { run_git, eol_default, repo_state, repo_info } = require('../src/git');
 
 const exec_file = promisify(execFile);
 const git_timeout_ms = 5000;
@@ -28,6 +28,45 @@ async function main() {
     const repo_dir = path.join(temp_root, 'repo');
     await fs.mkdir(repo_dir);
     try {
+        const repo_info_empty = path.join(temp_root, 'repo-info-empty');
+        await fs.mkdir(repo_info_empty);
+        assert.deepEqual(await repo_info(repo_info_empty), { git: false });
+        assert.deepEqual(await repo_info(path.join(temp_root, 'missing-repo')), { git: null });
+
+        const info_repo = path.join(temp_root, 'info-repo');
+        await fs.mkdir(info_repo);
+        await git(info_repo, ['init', '-q', '-b', 'main']);
+        await write_file(info_repo, 'info.txt', 'initial\n');
+        await git(info_repo, ['add', 'info.txt']);
+        await git(info_repo, ['-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-m', 'initial']);
+        assert.deepEqual(await repo_info(info_repo), { git: true, remote: null, branch: 'main', changes: 0, ahead: null });
+
+        const remote_dir = path.join(temp_root, 'remote.git');
+        await git(temp_root, ['init', '--bare', '-q', remote_dir]);
+        await git(info_repo, ['remote', 'add', 'origin', remote_dir]);
+        await git(info_repo, ['push', '-q', '-u', 'origin', 'main']);
+        assert.deepEqual(await repo_info(info_repo), { git: true, remote: remote_dir, branch: 'main', changes: 0, ahead: 0 });
+
+        const nested_remote_dir = path.join(temp_root, 'nested-remote.git');
+        await git(temp_root, ['init', '--bare', '-q', nested_remote_dir]);
+        await git(info_repo, ['remote', 'add', 'team/repo', nested_remote_dir]);
+        await git(info_repo, ['push', '-q', 'team/repo', 'main']);
+        await git(info_repo, ['branch', '--set-upstream-to=team/repo/main', 'main']);
+        const nested_remote_info = await repo_info(info_repo);
+        assert.equal(nested_remote_info.remote, nested_remote_dir);
+        assert.equal(nested_remote_info.ahead, 0);
+
+        await write_file(info_repo, 'second.txt', 'second\n');
+        await git(info_repo, ['add', 'second.txt']);
+        await git(info_repo, ['-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-m', 'second']);
+        assert.equal((await repo_info(info_repo)).ahead, 1);
+        await write_file(info_repo, 'info.txt', 'modified\n');
+        assert.equal((await repo_info(info_repo)).changes, 1);
+
+        const aborted_info = new AbortController();
+        aborted_info.abort();
+        await assert.rejects(repo_info(info_repo, { signal: aborted_info.signal }), error => error.name === 'AbortError');
+
         await git(repo_dir, ['init', '-q']);
         await write_file(repo_dir, '.gitignore', '.venv/\nnode_modules/\n.data/\n');
         await write_file(repo_dir, 'a.txt', 'initial\n');

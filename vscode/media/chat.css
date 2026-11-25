@@ -9,7 +9,7 @@ body {
   font-family: var(--vscode-font-family); font-size: var(--vscode-font-size); color: var(--vscode-foreground);
   background: var(--vscode-sideBar-background); display: flex; flex-direction: row; height: 100vh; overflow: hidden;
 }
-.chat { display: flex; flex-direction: column; flex: 1; min-width: 0; height: 100%; }
+.chat { display: flex; flex-direction: column; flex: 1; min-width: 0; height: 100%; position: relative; }
 .notes-pane {
   display: flex; flex: 0 0 40%; min-width: 120px; height: 100%; order: 1; position: relative;
   border-left: 1px solid var(--vscode-panel-border); background: var(--vscode-sideBar-background);
@@ -25,6 +25,17 @@ body.notes-left .notes-splitter { left: auto; right: -4px; }
   font-family: var(--vscode-editor-font-family); font-size: var(--vscode-font-size);
 }
 #notes:focus { outline: 1px solid var(--vscode-focusBorder); outline-offset: -1px; }
+.notes-groups { display: flex; flex: 1 1 auto; flex-direction: column; min-height: 0; min-width: 0; }
+.notes-groups > #notes { flex: 1 1 0; min-height: 0; }
+.notes-group { display: flex; flex: 0 0 auto; flex-direction: column; min-height: 0; }
+.notes-group.expanded { flex: 1 1 0; min-height: 0; }
+.notes-group-head { display: flex; align-items: center; gap: 6px; padding: 4px 8px; cursor: pointer; font-size: 0.85em; border-bottom: 1px solid var(--vscode-panel-border); }
+.notes-group-head:hover { background: var(--vscode-list-hoverBackground); }
+.notes-group-repo, .notes-group-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.notes-group-title { opacity: 0.6; flex: 1; min-width: 0; }
+.notes-group-body { display: flex; flex: 1 1 0; min-height: 0; }
+.notes-group.expanded #notes, .notes-group.expanded .notes-other { flex: 1 1 0; width: 100%; height: auto; min-height: 0; resize: none; border: none; padding: var(--pad); background: transparent; color: var(--vscode-input-foreground); font-family: var(--vscode-editor-font-family); font-size: var(--vscode-font-size); }
+.notes-group.expanded #notes:focus, .notes-group.expanded .notes-other:focus { outline: 1px solid var(--vscode-focusBorder); outline-offset: -1px; }
 .hidden { display: none !important; }
 button { font-family: var(--vscode-font-family); font-size: var(--vscode-font-size); cursor: pointer; border: none; }
 button:disabled { opacity: 0.5; cursor: not-allowed; }
@@ -307,4 +318,19 @@ span.avatar {
 
 .repo-btn { display: flex; align-items: center; gap: 4px; max-width: 30vw; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; background: transparent; border: none; color: inherit; font-size: 0.85em; padding: 0 4px; }
 .repo-btn:disabled { cursor: default; opacity: 0.85; }
+.repo-btn:disabled:hover { background: transparent; }
+#repo_menu { left: 0; min-width: 220px; }
+.menu-filter {
+  display: block; width: 100%; margin: 4px 0; padding: 4px 6px;
+  color: var(--vscode-input-foreground); background: var(--vscode-input-background); border: 1px solid var(--vscode-input-border);
+  font: inherit; outline: none;
+}
+.menu-filter:focus { border-color: var(--vscode-focusBorder); }
+.repo-list { max-height: 50vh; overflow-y: auto; }
+.repo-list .menu-item.active { background: var(--vscode-list-activeSelectionBackground); }
 .repo-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+.repo-dot.hollow { border: 1px solid currentColor; background: transparent; }
+
+.new-answer { position: absolute; z-index: 5; padding: 0; border: none; background: transparent; cursor: pointer; animation: monarch-bounce 1s ease-in-out infinite; }
+@keyframes monarch-bounce { 0%, 100% { transform: translateY(0) } 50% { transform: translateY(-6px) } }
+@media (prefers-reduced-motion: reduce) { .new-answer { animation: none } }

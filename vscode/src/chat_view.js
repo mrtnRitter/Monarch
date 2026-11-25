@@ -2,12 +2,14 @@
 /** Webview chat window: agents from awork, chat history, model choice, messages and attachments; status below the input. */
 const vscode = require('vscode');
 const crypto = require('crypto');
+const path = require('node:path');
 const { safe_rel_path, basename } = require('./files');
 const { ChatSession, Notice } = require('./session');
 const { log } = require('./log');
 const { create_zip } = require('./zip');
 const { context_line, git_info } = require('./repo');
-const { folders, folder_by_name, repo_color, make_workspace_adapter } = require('./workspace');
+const { repo_info } = require('./git');
+const { folders, list_repos, find_repo, make_repo_colors, make_workspace_adapter } = require('./workspace');
 
 const fixed_excludes = ['**/.git/**', '**/node_modules/**', '**/__pycache__/**', '**/.venv/**', '**/*.pyc'];
 const default_labels = { chat: 'Chat', coCredits: 'Co-Credits', coAgents: 'Co-Agenten', stop: 'Stop' };
@@ -105,8 +107,9 @@ class ChatView {
     constructor(context, client, oauth, options = {}) {
         Object.assign(this, { context, client, oauth, view: null, sessions: new Map(), attachments: [], avatars: new Map(), user_avatar: null, me: null, agent_list: null, models: new Map(), last_file: null, last_editor: null, sync_timer: null, disposables: [], open_question: false, unseen: false });
         this.id = crypto.randomUUID();
-        this.options = { repo_name: null, on_change: () => {}, reveal_thread: () => false, ...options };
-        this.repo_name = this.options.repo_name;
+        this.options = { repo: null, colors: null, on_change: () => {}, reveal_thread: () => false, open_beside: () => {}, set_notes: () => false, ...options };
+        this.repo = this.options.repo || null;
+        this.colors = this.options.colors || make_repo_colors(context.globalState);
         this.workspace = make_workspace_adapter(() => this._root());
         // remember the last file so that "Current file" also works while a preview or other non-file tab is active
         const remember = uri => { if (uri && uri.scheme !== 'untitled') this.last_file = uri; };
@@ -122,8 +125,22 @@ class ChatView {
         context.subscriptions.push(...this.disposables);
     }
 
+    current_repo() {
+        return this._folder();
+    }
+
     _folder() {
-        return folder_by_name(this.repo_name) || folders()[0] || null;
+        return this.repo || folders()[0] || null;
+    }
+
+    _same_path(a, b) {
+        const fs_path = value => typeof value === 'string' ? value : value?.fsPath;
+        const left = fs_path(a);
+        const right = fs_path(b);
+        if (typeof left !== 'string' || typeof right !== 'string' || !left || !right) return false;
+        const resolved_left = path.resolve(left);
+        const resolved_right = path.resolve(right);
+        return process.platform === 'win32' ? resolved_left.toLowerCase() === resolved_right.toLowerCase() : resolved_left === resolved_right;
     }
 
     _root() {
@@ -150,6 +167,27 @@ class ChatView {
         }
     }
 
+    notes_entry() {
+        const agent = this._agent();
+        const session = agent && this.sessions.get(agent.agentId);
+        if (!session) return null;
+        const repo = this._repo_name();
+        return { id: this.id, repo, hex: repo ? this.colors.color(repo).hex : null, title: session.state.title || 'New chat', ...session.notes() };
+    }
+
+    post_notes_groups(groups) {
+        this._post({ type: 'notes_groups', groups, self: this.id });
+    }
+
+    apply_notes(text, rev) {
+        const agent = this._agent();
+        const session = agent && this.sessions.get(agent.agentId);
+        if (!session || !session.set_notes(String(text), rev)) return false;
+        this._post({ type: 'notes', text: String(text), rev, agent: agent.agentId });
+        this._changed();
+        return true;
+    }
+
     mark_seen() {
         if (!this.unseen) return;
         this.unseen = false;
@@ -158,7 +196,10 @@ class ChatView {
 
     _repo_info(session) {
         const folder = this._folder();
-        return { name: folder?.name || null, hex: folder ? repo_color(folder.index).hex : null, can_change: folders().length > 1 && !session?.state?.thread_id && !session?.busy };
+        const state = session?.state || {};
+        const active_co_agent = Object.values(state.co_agents || {}).some(item => ['working', 'waiting'].includes(item.state));
+        const can_change = !session?.busy && !Object.keys(state.staged || {}).length && !active_co_agent;
+        return { name: folder?.name || null, path: folder?.uri?.fsPath || null, hex: folder ? this.colors.color(folder.name).hex : null, can_change };
     }
 
     _post_repo(session) {
@@ -234,7 +275,7 @@ class ChatView {
                 const chats = this._chats(agent);
                 if (state.thread_id) {
                     const item = chats.items.find(entry => entry.thread_id === state.thread_id);
-                    const entry = { thread_id: state.thread_id, title: state.title || item?.title || 'Untitled chat', repo: item ? item.repo ?? null : this._repo_name(), updated: Date.now(), state };
+                    const entry = { thread_id: state.thread_id, title: state.title || item?.title || 'Untitled chat', repo: this._repo_name(), repo_path: this._root()?.fsPath || null, updated: Date.now(), state };
                     chats.items = [entry, ...chats.items.filter(other => other.thread_id !== state.thread_id)];
                 }
                 this._save_chats(agent, chats).then(() => this._post_chats(agent));
@@ -303,15 +344,15 @@ class ChatView {
         view.webview.html = `<!DOCTYPE html><html><head><meta charset="UTF-8">
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${view.webview.cspSource}; img-src data:; script-src 'nonce-${nonce}';">
 <link rel="stylesheet" href="${asset('chat.css')}"></head><body>
-<div id="notes_pane" class="notes-pane hidden"><div id="notes_splitter" class="notes-splitter"></div><textarea id="notes" placeholder="Notes for this chat …" spellcheck="false"></textarea></div>
+<div id="notes_pane" class="notes-pane hidden"><div id="notes_splitter" class="notes-splitter"></div><div id="notes_groups" class="notes-groups"><textarea id="notes" placeholder="Notes for this chat …" spellcheck="false"></textarea></div></div>
 <div class="chat" id="chat">
 <div class="header" id="header">
 <div class="agents" id="agents"></div><select id="agent" class="agent-select hidden" title="Agent"></select>
-<button id="repo" class="repo-btn" title="Repo of this chat"><span id="repo_dot" class="repo-dot"></span><span id="repo_name"></span></button>
+<div class="menu-wrap repo-wrap"><button id="repo" class="repo-btn" title="Repo of this chat"><span id="repo_dot" class="repo-dot"></span><span id="repo_name"></span></button><div id="repo_menu" class="menu hidden"></div></div>
 <button id="terminal" class="icon-btn" title="Terminal for this repo"><svg viewBox="0 0 16 16" width="21" height="21" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 3.5h11v9h-11z"/><path d="M5 6.5l2 1.5-2 1.5"/><path d="M8.5 10h2.5"/></svg></button>
 <button id="notes_toggle" class="icon-btn" title="Show or hide notes" aria-pressed="false"><svg viewBox="0 0 16 16" width="21" height="21" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M3.5 2.5h6l3 3v8h-9z"/><path d="M9.5 2.5v3h3"/><path d="M5.5 8.5h5M5.5 11h3.5"/></svg></button>
 <div class="menu-wrap"><button id="history" class="icon-btn" title="Chat history"><svg viewBox="0 0 16 16" width="21" height="21" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 8a5.5 5.5 0 1 0 1.6-3.9"/><path d="M2.5 2.4v2.7h2.7"/><path d="M8 5v3.2l2.2 1.4"/></svg></button><div id="history_menu" class="menu right hidden"></div></div>
-<button id="new_chat" class="icon-btn primary" title="New chat"><svg viewBox="0 0 16 16" width="21" height="21" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M8 3.5v9M3.5 8h9"/></svg></button>
+<div class="menu-wrap"><button id="new_chat" class="icon-btn primary" title="New chat"><svg viewBox="0 0 16 16" width="21" height="21" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M8 3.5v9M3.5 8h9"/></svg></button><div id="new_menu" class="menu right hidden"></div></div>
 </div>
 <div class="messages" id="messages"></div>
 <div class="input-area">
@@ -328,6 +369,7 @@ class ChatView {
 </div>
 <script nonce="${nonce}" src="${asset('markdown.js')}"></script>
 <script nonce="${nonce}" src="${asset('chat_time.js')}"></script>
+<script nonce="${nonce}" src="${asset('chat_scroll.js')}"></script>
 <script nonce="${nonce}" src="${asset('chat.js')}"></script></body></html>`;
         const message_listener = view.webview.onDidReceiveMessage(message => this._on_message(message).catch(error => this._post({ type: 'error', text: error.message, transient: error instanceof Notice })));
         if (message_listener) this.disposables.push(message_listener);
@@ -371,26 +413,44 @@ class ChatView {
                 await this.refresh();
             },
             terminal: () => this._terminal(),
+            list_repos: async () => {
+                let items = [];
+                try {
+                    const current = this._folder();
+                    items = (await list_repos()).map(repo => ({ name: repo.name, path: repo.uri.fsPath, hex: this.colors.peek(repo.name)?.hex || null, open: Boolean(repo.open), current: this._same_path(repo.uri, current?.uri) }));
+                } catch {}
+                this._post({ type: 'repos', items });
+            },
             select_repo: async () => {
-                const open_folders = folders();
-                if (open_folders.length < 2) return;
                 const agent = this._agent();
                 const session = agent ? this._session(agent) : null;
-                if (session?.busy || session?.state?.thread_id) throw new Notice('The repo of a chat is fixed. Start a new chat for another repo.');
-                const name = await vscode.window.showQuickPick(open_folders.map(folder => folder.name), { title: 'monarch: repo for this chat' });
-                if (!name) return;
-                this.repo_name = name;
+                if (!this._repo_info(session).can_change) throw new Notice('Change the repo when the agent has finished and no files are staged.');
+                let available = [];
+                try { available = await list_repos(); } catch {}
+                const found = available.find(repo => this._same_path(repo.uri, message.path));
+                if (!found) throw new Notice('Repo not found.');
+                if (!this._repo_info(session).can_change) throw new Notice('Change the repo when the agent has finished and no files are staged.');
+                this.repo = { name: found.name, uri: found.uri };
+                if (agent && session?.state?.thread_id) this._store(agent).save(session.state);
                 this._post_repo(session);
                 this._changed();
             },
             send: () => this._send(message.text, message.interrupt_id),
             stop: () => this.stop(),
             new_chat: () => this.new_chat(),
+            new_chat_beside: () => this.options.open_beside(this.current_repo()),
             open_chat: () => this._open_chat(message.thread_id),
             remove_chat: () => this._remove_chat(message.thread_id),
             import_chat: () => this._import_chat(),
             set_model: () => this._session().set_model(message.model),
-            set_notes: () => { this._session().set_notes(String(message.text ?? ''), message.rev); },
+            set_notes: () => {
+                const text = String(message.text ?? '');
+                if (message.chat_id != null && message.chat_id !== this.id) {
+                    this.options.set_notes(message.chat_id, text, message.rev);
+                    return;
+                }
+                if (!this.options.set_notes(this.id, text, message.rev)) this.apply_notes(text, message.rev);
+            },
             notes_visible: () => this.context.globalState.update('monarch.notesVisible', Boolean(message.visible)),
             adjust: () => {
                 const session = this._session();
@@ -415,30 +475,34 @@ class ChatView {
 
     /** Re-render agents, sign-in state, history, models and status. */
     async refresh({ reload_agents = false } = {}) {
-        const signed_in = await this.oauth.is_logged_in();
-        let agents = [];
-        if (signed_in) {
-            try {
-                agents = await this._load_agents(reload_agents);
-            } catch (error) {
-                this._post({ type: 'error', text: `Agents not loaded: ${error.message}` });
+        try {
+            const signed_in = await this.oauth.is_logged_in();
+            let agents = [];
+            if (signed_in) {
+                try {
+                    agents = await this._load_agents(reload_agents);
+                } catch (error) {
+                    this._post({ type: 'error', text: `Agents not loaded: ${error.message}` });
+                }
             }
+            const agent = signed_in ? this._agent() : null;
+            const session = agent ? this.sessions.get(agent.agentId) || null : null;
+            const agent_items = await Promise.all(agents.map(async item => ({ id: item.agentId, name: item.name, avatar: await this._avatar('agents', item.agentId, item.name, item.has_image) })));
+            this._post({ type: 'init', agents: agent_items, current: agent?.agentId || null, current_name: agent?.name || null, labels: agent?.labels || default_labels, signed_in, user: signed_in ? await this._user() : { image: null, initials: 'Du' }, input_height: this.context.globalState.get('monarch.inputHeight') || null, notes_width: this.context.globalState.get('monarch.notesWidth') || null, notes_visible: Boolean(this.context.globalState.get('monarch.notesVisible')), notes_position: this._notes_position(), repo: this._repo_info(session) });
+            this._post_repo(session);
+            this._post_attachments();
+            if (!agent) return;
+            const active_session = this._session(agent);
+            this._post_repo(active_session);
+            this._post({ type: 'notes', ...active_session.notes(), agent: agent.agentId });
+            this._post({ type: 'status', status: active_session.status(), agent: agent.agentId });
+            this._post_chats(agent);
+            this._post({ type: 'models', agent: agent.agentId, ...(await this._models(agent)) });
+            await this._show_history(active_session, agent);
+            active_session.refresh_credits();
+        } finally {
+            this._changed();
         }
-        const agent = signed_in ? this._agent() : null;
-        const session = agent ? this.sessions.get(agent.agentId) || null : null;
-        const agent_items = await Promise.all(agents.map(async item => ({ id: item.agentId, name: item.name, avatar: await this._avatar('agents', item.agentId, item.name, item.has_image) })));
-        this._post({ type: 'init', agents: agent_items, current: agent?.agentId || null, current_name: agent?.name || null, labels: agent?.labels || default_labels, signed_in, user: signed_in ? await this._user() : { image: null, initials: 'Du' }, input_height: this.context.globalState.get('monarch.inputHeight') || null, notes_width: this.context.globalState.get('monarch.notesWidth') || null, notes_visible: Boolean(this.context.globalState.get('monarch.notesVisible')), notes_position: this._notes_position(), repo: this._repo_info(session) });
-        this._post_repo(session);
-        this._post_attachments();
-        if (!agent) return;
-        const active_session = this._session(agent);
-        this._post_repo(active_session);
-        this._post({ type: 'notes', ...active_session.notes(), agent: agent.agentId });
-        this._post({ type: 'status', status: active_session.status(), agent: agent.agentId });
-        this._post_chats(agent);
-        this._post({ type: 'models', agent: agent.agentId, ...(await this._models(agent)) });
-        await this._show_history(active_session, agent);
-        active_session.refresh_credits();
     }
 
     // --- sync with chats continued elsewhere (awork web app) ---
@@ -488,8 +552,12 @@ class ChatView {
         const session = this._session(agent);
         const item = this._chats(agent).items.find(entry => entry.thread_id === thread_id);
         if (!item) throw new Notice('Chat not found in the history.');
+        if (session.busy) throw new Notice('Stop the agent first.');
         if (this.options.reveal_thread(thread_id, this)) return;
-        if (item.repo && folder_by_name(item.repo)) this.repo_name = item.repo;
+        let found = null;
+        if (item.repo || item.repo_path) found = await find_repo({ name: item.repo || null, path: item.repo_path || null });
+        if (session.busy) throw new Notice('Stop the agent first.');
+        if (found) this.repo = { name: found.name, uri: found.uri };
         Object.assign(this, { open_question: false, unseen: false });
         session.load_state(item.state || { thread_id });
         this._post_repo(session);
@@ -520,7 +588,10 @@ class ChatView {
         if (thread.type && thread.type !== 'custom-agent') throw new Notice('Only chats with custom agents can be taken over.');
         if (thread.agentId && thread.agentId !== agent.agentId) throw new Notice(`This chat belongs to ${thread.agentNameSnapshot || 'another agent'}; select that agent first.`);
         const known = this._chats(agent).items.find(entry => entry.thread_id === thread_id);
-        if (known?.repo && folder_by_name(known.repo)) this.repo_name = known.repo;
+        let found = null;
+        if (known?.repo || known?.repo_path) found = await find_repo({ name: known.repo || null, path: known.repo_path || null });
+        if (session.busy) throw new Notice('Stop the agent first.');
+        if (found) this.repo = { name: found.name, uri: found.uri };
         Object.assign(this, { open_question: false, unseen: false });
         session.load_state(known?.state || { thread_id, title: thread.title || 'Chat from awork' });
         this._post_repo(session);
@@ -553,13 +624,22 @@ class ChatView {
         await session.send(text + note, uploads, await this._context(), interrupt_id);
     }
 
+    async _git_facts(uri) {
+        const info = git_info(await _git_repository(uri));
+        if (info.git === true) return info;
+        try {
+            return await repo_info(uri.fsPath, { timeout_ms: 5000 });
+        } catch {
+            return info;
+        }
+    }
+
     /** Context line for the agent: open repo, online link, branch, kind of local changes. */
     async _context() {
         const folder = this._folder();
-        const open_folders = folders();
-        const others = await Promise.all(open_folders.filter(item => item.index !== folder?.index).map(async item => ({ folder: item.name, ...git_info(await _git_repository(item.uri)) })));
+        const others = await Promise.all(folders().filter(item => !this._same_path(item.uri, folder?.uri)).map(async item => ({ folder: item.name, ...await this._git_facts(item.uri) })));
         if (!folder) return context_line({ folder: null, others });
-        return context_line({ folder: folder.name, ...git_info(await _git_repository(folder.uri)), others });
+        return context_line({ folder: folder.name, ...await this._git_facts(folder.uri), others });
     }
 
     async stop() {
@@ -598,7 +678,9 @@ class ChatView {
             for (const { uri, folder } of picked) {
                 if (this.attachments.some(item => item.uri.toString() === uri.toString())) continue;
                 if (this.attachments.length >= max_attachments) throw new Notice(`Max. ${max_attachments} attachments per message.`);
-                const rel = vscode.workspace.asRelativePath(uri, false);
+                const relative = this._root() ? path.relative(this._root().fsPath, uri.fsPath) : null;
+                const inside_root = relative !== null && relative !== '..' && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative);
+                const rel = inside_root ? relative.split(path.sep).join('/') : vscode.workspace.asRelativePath(uri, false);
                 if (!folder && (await vscode.workspace.fs.stat(uri)).size > limit_mb * 1024 * 1024) throw new Notice(`File ${rel} exceeds monarch.maxFolderMB (${limit_mb} MB).`);
                 this.attachments.push({ id: crypto.randomUUID(), uri, folder, rel, label: folder ? `${rel}/` : rel, bundle: kind !== 'current' });
             }
@@ -683,7 +765,7 @@ class ChatView {
             return existing;
         }
         const location = this.view?.viewColumn ? { viewColumn: vscode.ViewColumn.Beside, preserveFocus: false } : vscode.TerminalLocation.Panel;
-        const terminal = vscode.window.createTerminal({ name, cwd: folder.uri, color: new vscode.ThemeColor(repo_color(folder.index).theme), iconPath: new vscode.ThemeIcon('terminal'), location });
+        const terminal = vscode.window.createTerminal({ name, cwd: folder.uri, color: new vscode.ThemeColor(this.colors.color(folder.name).theme), iconPath: new vscode.ThemeIcon('terminal'), location });
         terminal.show();
         return terminal;
     }

@@ -69,6 +69,74 @@ async function eol_default(cwd, { signal } = {}) {
     }
 }
 
+/** Return bounded Git facts for a repository that may not be open in VS Code. */
+async function repo_info(cwd, { signal, timeout_ms = 5000 } = {}) {
+    const run = args => run_git(cwd, args, { signal, timeout_ms });
+    try {
+        if ((await run(['rev-parse', '--is-inside-work-tree'])).trim() !== 'true') return { git: false };
+    } catch (error) {
+        if (_is_abort(error)) throw error;
+        return String(error?.message || '').includes('ENOENT') ? { git: null } : { git: false };
+    }
+
+    const info = { git: true, remote: null, branch: null, changes: undefined, ahead: null };
+    try {
+        info.branch = (await run(['branch', '--show-current'])).trim() || null;
+    } catch (error) {
+        if (_is_abort(error)) throw error;
+    }
+
+    let upstream = null;
+    try {
+        upstream = (await run(['rev-parse', '--abbrev-ref', '--symbolic-full-name', '@{u}'])).trim() || null;
+    } catch (error) {
+        if (_is_abort(error)) throw error;
+    }
+
+    let remotes = [];
+    try {
+        remotes = (await run(['remote'])).split(/\r?\n/).map(name => name.trim()).filter(Boolean);
+    } catch (error) {
+        if (_is_abort(error)) throw error;
+    }
+    const upstream_remote = upstream && remotes
+        .filter(name => upstream.startsWith(`${name}/`))
+        .sort((a, b) => b.length - a.length)[0];
+    const remote_name = upstream_remote || (remotes.includes('origin') ? 'origin' : remotes[0]);
+    if (remote_name) {
+        try {
+            info.remote = (await run(['remote', 'get-url', remote_name])).trim() || null;
+        } catch (error) {
+            if (_is_abort(error)) throw error;
+        }
+    }
+
+    try {
+        const entries = (await run(['status', '--porcelain=v1', '-z', '--untracked-files=all'])).split('\0');
+        let changes = 0;
+        for (let index = 0; index < entries.length; index += 1) {
+            const entry = entries[index];
+            if (!entry) continue;
+            changes += 1;
+            if (entry[0] === 'R' || entry[0] === 'C') index += 1;
+        }
+        info.changes = changes;
+    } catch (error) {
+        if (_is_abort(error)) throw error;
+    }
+
+    if (upstream) {
+        try {
+            info.ahead = Number((await run(['rev-list', '--count', '@{u}..HEAD'])).trim());
+        } catch (error) {
+            if (_is_abort(error)) throw error;
+        }
+    }
+    if (info.changes === undefined) delete info.changes;
+    _throw_if_aborted(signal);
+    return info;
+}
+
 function _included_path(file_path) {
     return safe_rel_path(file_path) === file_path && !is_junk(file_path) && file_path !== '.monarch' && !file_path.startsWith('.monarch/');
 }
@@ -128,4 +196,4 @@ async function repo_state(cwd, { signal } = {}) {
     };
 }
 
-module.exports = { run_git, eol_default, repo_state };
+module.exports = { run_git, eol_default, repo_state, repo_info };

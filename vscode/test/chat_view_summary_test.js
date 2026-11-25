@@ -111,7 +111,7 @@ async function main() {
     let repo_changes = 0;
     const changed_repo = harness({}, { on_change: () => { repo_changes++; } });
     changed_repo.chat.agent_list = [{ agentId: 'a1', name: 'Z', labels: {} }];
-    await changed_repo.webview.receive({ type: 'select_repo' });
+    await changed_repo.webview.receive({ type: 'select_repo', path: '/r/B' });
     assert.equal(repo_changes, 1);
 
     let store_changes = 0;

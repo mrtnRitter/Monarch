@@ -42,7 +42,7 @@ function harness(initial_values = {}) {
 
 async function main() {
     const page = harness();
-    assert.match(page.webview.html, /<div id="notes_pane"[^>]*>\s*<div id="notes_splitter" class="notes-splitter"><\/div>\s*<textarea id="notes"/);
+    assert.match(page.webview.html, /<div id="notes_pane"[^>]*>\s*<div id="notes_splitter" class="notes-splitter"><\/div>\s*<div id="notes_groups" class="notes-groups">\s*<textarea id="notes"/);
 
     for (const [width, expected] of [[321.6, 322], [0, null], ['abc', null], [-1, null], [Infinity, null]]) {
         const test = harness();

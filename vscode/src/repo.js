@@ -26,11 +26,11 @@ function git_info(repository) {
 }
 
 /**
- * One-line repo context for the agent; folder = name of the open workspace folder.
+ * One-line repo context for the agent; folder = name of the repo of this chat.
  * Only states (no counts), so the line changes only when repo, link, branch or kind of local changes change.
  */
 function context_line({ folder, git = null, remote = null, branch = null, changes = 0, ahead = null, others = [] }) {
-    if (!folder) return `${marker} No folder is open in VS Code, so there is no "this repo" · files: cannot be written`;
+    if (!folder) return `${marker} No repo is set for this chat, so there is no "this repo" · files: cannot be written`;
     const files = 'files: save them in /workspace/output/ with their repo path, monarch downloads them';
     const url = git ? remote_web_url(remote) : null;
     const online = git === null ? 'git status unknown' : !git ? 'not a git repository, not online' : url ? `online: ${url}` : 'not online (no remote); tell the user to push it first';
@@ -39,7 +39,7 @@ function context_line({ folder, git = null, remote = null, branch = null, change
         const other_url = other.git ? remote_web_url(other.remote) : null;
         return `${other.folder} (${other_url ? `online: ${other_url}` : 'not online'})`;
     }).join(', ')}` : null;
-    const parts = [`"this repo" = the repo open in VS Code: ${folder}`, online, branch && `branch: ${branch}`, local.length && `local state differs from online (${local.join(', ')}); ask for attachments if needed`, other_repos, files];
+    const parts = [`"this repo" = the repo of this chat: ${folder}`, online, branch && `branch: ${branch}`, local.length && `local state differs from online (${local.join(', ')}); ask for attachments if needed`, other_repos, files];
     return `${marker} ${parts.filter(Boolean).join(' · ').replace(/\s+/g, ' ')}`;
 }
 

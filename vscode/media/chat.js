@@ -8,7 +8,9 @@
     const state = {
         agents: [], agent: null, agent_name: null, labels: { chat: 'Chat', coCredits: 'Co-Credits', coAgents: 'Co-Agenten', stop: 'Stop' },
         user: null, signed_in: false, status: null, chats: [], models: { default: {}, models: [] }, active_thread_id: null,
-        notes_rev: null, notes_visible: false, last_day: null,
+        notes_rev: null, notes_visible: false, last_day: null, repos: null,
+        notes_groups: [], self_id: null, expanded: new Map(), notes_nodes: new Map(),
+        follow: true, loading_history: false, new_answer_target: null,
     };
 
     function apply_notes_position(position) {
@@ -20,12 +22,109 @@
         element('repo_name').textContent = repo.name || 'no folder';
         element('repo_dot').style.backgroundColor = repo.hex || 'transparent';
         element('repo').disabled = !repo.can_change;
+        element('repo').title = repo.can_change ? 'Repo of this chat (click to change)' : 'Repo of this chat (change it when the agent has finished and no files are staged)';
     }
 
     function apply_notes_visible() {
         element('notes_pane').classList.toggle('hidden', !state.notes_visible);
         element('notes_toggle').classList.toggle('active', state.notes_visible);
         element('notes_toggle').setAttribute('aria-pressed', String(state.notes_visible));
+    }
+
+    function render_notes_groups() {
+        const container = element('notes_groups');
+        const focused = container.contains(document.activeElement) ? document.activeElement : null;
+        const selection = focused ? [focused.selectionStart, focused.selectionEnd, focused.selectionDirection] : null;
+        const groups = Array.isArray(state.notes_groups) ? state.notes_groups : [];
+        const grouped = groups.some(group => group.id !== state.self_id);
+        const ids = new Set(groups.map(group => group.id));
+        for (const [id, record] of state.notes_nodes) {
+            if (ids.has(id)) continue;
+            record.group.remove();
+            state.notes_nodes.delete(id);
+            state.expanded.delete(id);
+        }
+        if (!grouped) {
+            const notes = element('notes');
+            if (container.firstElementChild !== notes || container.children.length !== 1) container.replaceChildren(notes);
+            restore_notes_focus(container, focused, selection);
+            return;
+        }
+        const nodes = [];
+        for (const group of groups) {
+            let record = state.notes_nodes.get(group.id);
+            if (!record) {
+                const wrapper = document.createElement('div');
+                wrapper.className = 'notes-group';
+                wrapper.dataset.id = group.id;
+                const head = document.createElement('div');
+                head.className = 'notes-group-head';
+                head.setAttribute('role', 'button');
+                head.tabIndex = 0;
+                const dot = document.createElement('span');
+                dot.className = 'repo-dot';
+                const repo = document.createElement('span');
+                repo.className = 'notes-group-repo';
+                const title = document.createElement('span');
+                title.className = 'notes-group-title';
+                const arrow = document.createElement('span');
+                arrow.className = 'notes-group-arrow';
+                head.append(dot, repo, title, arrow);
+                const body = document.createElement('div');
+                body.className = 'notes-group-body';
+                const textarea = group.id === state.self_id ? element('notes') : document.createElement('textarea');
+                if (group.id !== state.self_id) {
+                    textarea.className = 'notes-other';
+                    textarea.spellcheck = false;
+                    textarea.placeholder = 'Notes for this chat …';
+                    textarea.addEventListener('input', () => vscode.postMessage({ type: 'set_notes', chat_id: group.id, text: textarea.value, rev: record.data.rev }));
+                }
+                body.append(textarea);
+                wrapper.append(head, body);
+                const toggle = () => {
+                    state.expanded.set(group.id, !state.expanded.get(group.id));
+                    update_notes_group(record);
+                };
+                head.addEventListener('click', toggle);
+                head.addEventListener('keydown', event => {
+                    if (event.key !== 'Enter' && event.key !== ' ') return;
+                    event.preventDefault();
+                    toggle();
+                });
+                record = { group: wrapper, head, dot, repo, title, arrow, body, textarea, data: group };
+                state.notes_nodes.set(group.id, record);
+                if (!state.expanded.has(group.id)) state.expanded.set(group.id, group.id === state.self_id);
+            }
+            record.data = group;
+            if (group.id === state.self_id && record.textarea.parentNode !== record.body) record.body.replaceChildren(record.textarea);
+            if (group.id !== state.self_id && record.textarea.value !== String(group.text ?? '')) record.textarea.value = String(group.text ?? '');
+            update_notes_group(record);
+            nodes.push(record.group);
+        }
+        nodes.forEach((node, index) => {
+            const current = container.children[index] || null;
+            if (current !== node) container.insertBefore(node, current);
+        });
+        restore_notes_focus(container, focused, selection);
+    }
+
+    function restore_notes_focus(container, focused, selection) {
+        if (!focused || !container.contains(focused) || document.activeElement === focused) return;
+        focused.focus();
+        if (selection && selection[0] !== null) focused.setSelectionRange(...selection);
+    }
+
+    function update_notes_group(record) {
+        const group = record.data;
+        const expanded = Boolean(state.expanded.get(group.id));
+        record.group.classList.toggle('expanded', expanded);
+        record.head.setAttribute('aria-expanded', String(expanded));
+        record.dot.style.backgroundColor = group.hex || 'transparent';
+        record.dot.classList.toggle('hollow', !group.hex);
+        record.repo.textContent = group.repo || 'no folder';
+        record.title.textContent = group.title || '';
+        record.arrow.textContent = expanded ? '▾' : '▸';
+        record.body.classList.toggle('hidden', !expanded);
     }
 
     const level_name = level => level_names[level] || (level ? level[0].toUpperCase() + level.slice(1) : '');
@@ -82,7 +181,10 @@
 
     // --- menus ---
     function close_menus(except) {
-        for (const id of ['history_menu', 'model_menu', 'attach_menu']) if (id !== except) element(id).classList.add('hidden');
+        for (const id of ['history_menu', 'model_menu', 'attach_menu', 'repo_menu', 'new_menu']) {
+            const menu = element(id);
+            if (id !== except && menu) menu.classList.add('hidden');
+        }
     }
 
     function toggle_menu(id, render) {
@@ -207,6 +309,65 @@
     const note_node = text => Object.assign(document.createElement('div'), { className: 'menu-note', textContent: text });
     const separator_node = () => Object.assign(document.createElement('div'), { className: 'menu-separator' });
 
+    function render_repo_list() {
+        const list = element('repo_menu').querySelector('.repo-list');
+        const query = element('repo_filter').value.toLowerCase();
+        if (state.repos === null) {
+            list.replaceChildren(note_node('Loading …'));
+            return;
+        }
+        if (!state.repos.length) {
+            list.replaceChildren(note_node('No repos found. Set monarch.reposRoot.'));
+            return;
+        }
+        const repos = state.repos.filter(repo => (repo.name || '').toLowerCase().includes(query));
+        if (!repos.length) {
+            list.replaceChildren(note_node('No matching repo.'));
+            return;
+        }
+        const items = repos.map(repo => {
+            const item = menu_item(repo.name, repo.open ? 'open' : '', Boolean(repo.current), () => {
+                close_menus();
+                if (!repo.current) vscode.postMessage({ type: 'select_repo', path: repo.path });
+            });
+            const dot = document.createElement('span');
+            dot.className = `repo-dot${repo.hex ? '' : ' hollow'}`;
+            dot.style.backgroundColor = repo.hex || 'transparent';
+            item.insertBefore(dot, item.firstChild);
+            return item;
+        });
+        list.replaceChildren(...items);
+    }
+
+    function render_repo_menu() {
+        const menu = element('repo_menu');
+        let filter = element('repo_filter');
+        let list = menu.querySelector('.repo-list');
+        if (!filter || !list) {
+            filter = document.createElement('input');
+            filter.id = 'repo_filter';
+            filter.className = 'menu-filter';
+            filter.placeholder = 'Filter repos …';
+            filter.spellcheck = false;
+            list = Object.assign(document.createElement('div'), { className: 'repo-list' });
+            filter.addEventListener('input', render_repo_list);
+            filter.addEventListener('keydown', event => {
+                const items = [...list.querySelectorAll('.menu-item')];
+                if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+                    event.preventDefault();
+                    if (!items.length) return;
+                    const active = items.findIndex(item => item.classList.contains('active'));
+                    const next = active < 0 ? (event.key === 'ArrowDown' ? 0 : items.length - 1) : Math.max(0, Math.min(items.length - 1, active + (event.key === 'ArrowDown' ? 1 : -1)));
+                    items.forEach((item, index) => item.classList.toggle('active', index === next));
+                } else if (event.key === 'Enter') {
+                    (items.find(item => item.classList.contains('active')) || items[0])?.click();
+                }
+            });
+            menu.replaceChildren(header_node('Repo of this chat'), filter, list);
+        }
+        render_repo_list();
+    }
+
     // --- messages ---
     function messages_box() {
         return element('messages');
@@ -216,7 +377,156 @@
         return current_agent()?.avatar || { initials: (state.agent_name || '?')[0] };
     }
 
+    const new_answer = (() => {
+        const chat = element('chat');
+        if (!chat) return null;
+        let button = element('new_answer');
+        if (!button) {
+            button = document.createElement('button');
+            button.id = 'new_answer';
+            button.className = 'new-answer hidden';
+            button.title = 'New answer – click to jump to it';
+            button.type = 'button';
+            chat.appendChild(button);
+        }
+        button.addEventListener('click', jump_to_new_answer);
+        return button;
+    })();
+
+    function metrics() {
+        const box = messages_box();
+        if (!box) return null;
+        const values = { scroll_top: box.scrollTop, scroll_height: box.scrollHeight, client_height: box.clientHeight };
+        return Object.values(values).every(Number.isFinite) && values.client_height > 0 ? values : null;
+    }
+
+    function content_top(node) {
+        try {
+            const box = messages_box();
+            if (!box || !node || !box.contains(node)) return null;
+            const top = node.getBoundingClientRect().top - box.getBoundingClientRect().top + box.scrollTop;
+            return Number.isFinite(top) ? top : null;
+        } catch {
+            return null;
+        }
+    }
+
+    function set_scroll_top(box, top) {
+        if (!box || !Number.isFinite(top)) return;
+        try {
+            box.scrollTop = top;
+            box.dispatchEvent(new Event('scroll'));
+        } catch {
+            // Scrolling must not interfere with message rendering.
+        }
+    }
+
+    function scroll_to_end() {
+        const box = messages_box();
+        const current = metrics();
+        if (box && current) set_scroll_top(box, current.scroll_height);
+    }
+
+    function update_new_answer_position() {
+        try {
+            const box = messages_box();
+            const chat = element('chat');
+            if (!box || !chat || !new_answer || !metrics()) return null;
+            const box_rect = box.getBoundingClientRect();
+            const chat_rect = chat.getBoundingClientRect();
+            const padding_left = Number.parseFloat(window.getComputedStyle(box).paddingLeft);
+            if (![box_rect.left, box_rect.bottom, chat_rect.left, chat_rect.bottom, box.clientLeft, padding_left, new_answer.offsetHeight].every(Number.isFinite)) return null;
+            const left = box_rect.left - chat_rect.left + box.clientLeft + padding_left;
+            const bottom = chat_rect.bottom - box_rect.bottom + 8;
+            new_answer.style.left = String(left) + 'px';
+            new_answer.style.bottom = String(bottom) + 'px';
+            return { indicator_top: box_rect.bottom - 8 - new_answer.offsetHeight };
+        } catch {
+            return null;
+        }
+    }
+
+    function hide_new_answer() {
+        if (new_answer) new_answer.classList.add('hidden');
+        state.new_answer_target = null;
+    }
+
+    function show_new_answer(node) {
+        const box = messages_box();
+        if (state.new_answer_target || !box || !node || !box.contains(node) || !new_answer || !metrics()) return;
+        state.new_answer_target = node.querySelector('.turn-head .avatar') || node;
+        new_answer.replaceChildren(avatar(agent_avatar()));
+        new_answer.classList.remove('hidden');
+        if (!update_new_answer_position()) hide_new_answer();
+    }
+
+    function jump_to_new_answer() {
+        const target = state.new_answer_target;
+        const box = messages_box();
+        const current = metrics();
+        const node = target?.closest('.turn') || target;
+        const top = content_top(node);
+        if (!box || !current || !Number.isFinite(top) || !window.monarch_scroll?.answer_target) return;
+        set_scroll_top(box, window.monarch_scroll.answer_target({ ...current, top }));
+        hide_new_answer();
+    }
+
+    function handle_message_scroll() {
+        const current = metrics();
+        const scroll = window.monarch_scroll;
+        if (!current || !scroll?.at_bottom) return;
+        state.follow = scroll.at_bottom(current);
+        if (!new_answer || new_answer.classList.contains('hidden')) return;
+        const target = state.new_answer_target;
+        const box = messages_box();
+        if (state.follow || !target || !box?.contains(target)) return hide_new_answer();
+        const position = update_new_answer_position();
+        if (!position || !Number.isFinite(position.indicator_top)) return;
+        try {
+            if (scroll.reached(target.getBoundingClientRect().top, position.indicator_top)) hide_new_answer();
+        } catch {
+            hide_new_answer();
+        }
+    }
+
+    const scroll_box = messages_box();
+    if (scroll_box) {
+        scroll_box.addEventListener('scroll', handle_message_scroll);
+        if (typeof ResizeObserver === 'function') {
+            new ResizeObserver(() => {
+                const current = metrics();
+                if (state.follow && current) set_scroll_top(scroll_box, current.scroll_height);
+                if (new_answer && !new_answer.classList.contains('hidden')) update_new_answer_position();
+            }).observe(scroll_box);
+        }
+    }
+
+    function keep_scroll(node, kind) {
+        if (state.loading_history) return;
+        try {
+            const box = messages_box();
+            const current = metrics();
+            const scroll = window.monarch_scroll;
+            if (!box) return;
+            if (kind === 'user') {
+                if (current) scroll_to_end();
+                hide_new_answer();
+            } else if (!current) return;
+            else if (kind === 'answer' && state.follow && scroll?.answer_target) {
+                const top = content_top(node);
+                if (Number.isFinite(top)) set_scroll_top(box, scroll.answer_target({ ...current, top }));
+            } else if (kind === 'answer' && !state.follow) {
+                show_new_answer(node);
+            } else if (kind === 'other' && state.follow) {
+                scroll_to_end();
+            }
+        } catch {
+            // Scrolling must not interfere with message rendering.
+        }
+    }
+
     function show_empty_state() {
+        hide_new_answer();
         const box = document.createElement('div');
         box.className = 'empty-state';
         box.appendChild(avatar(agent_avatar(), true));
@@ -233,13 +543,13 @@
         messages_box().replaceChildren(box);
     }
 
-    function append(node) {
+    function append(node, kind = 'other') {
         messages_box().querySelector('.empty-state')?.remove();
         messages_box().appendChild(node);
-        node.scrollIntoView({ block: 'end' });
+        keep_scroll(node, kind);
     }
 
-    function append_timed(node, item) {
+    function append_timed(node, item, kind) {
         const { divider, last_day } = divider_for(state.last_day, item.created);
         state.last_day = last_day;
         const messages = messages_box();
@@ -251,7 +561,7 @@
             messages.appendChild(line);
         }
         messages.appendChild(node);
-        node.scrollIntoView({ block: 'end' });
+        keep_scroll(node, kind);
     }
 
     // relay and agent steps between two answers: one line with the latest step and "+ x Steps"; a click shows the earlier ones
@@ -291,7 +601,7 @@
         line.tabIndex = earlier ? 0 : -1;
         if (earlier) line.setAttribute('aria-expanded', String(group.classList.contains('open')));
         line.title = earlier ? `${text}\n(click to ${group.classList.contains('open') ? 'hide' : 'show'} the earlier steps)` : text;
-        line.scrollIntoView({ block: 'end' });
+        keep_scroll(line, 'other');
     }
 
     // one single-choice question: a click sends the option; otherwise answers are collected and sent together
@@ -342,7 +652,7 @@
 
     function add_message(item) {
         if (item.role === 'step' || item.role === 'info') return add_step(item.text);
-        if (item.role === 'question') return append(question_card(item));
+        if (item.role === 'question') return append(question_card(item), 'answer');
         // warnings (e.g. files not downloaded) stay until closed
         if (item.role === 'error' || item.role === 'warning') {
             const box = document.createElement('div');
@@ -362,7 +672,7 @@
             bubble.textContent = item.text;
             if (typeof item.created === 'number' && Number.isFinite(item.created)) bubble.appendChild(Object.assign(document.createElement('div'), { className: 'msg-time', textContent: time_text(item.created) }));
             row.append(bubble, avatar(state.user || { initials: 'Du' }));
-            return append_timed(row, item);
+            return append_timed(row, item, 'user');
         }
         const turn = document.createElement('div');
         turn.className = 'turn';
@@ -397,7 +707,7 @@
             body.appendChild(line);
         }
         turn.append(head, body);
-        append_timed(turn, item);
+        append_timed(turn, item, 'answer');
     }
 
     function show_turn_credits(head, credits) {
@@ -497,6 +807,7 @@
             [...messages.querySelectorAll('.steps')].forEach(group => {
                 if (!group.querySelector('.step-text')?.textContent && !group.querySelector('.step-list')?.children.length) group.remove();
             });
+            if (messages.lastElementChild) keep_scroll(messages.lastElementChild, 'other');
             return;
         }
 
@@ -516,6 +827,7 @@
         [...messages.querySelectorAll('.steps')].forEach(other => {
             if (other !== group && !other.querySelector('.step-text')?.textContent && !other.querySelector('.step-list')?.children.length) other.remove();
         });
+        keep_scroll(line, 'other');
     }
     setInterval(update_working, 1000);
 
@@ -528,7 +840,7 @@
         if (data.agent && data.agent !== state.agent) return;
         if (data.type === 'init') {
             const labels = data.labels || {};
-            Object.assign(state, { agents: data.agents, agent: data.current, agent_name: data.current_name, labels: { ...state.labels, ...labels, chat: labels.chat || labels.credits || state.labels.chat }, user: data.user, signed_in: data.signed_in, chats: [], models: { default: {}, models: [] }, status: null, active_thread_id: null, notes_rev: null, notes_visible: Boolean(data.notes_visible), last_day: null });
+            Object.assign(state, { agents: data.agents, agent: data.current, agent_name: data.current_name, labels: { ...state.labels, ...labels, chat: labels.chat || labels.credits || state.labels.chat }, user: data.user, signed_in: data.signed_in, chats: [], models: { default: {}, models: [] }, status: null, active_thread_id: null, notes_rev: null, notes_visible: Boolean(data.notes_visible), last_day: null, loading_history: false });
             if (data.repo) apply_repo(data.repo);
             element('notes').value = '';
             apply_notes_position(data.notes_position);
@@ -543,19 +855,35 @@
             if (data.notes_width) set_notes_width(data.notes_width);
             close_menus();
             show_empty_state();
+            scroll_to_end();
         } else if (data.type === 'repo') {
             apply_repo(data.repo);
+        } else if (data.type === 'repos') {
+            state.repos = data.items || [];
+            if (!element('repo_menu').classList.contains('hidden')) render_repo_list();
         } else if (data.type === 'notes') {
             state.notes_rev = data.rev;
             if (element('notes').value !== data.text) element('notes').value = data.text;
+        } else if (data.type === 'notes_groups') {
+            state.notes_groups = Array.isArray(data.groups) ? data.groups : [];
+            state.self_id = data.self;
+            render_notes_groups();
         } else if (data.type === 'notes_position') {
             apply_notes_position(data.position);
         } else if (data.type === 'history') {
+            hide_new_answer();
+            state.loading_history = true;
             state.last_day = null;
             state.active_thread_id = typeof data.thread_id === 'string' ? data.thread_id : null;
             open_cards.length = 0;
-            show_empty_state();
-            data.items.forEach(add_message);
+            try {
+                show_empty_state();
+                (Array.isArray(data.items) ? data.items : []).forEach(add_message);
+            } finally {
+                state.loading_history = false;
+                hide_new_answer();
+                scroll_to_end();
+            }
             update_working();
         } else if (data.type === 'message') {
             add_message(data.item);
@@ -661,9 +989,29 @@
         if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); send(); }
     });
     element('stop').addEventListener('click', () => vscode.postMessage({ type: 'stop' }));
+    function render_new_menu() {
+        const menu = element('new_menu');
+        menu.replaceChildren(
+            menu_item('New chat here', '', false, () => { close_menus(); vscode.postMessage({ type: 'new_chat' }); }),
+            menu_item('New chat beside', '', false, () => { close_menus(); vscode.postMessage({ type: 'new_chat_beside' }); }),
+        );
+    }
     // Ctrl/Cmd+click: hidden workaround to take over a chat from its awork link
-    element('new_chat').addEventListener('click', event => vscode.postMessage({ type: event.ctrlKey || event.metaKey ? 'import_chat' : 'new_chat' }));
-    element('repo').addEventListener('click', () => vscode.postMessage({ type: 'select_repo' }));
+    element('new_chat').addEventListener('click', event => {
+        event.stopPropagation();
+        if (event.ctrlKey || event.metaKey) return vscode.postMessage({ type: 'import_chat' });
+        toggle_menu('new_menu', render_new_menu);
+    });
+    element('repo').addEventListener('click', event => {
+        event.stopPropagation();
+        const opening = element('repo_menu').classList.contains('hidden');
+        if (opening) state.repos = null;
+        toggle_menu('repo_menu', render_repo_menu);
+        if (opening) {
+            element('repo_filter').focus();
+            vscode.postMessage({ type: 'list_repos' });
+        }
+    });
     element('terminal').addEventListener('click', () => vscode.postMessage({ type: 'terminal' }));
     element('history').addEventListener('click', event => { event.stopPropagation(); toggle_menu('history_menu', render_history); });
     element('model').addEventListener('click', event => { event.stopPropagation(); toggle_menu('model_menu', render_model_menu); });

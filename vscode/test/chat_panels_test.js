@@ -3,61 +3,62 @@
 const assert = require('node:assert/strict');
 const Module = require('node:module');
 
-const workspace_folders = [
-    { name: 'A', uri: { fsPath: '/r/A' } },
-    { name: 'B', uri: { fsPath: '/r/B' } },
-];
-const executed = [];
 const panels = [];
+const executed = [];
 const vscode = {
-    EventEmitter: class {
-        constructor() { this.listeners = []; this.event = listener => { this.listeners.push(listener); return { dispose() {} }; }; }
-        fire(value) { for (const listener of this.listeners) listener(value); }
-    },
-    TreeItem: class { constructor(label, collapsible_state) { Object.assign(this, { label, collapsible_state }); } },
-    ThemeIcon: class { constructor(id, color) { Object.assign(this, { id, color }); } },
-    ThemeColor: class { constructor(id) { this.id = id; } },
-    TreeItemCollapsibleState: { None: 0 },
-    ViewColumn: { Active: -1 },
+    ViewColumn: { Active: -1, Beside: 2 },
     Uri: { joinPath: (base, ...parts) => ({ path: [base?.path || '', ...parts].join('/') }) },
     window: {
         createWebviewPanel(...args) {
             const panel = {
                 args, webview: {}, active: false, title: args[1], reveal_calls: 0,
-                onDidChangeViewState(callback) { this.view_state = callback; },
-                onDidDispose(callback) { this.disposed = callback; },
+                onDidChangeViewState(callback) { this.view_state = callback; return { dispose: () => { this.view_state_disposed = true; } }; },
+                onDidDispose(callback) { this.disposed = callback; return { dispose: () => { this.dispose_listener_disposed = true; } }; },
                 reveal() { this.reveal_calls += 1; },
             };
             panels.push(panel);
             return panel;
         },
-        showQuickPick: async (items, options) => { vscode.quick_pick = { items, options }; return vscode.quick_pick_result; },
-        showErrorMessage: message => { vscode.error_message = message; },
     },
-    commands: { executeCommand: (...args) => { executed.push(args); } },
+    commands: { executeCommand: (...args) => executed.push(args) },
 };
+const repo_colors = [0, 1, 2, 3, 4, 5].map(slot => ({ icon: `repo_${slot}.svg`, theme: `theme_${slot}`, hex: `#${slot}` }));
 const workspace = {
-    folders: () => workspace_folders.map((folder, index) => ({ ...folder, index })),
-    folder_by_name: name => workspace.folders().find(folder => folder.name === name) || null,
-    repo_color: index => ({ icon: `repo_${index}.svg`, theme: `theme_${index}`, hex: `#${index}` }),
+    make_repo_colors(memento, in_use) {
+        const assigned = { ...(memento.get('monarch.repoColors') || {}) };
+        const slot = name => {
+            const key = name.toLowerCase();
+            if (Object.hasOwn(assigned, key)) return assigned[key];
+            const used = new Set(in_use().map(repo => assigned[repo.toLowerCase()]).filter(Number.isInteger));
+            const next = repo_colors.findIndex((_, index) => !used.has(index));
+            assigned[key] = next < 0 ? 0 : next;
+            memento.update('monarch.repoColors', assigned);
+            return assigned[key];
+        };
+        return {
+            slot,
+            color: name => repo_colors[slot(name)],
+            peek: name => Object.hasOwn(assigned, name.toLowerCase()) ? repo_colors[assigned[name.toLowerCase()]] : null,
+        };
+    },
 };
 class FakeChatView {
     constructor(context, client, oauth, options = {}) {
-        this.context = context;
-        this.client = client;
-        this.oauth = oauth;
         this.options = options;
-        this.value = { id: `chat-${FakeChatView.next++}`, repo: options.repo_name || null, title: null, thread_id: null, state: 'idle' };
+        this.value = { id: `id-${FakeChatView.next++}`, repo: options.repo?.name || 'A', title: null, thread_id: null, state: 'idle' };
+        this.notes = { id: this.value.id, repo: this.value.repo, hex: '#0', title: this.value.id, text: '', rev: 0 };
         this.dispose_calls = 0;
+        this.groups = [];
+        this.apply_calls = [];
+        this.apply_result = true;
     }
     resolveWebviewView(host) { this.host = host; }
     summary() { return { ...this.value }; }
+    current_repo() { return this.options.repo || { name: 'A', uri: { fsPath: '/r/A' } }; }
+    notes_entry() { if (this.notes_error) throw new Error('notes failed'); return this.notes; }
+    post_notes_groups(groups) { if (this.groups_error) throw new Error('group delivery failed'); this.groups.push(groups); this.on_post_notes_groups?.(); }
+    apply_notes(text, rev) { this.apply_calls.push([text, rev]); if (this.apply_error) throw new Error('apply failed'); return this.apply_result; }
     dispose() { this.dispose_calls += 1; }
-    refresh() {}
-    new_chat() {}
-    stop() {}
-    forget_user() {}
-    post_notes_position() {}
 }
 FakeChatView.next = 1;
 const original_load = Module._load;
@@ -75,66 +76,80 @@ try {
     Module._load = original_load;
 }
 
+function make_context() {
+    const stored = {};
+    return {
+        extensionUri: { path: '/extension' },
+        globalState: { get: key => stored[key], update: async (key, value) => { stored[key] = value; } },
+    };
+}
+
 async function main() {
     panels.length = 0;
     executed.length = 0;
-    const context = { extensionUri: { path: '/extension' } };
-    const manager = new ChatPanels(context, {}, {} , { ChatViewClass: FakeChatView });
+    FakeChatView.next = 1;
+    const manager = new ChatPanels(make_context(), {}, {}, { ChatViewClass: FakeChatView });
     const sidebar = manager.sidebar;
-    const chat = manager.open('B');
+    assert.equal(manager.colors.color('A').icon, 'repo_0.svg');
+    const repo_b = { name: 'B', uri: { fsPath: '/r/B' } };
+    const chat = manager.open(repo_b);
     const panel = panels[0];
     assert.equal(panel.args[0], 'monarch.chatPanel');
     assert.equal(panel.args[1], 'B · New chat');
-    assert.equal(panel.args[2], -1);
+    assert.equal(panel.args[2], vscode.ViewColumn.Beside);
     assert.equal(panel.args[3].enableScripts, true);
     assert.equal(panel.args[3].retainContextWhenHidden, true);
     assert.equal(panel.iconPath.path, '/extension/media/repo_1.svg');
-    assert.equal(chat.options.repo_name, 'B');
+    assert.deepEqual(chat.options.repo, repo_b);
+    assert.equal(chat.options.colors, manager.colors);
+    assert.equal(typeof chat.options.open_beside, 'function');
+    assert.equal(typeof chat.options.set_notes, 'function');
     assert.equal(chat.options.on_change, sidebar.options.on_change);
     assert.equal(chat.options.reveal_thread, sidebar.options.reveal_thread);
     assert.equal(chat.host, panel);
     assert.equal(panel.title, 'B · New chat');
 
-    assert.equal(manager.getChildren().length, 2);
-    chat.value = { id: 'panel-id', repo: 'B', title: 'Panel', thread_id: 't1', state: 'answer' };
-    chat.options.on_change();
-    const panel_item = manager.getTreeItem(manager.getChildren()[1]);
-    const sidebar_item = manager.getTreeItem(manager.getChildren()[0]);
-    assert.equal(panel_item.description, 'new answer');
-    assert.equal(sidebar_item.description, 'sidebar');
-    assert.deepEqual(panel_item.command.arguments, ['panel-id']);
-    assert.equal(panel_item.id, 'panel-id');
+    const repo_c = { name: 'C', uri: { fsPath: '/r/C' } };
+    const chat_c = chat.options.open_beside(repo_c);
+    assert.equal(panels[1].args[1], 'C · New chat');
+    assert.equal(chat_c.options.repo, repo_c);
 
-    assert.equal(manager.reveal_thread('t1', sidebar), true);
+    sidebar.notes = { id: 'id-a', repo: 'A', hex: '#0', title: 'A', text: 'a', rev: 1 };
+    chat.notes_error = true;
+    chat_c.notes = null;
+    chat_c.groups_error = true;
+    const chat_d = manager.open({ name: 'D', uri: { fsPath: '/r/D' } });
+    chat_d.notes = { id: 'id-d', repo: 'D', hex: '#3', title: 'D', text: 'd', rev: 4 };
+    manager._changed();
+    const groups = sidebar.groups.at(-1);
+    assert.deepEqual(groups.map(item => item.id), ['id-a', 'id-d']);
+    assert.equal(chat_c.groups.length, 0);
+    for (const item of [sidebar, chat, chat_d]) assert.equal(item.groups.at(-1), groups);
+
+    chat.value.id = 'id-b';
+    assert.equal(manager.set_notes('id-b', 'x', 3), true);
+    assert.deepEqual(chat.apply_calls.at(-1), ['x', 3]);
+    chat.apply_result = false;
+    assert.equal(manager.set_notes('id-b', 'y', 4), false);
+    assert.equal(manager.set_notes('missing', 'x', 3), false);
+    chat.apply_error = true;
+    assert.equal(manager.set_notes('id-b', 'z', 5), false);
+
+    assert.equal(manager.reveal_thread('thread-b', sidebar), false);
+    chat.value.thread_id = 'thread-b';
+    assert.equal(manager.reveal_thread('thread-b', sidebar), true);
     assert.equal(panel.reveal_calls, 1);
-    assert.equal(manager.reveal('panel-id'), true);
-    assert.equal(panel.reveal_calls, 2);
-    assert.equal(manager.reveal_thread('t2', sidebar), false);
-    sidebar.value.thread_id = 't3';
-    assert.equal(manager.reveal_thread('t3', chat), true);
-    assert.deepEqual(executed.at(-1), ['monarch.chat.focus']);
 
-    assert.equal(manager.active(), chat);
-    panel.disposed();
-    assert.equal(chat.dispose_calls, 1);
-    assert.equal(manager.getChildren().length, 1);
+    assert.equal(manager.active(), chat_d);
+    sidebar.on_post_notes_groups = () => { sidebar.on_post_notes_groups = null; panels[2].disposed(); };
+    manager._changed();
+    assert.deepEqual(sidebar.groups.at(-1).map(item => item.id), ['id-a']);
+    assert.deepEqual(chat.groups.at(-1).map(item => item.id), ['id-a']);
+    assert.equal(panels[2].view_state_disposed, true);
+    assert.equal(panels[2].dispose_listener_disposed, true);
+    assert.equal(chat_d.dispose_calls, 1);
+    assert.equal(manager.all().includes(chat_d), false);
     assert.equal(manager.active(), sidebar);
-
-    workspace_folders.splice(0, workspace_folders.length,
-        { name: 'A', uri: { fsPath: '/r/A' } }, { name: 'B', uri: { fsPath: '/r/B' } });
-    vscode.quick_pick_result = 'B';
-    assert.equal(await manager.pick_repo(), 'B');
-    assert.deepEqual(vscode.quick_pick.items, ['A', 'B']);
-    assert.deepEqual(vscode.quick_pick.options, { title: 'monarch: repo for the new chat' });
-    workspace_folders.splice(1);
-    assert.equal(await manager.pick_repo(), 'A');
-    workspace_folders.splice(0);
-    assert.equal(await manager.pick_repo(), null);
-    assert.equal(vscode.error_message, 'monarch: open a folder first.');
-
-    const failing = manager.open('A');
-    failing.summary = () => { throw new Error('summary failed'); };
-    assert.doesNotThrow(() => failing.options.on_change());
 }
 
 main().catch(error => {

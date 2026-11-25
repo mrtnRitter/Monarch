@@ -1,6 +1,8 @@
 'use strict';
 /** Workspace folder helpers and read-only adapters for other open repositories. */
 const vscode = require('vscode');
+const fs = require('node:fs/promises');
+const path = require('node:path');
 const git = require('./git');
 
 const repo_colors = [
@@ -128,4 +130,139 @@ function _decode_text(data) {
     }
 }
 
-module.exports = { folders, folder_by_name, repo_color, make_workspace_adapter };
+
+function _path_key(fs_path) {
+    const resolved = path.resolve(fs_path);
+    return process.platform === 'win32' ? resolved.toLowerCase() : resolved;
+}
+
+/** Return the configured repository root, or unique parents of open folders.
+ * @returns {string[]}
+ */
+function repo_roots() {
+    const configured = vscode.workspace.getConfiguration('monarch').get('reposRoot');
+    if (typeof configured === 'string' && configured.trim()) return [configured.trim()];
+
+    const seen = new Set();
+    return (vscode.workspace.workspaceFolders || []).reduce((roots, folder) => {
+        const root = path.dirname(folder.uri.fsPath);
+        const key = _path_key(root);
+        if (!seen.has(key)) {
+            seen.add(key);
+            roots.push(root);
+        }
+        return roots;
+    }, []);
+}
+
+/** List git repositories directly inside each root and all open folders.
+ * @returns {Promise<{name: string, uri: import('vscode').Uri, open: boolean}[]>}
+ */
+async function list_repos() {
+    const roots = await Promise.all(repo_roots().map(async root => {
+        try {
+            const entries = await fs.readdir(root, { withFileTypes: true });
+            const candidates = entries.filter(entry => entry.isDirectory() && !entry.name.startsWith('.'));
+            return await Promise.all(candidates.map(async entry => {
+                const fs_path = path.join(root, entry.name);
+                try {
+                    await fs.stat(path.join(fs_path, '.git'));
+                    return { name: entry.name, uri: vscode.Uri.file(fs_path), open: false };
+                } catch {
+                    return null;
+                }
+            }));
+        } catch {
+            return [];
+        }
+    }));
+
+    const repos = new Map();
+    for (const repo of roots.flat()) {
+        if (repo) repos.set(_path_key(repo.uri.fsPath), repo);
+    }
+    for (const folder of vscode.workspace.workspaceFolders || []) {
+        const repo = { name: folder.name, uri: folder.uri, open: true };
+        repos.set(_path_key(folder.uri.fsPath), repo);
+    }
+    return [...repos.values()].sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }));
+}
+
+/** Find a repository by existing directory path, then by exact name.
+ * @param {{name?: string|null, path?: string|null}} [options]
+ * @returns {Promise<{name: string, uri: import('vscode').Uri, open: boolean}|null>}
+ */
+async function find_repo({ name = null, path: repo_path = null } = {}) {
+    if (repo_path !== null && repo_path !== undefined) {
+        try {
+            if ((await fs.stat(repo_path)).isDirectory()) {
+                const key = _path_key(repo_path);
+                const folder = (vscode.workspace.workspaceFolders || []).find(item => _path_key(item.uri.fsPath) === key);
+                return {
+                    name: name || path.basename(repo_path),
+                    uri: vscode.Uri.file(repo_path),
+                    open: Boolean(folder),
+                };
+            }
+        } catch {
+            // Fall back to the exact-name lookup.
+        }
+    }
+    return (await list_repos()).find(repo => repo.name === name) || null;
+}
+
+/** Choose the least-used available repository color slot.
+ * @param {Record<string, number>} assigned
+ * @param {number[]} in_use_slots
+ * @returns {number}
+ */
+function pick_slot(assigned, in_use_slots) {
+    const in_use = new Set(in_use_slots);
+    let candidates = repo_colors.map((_, slot) => slot).filter(slot => !in_use.has(slot));
+    if (!candidates.length) candidates = repo_colors.map((_, slot) => slot);
+    const counts = new Map(candidates.map(slot => [slot, 0]));
+    for (const slot of Object.values(assigned)) {
+        if (counts.has(slot)) counts.set(slot, counts.get(slot) + 1);
+    }
+    return candidates.reduce((best, slot) => counts.get(slot) < counts.get(best) ? slot : best);
+}
+
+/** Create persistent, stable color assignments for repository names.
+ * @param {{get(key: string): Record<string, number>|undefined, update(key: string, value: Record<string, number>): Promise<unknown>}} memento
+ * @param {() => string[]} [in_use]
+ * @returns {{slot(name: string): number, color(name: string): {theme: string, hex: string, icon: string}, peek(name: string): {theme: string, hex: string, icon: string}|null}}
+ */
+function make_repo_colors(memento, in_use = () => []) {
+    let assigned = { ...(memento.get('monarch.repoColors') || {}) };
+    const name_key = name => typeof name === 'string' ? name.toLowerCase() : '';
+
+    function slot(name) {
+        const key = name_key(name);
+        if (!key) return 0;
+        if (Object.prototype.hasOwnProperty.call(assigned, key)) return assigned[key];
+
+        const occupied = in_use()
+            .map(name_key)
+            .filter(other => other && other !== key)
+            .map(other => assigned[other])
+            .filter(value => Number.isInteger(value) && value >= 0 && value < repo_colors.length);
+        const next_slot = pick_slot(assigned, occupied);
+        assigned = { ...assigned, [key]: next_slot };
+        try {
+            const update = memento.update('monarch.repoColors', assigned);
+            if (update && typeof update.catch === 'function') update.catch(() => {});
+        } catch {
+            // A failed persistence must not prevent this session from using the color.
+        }
+        return next_slot;
+    }
+
+    function peek(name) {
+        const key = name_key(name);
+        return key && Object.prototype.hasOwnProperty.call(assigned, key) ? repo_color(assigned[key]) : null;
+    }
+
+    return { slot, color: name => repo_color(slot(name)), peek };
+}
+
+module.exports = { folders, folder_by_name, repo_color, make_workspace_adapter, repo_roots, list_repos, find_repo, pick_slot, make_repo_colors };

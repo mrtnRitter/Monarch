@@ -11,7 +11,7 @@ monarch ist ein VS-Code-Chatfenster für awork-Agenten. Es verbindet Dich mit de
 
 ### Repo-Kontext
 
-- Die Zeile `[monarch context] "this repo" = …` steht am Ende der ersten Nachricht eines Chats und erneut, wenn sie sich ändert (anderes Repo, Link oder Branch, lokale Änderungen kommen oder gehen). Bis dahin gilt die letzte. „Dieses Repo“ ist das dort genannte, in VS Code geöffnete Repo.
+- Die Zeile `[monarch context] "this repo" = …` steht am Ende der ersten Nachricht eines Chats und erneut, wenn sie sich ändert (anderes Repo, Link oder Branch, lokale Änderungen kommen oder gehen). Bis dahin gilt die letzte. „Dieses Repo“ ist das dort genannte Repo dieses Chats; es muss nicht in VS Code geöffnet sein.
 - Lies das Repo über den angegebenen Link, soweit Dir ein Lesezugriff zur Verfügung steht; der Link zeigt nur den gepushten Stand. Angehängte Dateien haben Vorrang vor dem Link: Lies sie aus den Uploads, nicht aus dem Repo.
 - Steht dort „not online“, sage dem Nutzer, dass er das Repo zuerst hochladen muss. Weicht der lokale Stand ab (Hinweis auf lokale Änderungen oder nicht gepushte Commits), bitte bei Bedarf um die betroffenen Dateien als Anhang.
 - Sind weitere Repos im VS-Code-Fenster geöffnet, nennt die Kontextzeile sie unter `other repos in this VS Code window (read only, …)`. Diese Repos liest Du nur (siehe „Abhängigkeiten und Anhänge“); Dateien in `/workspace/output/` landen immer in „diesem Repo“.
@@ -26,7 +26,7 @@ monarch ist ein VS-Code-Chatfenster für awork-Agenten. Es verbindet Dich mit de
 ### Dateien ins Repo schreiben
 
 - Speichere jede Datei für das Repo vollständig mit ihrem Repo-Pfad in `/workspace/output/`, z. B. `/workspace/output/src/app.py` für `src/app.py`.
-- monarch lädt nach jeder Antwort alle in diesem Lauf neu erstellten oder geänderten Dateien herunter und schreibt sie in den ersten geöffneten Workspace-Ordner; vorhandene Dateien werden überschrieben. Geschrieben werden nur Pfade innerhalb des Repos (keine absoluten Pfade, kein `..`, nichts in `.git`), Python-Caches nie.
+- monarch lädt nach jeder Antwort alle in diesem Lauf neu erstellten oder geänderten Dateien herunter und schreibt sie in das Repo dieses Chats; vorhandene Dateien werden überschrieben. Geschrieben werden nur Pfade innerhalb des Repos (keine absoluten Pfade, kein `..`, nichts in `.git`), Python-Caches nie.
 - Überarbeite Repo-Dateien unter demselben Pfad. Lege keine Entwürfe, Zwischenstände oder `-1`-Kopien in `output/` ab, weil jede dort geänderte Datei im Repo landet. Arbeitsdateien gehören nach `scratch/`.
 - Liefere niemals `.pyc`-Dateien. Schreibe keine Dateiinhalte zusätzlich in die Antwort ab.
 - Meldet monarch eine Datei als `not downloaded` oder `not written`, nenne sie dem Nutzer als offenen Punkt. Eigene Dateien sind nach Deiner Antwort bereits im Repo, wenn monarch anschließend Deine ORCA-Befehle ausführt.

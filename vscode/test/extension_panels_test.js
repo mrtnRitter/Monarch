@@ -6,6 +6,7 @@ const Module = require('node:module');
 const registered_commands = new Map();
 const webview_providers = [];
 const tree_providers = [];
+const opened = [];
 const vscode = {
     window: {
         createOutputChannel: () => ({ appendLine() {}, dispose() {} }),
@@ -23,10 +24,12 @@ const vscode = {
     env: { openExternal: async () => true },
     Uri: { parse: value => value },
 };
+const active_chat = { current_repo: () => ({ name: 'Active repo', uri: { fsPath: '/r/active' } }) };
 const fake_panels = {
     sidebar: { refresh() {}, new_chat() {}, stop() {}, forget_user() {}, post_notes_position() {} },
-    all: () => [], active() { return this.sidebar; },
-    pick_repo: async () => null, open() {}, reveal() { return false; },
+    all: () => [],
+    active: () => active_chat,
+    open: repo => opened.push(repo),
 };
 const original_load = Module._load;
 Module._load = function (request, parent, is_main) {
@@ -55,11 +58,14 @@ async function main() {
         extensionUri: { path: '/extension' },
     };
     activate(context);
-    for (const name of ['monarch.signIn', 'monarch.signOut', 'monarch.newChat', 'monarch.stop', 'monarch.openChatInEditor', 'monarch.revealChat']) {
+    for (const name of ['monarch.signIn', 'monarch.signOut', 'monarch.newChat', 'monarch.stop', 'monarch.openChatInEditor']) {
         assert(registered_commands.has(name), `missing command ${name}`);
     }
-    assert(tree_providers.some(([id, provider]) => id === 'monarch.chats' && provider === fake_panels));
+    assert.equal(registered_commands.has('monarch.revealChat'), false);
+    assert.equal(tree_providers.length, 0);
     assert(webview_providers.some(([id, provider]) => id === 'monarch.chat' && provider === fake_panels.sidebar));
+    await registered_commands.get('monarch.openChatInEditor')();
+    assert.deepEqual(opened, [{ name: 'Active repo', uri: { fsPath: '/r/active' } }]);
 }
 
 main().catch(error => {

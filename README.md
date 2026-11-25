@@ -126,6 +126,7 @@ All settings are optional. The agent list comes from awork (see `monarch.agentFi
 | `monarch.relayDiff` | `inline` | Diffs of newly staged co-agent files in the relay: `inline`, `attach` (always as `<name>.diff` attachment) or `off` |
 | `monarch.relayDiffMaxKB` | `40` | Max. total size of inline diffs per relay; the largest diffs beyond it are attached instead |
 | `monarch.notesPosition` | `right` | Side of the notes pane next to the chat: `left` or `right` |
+| `monarch.reposRoot` | `""` | Folder whose direct subfolders with `.git` are the repos you can pick for a chat; empty = parent folders of the open workspace folders. Open workspace folders are always listed. |
 | `monarch.syncInterval` | `4` | Seconds between checks for new messages of the current chat written elsewhere (e.g. awork web app) while the chat window is visible; while the agent is working, a newer message of yours written elsewhere ends the wait; `0` = off |
 
 ## Usage
@@ -136,10 +137,10 @@ All settings are optional. The agent list comes from awork (see `monarch.agentFi
 | Element | Function |
 |---|---|
 | Agent circles | Agents according to `monarch.agentFilter`, with their profile pictures; click to select. If they do not fit into the panel, a dropdown is shown instead. |
-| Repo (colored dot + name) | Repo of this chat. While a chat has no messages and multiple folders are open, click to select another open folder; after the first message, the repo is fixed. |
+| Repo (colored dot + name) | Click to open a filterable list of all repos, including repos not open in VS Code; type to filter, use ↑ / ↓ and Enter to select, or Esc to close. Open workspace folders are always listed. Change an existing chat’s repo only when the agent and co-agents are not working and no files are staged; the next message carries the new `[monarch context]` line. |
 | Notes (note sheet) | Left of the history button: shows or hides the notes pane of the current chat (full height of the window, left or right of the chat according to `monarch.notesPosition`); shown or hidden stays as set for all chats |
 | History (clock) | Chats of the selected agent from all repos (max. 100), newest first, with repo name and date; click to continue a chat, ✕ removes it from the list (the chat stays in awork) |
-| New chat (blue +) | Start a new conversation with the selected agent. **Ctrl+click** (Mac: Cmd+click) takes over an existing chat instead (workaround, e.g. for chats started in the awork web app): paste its link (`https://<workspace>.awork.com/ai/thread/<id>`) or id; the chat must belong to the selected agent and be readable with your login. It opens and is added to the history. |
+| New chat (blue +) | Opens a menu: **New chat here** starts a chat in this repo; **New chat beside** opens a chat tab next to the current chat, in the same repo. **Ctrl/Cmd+click** on **+** still takes over a chat from awork. |
 | Terminal | Opens or shows the `monarch: <repo>` terminal in this chat's repo, colored with the repo. It opens beside an editor chat or in the panel for the sidebar chat; the **Terminal** code-block action uses it. |
 | Message times | Every message shows its time; a thin line with the date separates messages from different days. |
 | Row above the input | **+** (attachments) on the left, **Chat**, **Co-Credits** and **Co-agents** in the middle, **Model** on the right (details below) |
@@ -181,19 +182,25 @@ Free text for ideas and open points of the current chat, outside the repo. Type 
 
 The agent sees the notes: when they changed since the last message to the agent (also relay messages), monarch adds them at the end of the next message as a `[monarch notes] … [/monarch notes]` block, before the context line; the block is not shown in the chat. The agent replaces the notes with `### ORCA: notes` (see *Co-agents*); the pane shows the new text at once. If you changed the notes after the agent's last message, the command is refused and the agent gets your current notes.
 
+With two or more open chats, the notes pane shows one group per open chat, sidebar first and then tabs. Each header line has a colored dot, repo name, and chat title. Click a header, or focus it and press Enter/Space, to collapse or expand the group. The current chat is expanded and the others are collapsed. Expanded groups share the height; edits show up in all chat windows at once.
+
+### Scrolling
+
+The chat follows new output only while you are at the bottom (within 24 px). An answer or question that does not fit is shown with its top in the upper part of the window. While you are scrolled up, a new answer or question shows the agent avatar bouncing at the bottom left; it stays there while you scroll until the answer's own avatar reaches it. Click the avatar to jump to the answer. Your own message always scrolls to the end.
+
 ### "This repo" (repo context)
 
-The first message of a chat gets a context line at the end that is not shown in the chat. It tells the agent which repo is open in VS Code (the first workspace folder), the browser link of its git remote (`origin` or the upstream of the branch, without credentials), the branch and whether there are uncommitted changes or commits not pushed. Without a remote it says that the repo is not online. Later messages only get the line again when it changes (other repo, link or branch, or local changes appear or disappear). The agent reads the repo via this link (only the pushed state); attached files take precedence over the link. Requires the built-in VS Code Git extension.
+The first message of a chat gets a context line at the end that is not shown in the chat. It tells the agent which repo this chat belongs to, the browser link of its git remote (`origin` or the upstream of the branch, without credentials), the branch and whether there are uncommitted changes or commits not pushed. Without a remote it says that the repo is not online. Later messages only get the line again when it changes (other repo, link or branch, or local changes appear or disappear). The agent reads the repo via this link (only the pushed state); attached files take precedence over the link. Uses the built-in VS Code Git extension for repos open in VS Code and git directly for other repos.
 
 ```
-[monarch context] "this repo" = the repo open in VS Code: Monarch · online: https://github.com/mrtnRitter/Monarch · branch: main
+[monarch context] "this repo" = the repo of this chat: <name> · online: https://github.com/mrtnRitter/Monarch · branch: main
 ```
 
 The matching rule is part of the skill `monarch-main-agent` (`skills/monarch-main-agent/SKILL.md`); update the skill in awork after a change.
 
 ### Files written into the repo
 
-The agent saves its files in `/workspace/output/` with their repo path (e.g. `/workspace/output/src/app.py` → `src/app.py`). awork lists every file created or changed in a run at the agent's answer, with a download link. After each answer monarch downloads these files and writes them into the first open workspace folder; existing files are overwritten. Text files are written as undoable edits. Only paths inside the repo are written (no absolute paths, no `..`, nothing in `.git`), Python caches never. Written files appear as links in the chat; a click opens the file in the editor (images and binary files with the matching viewer). Files that could not be downloaded or written are shown as warning below the answer, e.g. `package.json not downloaded (HTTP 403)`.
+The agent saves its files in `/workspace/output/` with their repo path (e.g. `/workspace/output/src/app.py` → `src/app.py`). awork lists every file created or changed in a run at the agent's answer, with a download link. After each answer monarch downloads these files and writes them into the repo of this chat; existing files are overwritten. Text files are written as undoable edits. Only paths inside the repo are written (no absolute paths, no `..`, nothing in `.git`), Python caches never. Written files appear as links in the chat; a click opens the file in the editor (images and binary files with the matching viewer). Files that could not be downloaded or written are shown as warning below the answer, e.g. `package.json not downloaded (HTTP 403)`.
 
 Co-agent files are not written directly: monarch downloads them when the co-agent answers and keeps them staged outside the repo (latest version per path) until the agent sends `### ORCA: commit`. Failed downloads of co-agent files are shown as yellow warning box and reported to the agent. A new chat discards staged files.
 
@@ -226,11 +233,19 @@ For every file staged since the last relay, the co-agent's part of the relay end
 
 ## Several repos in one window
 
+Each chat belongs to one repo, including repos that are not open in VS Code. Click the colored dot and repo name in the chat header to open a filterable list of all repos (type to filter, ↑ ↓ Enter, Esc). Open workspace folders are always listed.
+
+You can also change the repo of an existing chat, but not while the agent or co-agents are working or files are staged; the next message carries the new `[monarch context]` line.
+
+Every repo keeps its color permanently (dot, editor tab icon, terminal); a new repo gets a color no open chat uses.
+
+**+** opens a menu: **New chat here** | **New chat beside** (opens a chat tab next to the current chat, in the same repo). **Ctrl/Cmd+click** on **+** still takes over a chat from awork.
+
+**monarch: New chat in editor** opens a chat tab beside, in the repo of the active chat.
+
+Folder attachments only work for repos open in VS Code; single files work everywhere.
+
 Open repos as a multi-root workspace with **File → Add Folder to Workspace…**; optionally save it as a `.code-workspace` file.
-
-**monarch: New chat in editor** opens a chat as an editor tab for a selected repo (choose one when several folders are open). The tab title is `<repo> · <chat title>`, and its icon uses the repo color. Chat tabs can be arranged side by side.
-
-The **Chats** view in the monarch sidebar lists every chat in this window with its repo, title and status (`working`, `question`, `new answer`, `files staged`). The sidebar chat is marked `sidebar`; click a chat to show it.
 
 A chat writes only to its repo. The agent sees other open repos in its context line and can read them only with `ATTACH: read:<repo>:<path>` and `ATTACH: repo-snapshot:<repo>`.
 
@@ -248,5 +263,6 @@ For terminal tabs with repo names, use this settings JSON block:
 | Command | Effect |
 |---|---|
 | `monarch: Sign in` / `monarch: Sign out` | OAuth sign-in in the browser / delete the stored sign-in |
-| `monarch: New chat` | Same as the blue + button |
+| `monarch: New chat` | Starts a new chat in the active chat window (like **New chat here**) |
+| `monarch: New chat in editor` | Opens a chat tab beside, in the repo of the active chat |
 | `monarch: Stop agent and co-agents` | Same as the Stop button |

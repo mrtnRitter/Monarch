@@ -4,7 +4,7 @@ const path = require('node:path');
 const { JSDOM } = require('jsdom');
 
 const html = `<!doctype html><html><body>
-  <div id="notes_pane" class="notes-pane hidden"><div id="notes_splitter" class="notes-splitter"></div><textarea id="notes" placeholder="Notes for this chat …" spellcheck="false"></textarea></div>
+  <div id="notes_pane" class="notes-pane hidden"><div id="notes_splitter" class="notes-splitter"></div><div id="notes_groups" class="notes-groups"><textarea id="notes" placeholder="Notes for this chat …" spellcheck="false"></textarea></div></div>
   <div class="chat" id="chat">
     <div class="header" id="header">
       <select id="agent"></select><div id="agents"></div>
@@ -67,7 +67,7 @@ try {
     current_name: 'Agent', user: null, signed_in: false, notes_visible: false, notes_position: 'left', notes_width: 300,
   };
   check('notes pane fixture matches production markup', () => {
-    const pane_pattern = /<div id="notes_pane"[^>]*><div id="notes_splitter"[^>]*><\/div><textarea id="notes"[^>]*><\/textarea><\/div>/;
+    const pane_pattern = /<div id="notes_pane"[^>]*><div id="notes_splitter"[^>]*><\/div><div id="notes_groups"[^>]*><textarea id="notes"[^>]*><\/textarea><\/div><\/div>/;
     const production_html = fs.readFileSync(path.join(__dirname, '../src/chat_view.js'), 'utf8');
     assert.equal(html.match(pane_pattern)?.[0], production_html.match(pane_pattern)?.[0]);
   });
