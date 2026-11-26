@@ -1,7 +1,7 @@
 {
     "name": "monarch",
     "displayName": "monarch",
-    "version": "0.25.0",
+    "version": "0.26.0",
     "publisher": "mrtnritter",
     "description": "Chat with awork agents in VS Code. Relays work to co-agents without credits while waiting.",
     "license": "UNLICENSED",
@@ -106,6 +106,13 @@
                     ],
                     "description": "Side of the notes pane next to the chats; show or hide it with the notes button in the top bar."
                 },
+                "monarch.actionBarPosition": {
+                    "type": "string",
+                    "enum": ["right", "left"],
+                    "default": "right",
+                    "enumDescriptions": ["Action bar right of the chats", "Action bar left of the chats"],
+                    "description": "Side of the action bar (+, History, Notes) next to the chats."
+                },
                 "monarch.newChatPosition": {
                     "type": "string",
                     "enum": [
@@ -118,6 +125,13 @@
                         "New chats open left of the open chats"
                     ],
                     "description": "Side where a new chat from the + menu or monarch: Add chat opens."
+                },
+                "monarch.inputEmptyLines": {
+                    "type": "integer",
+                    "default": 1,
+                    "minimum": 1,
+                    "maximum": 10,
+                    "description": "Empty lines kept below the text of the chat input while it grows automatically (1–10)."
                 },
                 "monarch.reposRoot": {
                     "type": "string",
