@@ -7,7 +7,7 @@ const { chat_html } = require('./chat_html');
 const { insert_index, next_active } = require('../media/chat_layout');
 const { log } = require('./log');
 
-const global_messages = new Set(['host_ready', 'focus_area', 'add_chat', 'close_area', 'notes_visible', 'notes_width', 'set_notes']);
+const global_messages = new Set(['host_ready', 'focus_area', 'add_chat', 'close_area', 'notes_visible', 'notes_width', 'set_notes', 'move_area']);
 const close_notice = 'Close the chat when the agent has finished and no files are staged.';
 
 function _config() {
@@ -30,6 +30,7 @@ class ChatPanels {
             .map(entry => entry.chat.current_repo?.()?.name)
             .filter(Boolean));
         this.notes_position = _config().get('notesPosition') === 'right' ? 'right' : 'left';
+        this.action_bar_position = _config().get('actionBarPosition') === 'left' ? 'left' : 'right';
         this.new_chat_position = _config().get('newChatPosition') === 'left' ? 'left' : 'right';
         this.input_empty_lines = _config().get('inputEmptyLines');
         this.sidebar = new ChatViewClass(context, client, oauth, this._options(null));
@@ -121,6 +122,7 @@ class ChatPanels {
             switch (message.type) {
                 case 'host_ready': return this._host_ready();
                 case 'focus_area': return this.focus_area(message.chat_id);
+                case 'move_area': return this.move_area(message.chat_id, message.index);
                 case 'add_chat': return this.add_chat();
                 case 'close_area': return this.close_area(message.chat_id);
                 case 'notes_visible': return this._store('monarch.notesVisible', Boolean(message.visible));
@@ -151,6 +153,7 @@ class ChatPanels {
             notes_width: this.context.globalState.get('monarch.notesWidth') ?? null,
             notes_position: this.notes_position,
             new_chat_position: this.new_chat_position,
+            action_bar_position: this.action_bar_position,
             input_empty_lines: this.input_empty_lines,
             input_height: this.context.globalState.get('monarch.inputHeight') || null,
         });
@@ -214,6 +217,20 @@ class ChatPanels {
         if (this._entry(chat_id)) this.active_id = chat_id;
     }
 
+    move_area(chat_id, index) {
+        const entry = this._entry(chat_id);
+        if (!entry || !Number.isInteger(index)) return false;
+        const current_index = this.entries.indexOf(entry);
+        const target_index = Math.max(0, Math.min(index, this.entries.length - 1));
+        if (target_index === current_index) return false;
+        const entries = [...this.entries];
+        entries.splice(current_index, 1);
+        entries.splice(target_index, 0, entry);
+        this.entries = entries;
+        this._send_notes_groups();
+        return true;
+    }
+
     reveal_thread(thread_id, self) {
         const entry = this.entries.find(item => item.chat !== self && item.chat.summary()?.thread_id === thread_id);
         if (!entry) return false;
@@ -262,6 +279,11 @@ class ChatPanels {
     set_new_chat_position(position) {
         this.new_chat_position = position === 'left' ? 'left' : 'right';
         this._post_message({ type: 'new_chat_position', position: this.new_chat_position });
+    }
+
+    set_action_bar_position(position) {
+        this.action_bar_position = position === 'left' ? 'left' : 'right';
+        this._post_message({ type: 'action_bar_position', position: this.action_bar_position });
     }
 
     set_input_empty_lines(value) {

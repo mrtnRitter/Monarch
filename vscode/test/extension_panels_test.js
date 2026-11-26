@@ -8,7 +8,7 @@ const webview_providers = [];
 let configuration_changed;
 const changed_configuration = new Set();
 const auth_events = [];
-const config_values = { notesPosition: 'right', newChatPosition: 'left', inputEmptyLines: 5 };
+const config_values = { notesPosition: 'right', newChatPosition: 'left', actionBarPosition: 'left', inputEmptyLines: 5 };
 const vscode = {
     window: {
         createOutputChannel: () => ({ appendLine() {}, dispose() {} }),
@@ -27,10 +27,11 @@ const vscode = {
 };
 const active_chat = { new_chat_calls: 0, stop_calls: 0, new_chat() { this.new_chat_calls += 1; }, stop() { this.stop_calls += 1; } };
 const fake_panels = {
-    add_chat_calls: 0, notes_positions: [], new_chat_positions: [], input_empty_lines: [],
+    add_chat_calls: 0, notes_positions: [], new_chat_positions: [], action_bar_positions: [], input_empty_lines: [],
     add_chat() { this.add_chat_calls += 1; },
     set_notes_position(value) { this.notes_positions.push(value); },
     set_new_chat_position(value) { this.new_chat_positions.push(value); },
+    set_action_bar_position(value) { this.action_bar_positions.push(value); },
     set_input_empty_lines(value) { this.input_empty_lines.push(value); },
     all: () => [auth_chat], active: () => active_chat,
 };
@@ -83,10 +84,14 @@ async function main() {
     changed_configuration.add('monarch.newChatPosition');
     configuration_changed({ affectsConfiguration: name => changed_configuration.has(name) });
     changed_configuration.clear();
+    changed_configuration.add('monarch.actionBarPosition');
+    configuration_changed({ affectsConfiguration: name => changed_configuration.has(name) });
+    changed_configuration.clear();
     changed_configuration.add('monarch.inputEmptyLines');
     configuration_changed({ affectsConfiguration: name => changed_configuration.has(name) });
     assert.deepEqual(fake_panels.notes_positions, ['right']);
     assert.deepEqual(fake_panels.new_chat_positions, ['left']);
+    assert.deepEqual(fake_panels.action_bar_positions, ['left']);
     assert.deepEqual(fake_panels.input_empty_lines, [5]);
 }
 

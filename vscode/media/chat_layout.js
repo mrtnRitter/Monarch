@@ -21,6 +21,16 @@
             next[index + 1] = (pair_px - updated_first_px) / total_px;
             return next;
         },
+        drop_index(mids, x) {
+            return mids.filter(mid => mid < x).length;
+        },
+        move_item(items, from, to) {
+            const next = items.slice();
+            if (!Number.isInteger(from) || from < 0 || from >= next.length) return next;
+            const [item] = next.splice(from, 1);
+            next.splice(Math.min(next.length, Math.max(0, to)), 0, item);
+            return next;
+        },
         insert_index(count, position) {
             return position === 'left' ? 0 : count;
         },

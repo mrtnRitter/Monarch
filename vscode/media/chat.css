@@ -9,11 +9,12 @@ body {
   font-family: var(--vscode-font-family); font-size: var(--vscode-font-size); color: var(--vscode-foreground);
   background: var(--vscode-sideBar-background); display: flex; flex-direction: column; height: 100vh; overflow: hidden;
 }
-.app { display: flex; flex: 1 1 auto; flex-direction: column; min-width: 0; min-height: 0; }
-.topbar {
-  display: flex; flex: 0 0 auto; align-items: center; justify-content: flex-end; gap: 4px;
-  padding: 4px 8px; background: var(--vscode-editorWidget-background); border-bottom: 1px solid var(--vscode-panel-border);
+.app { display: flex; flex: 1 1 auto; flex-direction: row; min-width: 0; min-height: 0; }
+.actionbar {
+  display: flex; flex: 0 0 auto; flex-direction: column; align-items: center; justify-content: flex-start; gap: 4px;
+  padding: 4px; background: var(--vscode-editorWidget-background); border-left: 1px solid var(--vscode-panel-border);
 }
+body.bar-left .actionbar { order: -1; border-left: none; border-right: 1px solid var(--vscode-panel-border); }
 .main { display: flex; flex: 1 1 auto; min-width: 0; min-height: 0; }
 .areas { display: flex; flex: 1 1 auto; min-width: 0; min-height: 0; overflow-x: auto; overflow-y: hidden; }
 .chat.area { display: flex; flex: 1 1 0; flex-direction: column; min-width: 300px; min-height: 0; height: 100%; overflow: hidden; position: relative; }
@@ -250,6 +251,8 @@ span.avatar {
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3); z-index: 100; padding: 4px 0; font-size: calc(var(--vscode-font-size) - 1px);
 }
 .menu.right { left: auto; right: 0; }
+.actionbar .menu { top: 0; margin: 0; left: auto; right: calc(100% + 4px); }
+body.bar-left .actionbar .menu { right: auto; left: calc(100% + 4px); }
 [data-el="model_menu"] { max-width: min(440px, calc(100vw - 16px)); }
 .menu.up { top: auto; bottom: 100%; margin: 0 0 4px; }
 .input-toolbar .menu.up { left: var(--pad); }
@@ -314,3 +317,8 @@ span.avatar {
 .new-answer { position: absolute; z-index: 5; padding: 0; border: none; background: transparent; cursor: pointer; animation: monarch-bounce 1s ease-in-out infinite; }
 @keyframes monarch-bounce { 0%, 100% { transform: translateY(0) } 50% { transform: translateY(-6px) } }
 @media (prefers-reduced-motion: reduce) { .new-answer { animation: none } }
+
+.area.area-dragging { opacity: 0.5; }
+body.area-drag, body.area-drag * { cursor: grabbing !important; user-select: none; }
+.area.drop-before { box-shadow: inset 3px 0 0 var(--vscode-focusBorder); }
+.area.drop-after { box-shadow: inset -3px 0 0 var(--vscode-focusBorder); }

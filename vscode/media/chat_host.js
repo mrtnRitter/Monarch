@@ -26,6 +26,7 @@
     let notes_visible = false;
     let notes_width = null;
     let notes_position = 'left';
+    let action_bar_position = 'right';
     let new_chat_position = 'right';
     let input_empty_lines = 1;
     let input_height = null;
@@ -112,6 +113,139 @@
             : 'Close the chat when the agent has finished and no files are staged.';
     }
 
+    function bind_area_drag(area, button) {
+        let click_pending = false;
+        let click_timer = null;
+        let click_listener = null;
+
+        const clear_click_suppression = () => {
+            if (click_timer !== null) window.clearTimeout(click_timer);
+            click_timer = null;
+            if (click_listener) button.removeEventListener('click', click_listener, true);
+            click_listener = null;
+            click_pending = false;
+        };
+        const suppress_next_click = () => {
+            clear_click_suppression();
+            click_pending = true;
+            click_listener = event => {
+                if (!click_pending) return;
+                event.stopPropagation();
+                event.preventDefault();
+                clear_click_suppression();
+            };
+            button.addEventListener('click', click_listener, true);
+            click_timer = window.setTimeout(clear_click_suppression, 0);
+        };
+        area.clear_drag_click = clear_click_suppression;
+
+        button.addEventListener('pointerdown', event => {
+            clear_click_suppression();
+            if (event.button !== 0 || areas.length <= 1) return;
+
+            const pointer_id = event.pointerId;
+            const start_x = event.clientX;
+            const start_y = event.clientY;
+            const start_index = areas.indexOf(area);
+            let target_index = start_index;
+            let started = false;
+            let finished = false;
+
+            const clear_drop_marks = () => {
+                areas.forEach(item => {
+                    item.root.classList.remove('drop-before', 'drop-after');
+                });
+            };
+            const update_target = client_x => {
+                const others = areas.filter(item => item !== area);
+                const mids = others.map(item => {
+                    const rect = item.root.getBoundingClientRect();
+                    return rect.left + rect.width / 2;
+                });
+                target_index = layout.drop_index(mids, client_x);
+                clear_drop_marks();
+                if (target_index === start_index) return;
+                const target = target_index === others.length ? others[others.length - 1] : others[target_index];
+                target?.root.classList.add(target_index === others.length ? 'drop-after' : 'drop-before');
+            };
+            const cleanup = () => {
+                if (finished) return;
+                finished = true;
+                window.removeEventListener('pointermove', on_pointermove, true);
+                window.removeEventListener('pointerup', on_pointerup, true);
+                window.removeEventListener('pointercancel', on_pointercancel, true);
+                button.removeEventListener('lostpointercapture', on_lostpointercapture);
+                document.removeEventListener('keydown', on_keydown, true);
+                clear_click_suppression();
+                clear_drop_marks();
+                if (started) {
+                    area.root.classList.remove('area-dragging');
+                    document.body.classList.remove('area-drag');
+                    try {
+                        if (button.hasPointerCapture(pointer_id)) button.releasePointerCapture(pointer_id);
+                    } catch {}
+                }
+                active_drags.delete(cleanup);
+                if (area.cancel_drag === cleanup) area.cancel_drag = null;
+            };
+            const on_lostpointercapture = next => {
+                if (next.pointerId === pointer_id) cleanup();
+            };
+            const on_pointermove = next => {
+                if (finished || next.pointerId !== pointer_id) return;
+                if (!started) {
+                    if (Math.hypot(next.clientX - start_x, next.clientY - start_y) <= 6) return;
+                    started = true;
+                    area.root.classList.add('area-dragging');
+                    document.body.classList.add('area-drag');
+                    close_host_menus();
+                    button.addEventListener('lostpointercapture', on_lostpointercapture);
+                    try { button.setPointerCapture(pointer_id); } catch {}
+                }
+                update_target(next.clientX);
+            };
+            const on_pointerup = next => {
+                if (finished || next.pointerId !== pointer_id) return;
+                if (started) update_target(next.clientX);
+                const did_start = started;
+                cleanup();
+                if (!did_start) return;
+                suppress_next_click();
+                if (target_index === start_index) return;
+
+                const scroll_positions = areas.flatMap(item =>
+                    Array.from(item.root.querySelectorAll('[data-el="messages"]'), node => ({
+                        node,
+                        scroll_top: node.scrollTop,
+                        scroll_left: node.scrollLeft,
+                    })));
+                const moved_areas = layout.move_item(areas, start_index, target_index);
+                areas.splice(0, areas.length, ...moved_areas);
+                area_sizes = layout.move_item(area_sizes, start_index, target_index);
+                render_areas();
+                scroll_positions.forEach(({ node, scroll_top, scroll_left }) => {
+                    node.scrollTop = scroll_top;
+                    node.scrollLeft = scroll_left;
+                });
+                set_active(area.chat_id, { notify: true });
+                post({ type: 'move_area', chat_id: area.chat_id, index: target_index });
+            };
+            const on_pointercancel = next => {
+                if (next.pointerId === pointer_id) cleanup();
+            };
+            const on_keydown = next => {
+                if (next.key === 'Escape') cleanup();
+            };
+
+            area.cancel_drag = cleanup;
+            active_drags.add(cleanup);
+            window.addEventListener('pointermove', on_pointermove, true);
+            window.addEventListener('pointerup', on_pointerup, true);
+            window.addEventListener('pointercancel', on_pointercancel, true);
+            document.addEventListener('keydown', on_keydown, true);
+        });
+    }
+
     function render_areas() {
         areas_node.querySelectorAll('.area-sash').forEach(sash => sash._cancelDrag?.());
         const fragment = document.createDocumentFragment();
@@ -137,6 +271,7 @@
         const root = template.content.firstElementChild.cloneNode(true);
         const area = { chat_id, root, instance: null, chats: [], can_change: false, agent_id: null };
         root.addEventListener('pointerdown', () => set_active(chat_id), true);
+        bind_area_drag(area, root.querySelector('[data-el="repo"]'));
         root.addEventListener('focusin', () => set_active(chat_id));
         root.querySelector('[data-el="close"]').addEventListener('click', () => {
             if (areas.length > 1 && area.can_change) post({ type: 'close_area', chat_id });
@@ -159,9 +294,12 @@
     function remove_area(chat_id) {
         const index = areas.findIndex(area => area.chat_id === chat_id);
         if (index < 0) return;
+        areas.forEach(area => area.cancel_drag?.());
         const ids = areas.map(area => area.chat_id);
         const next_id = layout.next_active(ids, chat_id, active_id);
-        const [area] = areas.splice(index, 1);
+        const area = areas[index];
+        area.clear_drag_click?.();
+        areas.splice(index, 1);
         note_cache.delete(escape_key(chat_id));
         area.instance?.dispose();
         area.root.remove();
@@ -298,6 +436,13 @@
         document.body.classList.toggle('notes-left', notes_position === 'left');
         document.body.classList.toggle('notes-right', notes_position === 'right');
     }
+
+    function set_action_bar_position(position) {
+        action_bar_position = position === 'left' ? 'left' : 'right';
+        document.body.classList.toggle('bar-left', action_bar_position === 'left');
+        document.body.classList.toggle('bar-right', action_bar_position === 'right');
+    }
+    set_action_bar_position('right');
 
     function set_notes_width(width) {
         if (!Number.isFinite(width)) return;
@@ -494,6 +639,7 @@
             input_empty_lines = message.input_empty_lines;
             input_height = Number.isFinite(message.input_height) ? message.input_height : null;
             set_notes_position(notes_position);
+            set_action_bar_position(message.action_bar_position);
             set_notes_visible(notes_visible);
             if (notes_width !== null) set_notes_width(notes_width);
             return;
@@ -524,6 +670,10 @@
             set_notes_position(message.position);
             return;
         }
+        if (message.type === 'action_bar_position') {
+            set_action_bar_position(message.position);
+            return;
+        }
         if (message.type === 'new_chat_position') {
             new_chat_position = message.position === 'left' ? 'left' : 'right';
             return;
@@ -546,6 +696,7 @@
     window.addEventListener('message', event => receive(event.data));
     window.addEventListener('pagehide', () => {
         for (const cleanup of [...active_drags]) cleanup();
+        areas.forEach(area => area.clear_drag_click?.());
     });
     if (!ready_sent) {
         ready_sent = true;

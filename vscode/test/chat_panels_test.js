@@ -3,7 +3,7 @@
 const assert = require('node:assert/strict');
 const Module = require('node:module');
 
-const config = { notesPosition: undefined, newChatPosition: undefined, inputEmptyLines: 6 };
+const config = { notesPosition: undefined, newChatPosition: undefined, actionBarPosition: undefined, inputEmptyLines: 6 };
 const vscode = {
     Uri: { joinPath: (base, ...parts) => ({ path: [base?.path || '', ...parts].join('/') }) },
     workspace: { getConfiguration: () => ({ get: key => config[key] }) },
@@ -161,6 +161,8 @@ async function main() {
         assert.deepEqual(manager.entries.map(entry => entry.chat), [first, right]);
         assert.deepEqual(view.sent.filter(message => message.type === 'add_area').at(-1), { type: 'add_area', chat_id: right.id, index: 1 });
         manager.set_new_chat_position('left');
+        manager.set_action_bar_position('left');
+        assert.deepEqual(view.sent.find(message => message.type === 'action_bar_position'), { type: 'action_bar_position', position: 'left' });
         manager.set_input_empty_lines(3);
         assert.deepEqual(view.sent.find(message => message.type === 'input_empty_lines'), { type: 'input_empty_lines', value: 3 });
         view.sent.length = 0;
@@ -212,6 +214,21 @@ async function main() {
         manager.resolveWebviewView(view);
         const first = manager.entries[0].chat;
         const second = manager.add_chat();
+        const third = manager.add_chat();
+        view.sent.length = 0;
+        assert.equal(manager._dispatch({ type: 'move_area', chat_id: first.id, index: 2 }), true);
+        assert.deepEqual(manager.entries.map(entry => entry.chat), [second, third, first]);
+        assert.deepEqual(view.sent.filter(message => message.type === 'notes_groups').at(-1), { type: 'notes_groups', groups: [second.notes, third.notes, first.notes] });
+        assert.equal(manager._dispatch({ type: 'move_area', chat_id: first.id, index: 2 }), false);
+        assert.equal(manager._dispatch({ type: 'move_area', chat_id: 'unknown', index: 0 }), false);
+        assert.equal(manager._dispatch({ type: 'move_area', chat_id: second.id, index: 'x' }), false);
+    }
+    {
+        const { manager } = make_manager();
+        const view = make_view();
+        manager.resolveWebviewView(view);
+        const first = manager.entries[0].chat;
+        const second = manager.add_chat();
         first.notes = { id: first.id, text: 'first' };
         second.notes = { id: second.id, text: 'second' };
         view.sent.length = 0;
@@ -242,7 +259,7 @@ async function main() {
         replacement.receive({ type: 'host_ready' });
         assert.deepEqual(replacement.sent.filter(message => message.type === 'add_area').map(message => message.chat_id), [active.id, second.id]);
         assert.deepEqual(replacement.sent.find(message => message.type === 'host_init'), {
-            type: 'host_init', notes_visible: false, notes_width: null, notes_position: 'left', new_chat_position: 'right', input_empty_lines: 6, input_height: null,
+            type: 'host_init', notes_visible: false, notes_width: null, notes_position: 'left', new_chat_position: 'right', action_bar_position: 'right', input_empty_lines: 6, input_height: null,
         });
         assert.deepEqual(replacement.sent.filter(message => message.type === 'focus_area').at(-1), { type: 'focus_area', chat_id: second.id });
         assert.doesNotThrow(() => manager.entries[0].port.webview.postMessage({ type: 'x' }));

@@ -42,3 +42,15 @@ assert.doesNotMatch(bottom, /class="grow"/);
 assert.ok(toolbar_index('attach') < toolbar_index('credits'));
 assert.ok(toolbar_index('credits') < toolbar_index('model'));
 assert.match(html, /class="repo-name"/);
+
+const main_start = html.indexOf('<main class="main"');
+const actionbar_start = html.indexOf('<div class="actionbar" id="actionbar">');
+const actionbar_end = html.indexOf('\n</div>\n</div>\n<template id="area_template">', actionbar_start);
+assert.notEqual(main_start, -1);
+assert.ok(actionbar_start > main_start);
+assert.equal(html.includes('class="topbar"'), false);
+assert.notEqual(actionbar_end, -1);
+const actionbar = html.slice(actionbar_start, actionbar_end);
+assert.ok(actionbar.indexOf('id="new_chat"') < actionbar.indexOf('id="history"'));
+assert.ok(actionbar.indexOf('id="history"') < actionbar.indexOf('id="notes_toggle"'));
+assert.match(actionbar, /id="history_menu" class="menu hidden"/);

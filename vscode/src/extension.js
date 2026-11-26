@@ -50,6 +50,7 @@ function activate(context) {
                 panels.all().forEach(chat => chat.refresh({ reload_agents: true }));
             }
             if (event.affectsConfiguration('monarch.notesPosition')) panels.set_notes_position(_config().get('notesPosition'));
+            if (event.affectsConfiguration('monarch.actionBarPosition')) panels.set_action_bar_position(_config().get('actionBarPosition'));
             if (event.affectsConfiguration('monarch.newChatPosition')) panels.set_new_chat_position(_config().get('newChatPosition'));
             if (event.affectsConfiguration('monarch.inputEmptyLines')) panels.set_input_empty_lines(_config().get('inputEmptyLines'));
         }),

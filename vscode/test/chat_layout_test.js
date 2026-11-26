@@ -42,4 +42,18 @@ assert.strictEqual(layout.next_active([1, 2, 3], 1, 1), 2);
 assert.strictEqual(layout.next_active([1, 2, 3], 3, 2), 2);
 assert.strictEqual(layout.next_active([1], 1, 1), null);
 
+
+assert.strictEqual(layout.drop_index([100, 300], 50), 0);
+assert.strictEqual(layout.drop_index([100, 300], 200), 1);
+assert.strictEqual(layout.drop_index([100, 300], 400), 2);
+assert.strictEqual(layout.drop_index([], 10), 0);
+assert.deepStrictEqual(layout.move_item(['a', 'b', 'c'], 0, 2), ['b', 'c', 'a']);
+assert.deepStrictEqual(layout.move_item(['a', 'b', 'c'], 2, 0), ['c', 'a', 'b']);
+assert.deepStrictEqual(layout.move_item(['a', 'b', 'c'], 1, 1), ['a', 'b', 'c']);
+assert.deepStrictEqual(layout.move_item(['a', 'b'], 0, 9), ['b', 'a']);
+const move_original = ['a', 'b', 'c'];
+const move_before = move_original.slice();
+layout.move_item(move_original, 0, 2);
+assert.deepStrictEqual(move_original, move_before);
+
 console.log('chat_layout tests passed');
